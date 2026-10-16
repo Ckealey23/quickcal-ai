@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>QuickCalAI settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="card">
+      <h1>QuickCalAI</h1>
+      <p class="lead">Connect Google Calendar. This page only checks that access works.</p>
+      <p id="status" class="status connecting" role="status" aria-live="polite">
+        Checking Google Calendar connection…
+      </p>
+      <p id="detail" class="detail" hidden></p>
+      <button id="connect" type="button" disabled>Connect Google Calendar</button>
+      <button id="disconnect" type="button" hidden disabled>Disconnect</button>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

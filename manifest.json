@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "QuickCalAI",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4bzDmZV/YlrlA87vjW24zmv0MqLfHi5Zlx+stW4o4L6Uu2Yk9li4lcscpym93cllZfw69/k5g7xt7TR1ntKUtHnAB6pusXhkqc9xE0iQ0TUn6KZDuQxBjs5ouRpuhK09ItYEOwP1w30cKZaEpW/cslgLh8X9dvnryI7FMDB7DH8vWlzGLrEQXcy+X5ihevbImCC+WMG7KFCX151d4J5HHtIweRogs5nRRk4HEn77sl3e4MblUPigReZVHtlee4eqJoh7BXfpaWdklOprNfUSQDcZmELzwYErABLiC+HhxCC8GpyYqvDN1GRg4JgC8ghk2I8N4T+/M6XTlNg8eqAfzQIDAQAB",
   "description": "Type a calendar event from any webpage.",
   "action": {
     "default_title": "Show or hide QuickCalAI"
@@ -9,7 +10,19 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["activeTab", "scripting"],
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["activeTab", "scripting", "identity", "storage"],
+  "host_permissions": [
+    "https://www.googleapis.com/calendar/*",
+    "https://oauth2.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/calendar.events.owned"]
+  },
   "web_accessible_resources": [
     {
       "resources": ["assets/mic.svg", "content/widget.css"],
