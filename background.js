@@ -1,3 +1,5 @@
+importScripts("shared/test-event.js");
+
 const SUPPORTED_PAGE = /^https?:\/\//i;
 
 function canInject(url) {
@@ -34,23 +36,33 @@ const AUTH_MESSAGE = "quickcal-auth";
 const SUPPRESS_KEY = "quickcalCalendarSuppressed";
 const CALENDAR_PROBE_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1&fields=kind";
-const AUTH_ACTIONS = new Set(["status", "connect", "disconnect"]);
+const TEST_EVENT_KEY = "quickcalTestEvent";
+const CALENDAR_EVENTS_URL =
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event"]);
 
 let authChain = Promise.resolve();
 let connectInFlight = false;
+let createInFlight = false;
 
-function runAuth(action) {
+function runAuth(message) {
+  const action = message && message.action;
   if (action === "connect" && connectInFlight) {
     return Promise.resolve(
       failed("Google Calendar connection is already in progress.")
     );
   }
+  if (action === "create-test-event" && createInFlight) {
+    return Promise.resolve(failed("Test event creation is already in progress."));
+  }
   if (action === "connect") connectInFlight = true;
+  if (action === "create-test-event") createInFlight = true;
 
   const result = authChain
-    .then(() => performAuth(action))
+    .then(() => performAuth(message))
     .finally(() => {
       if (action === "connect") connectInFlight = false;
+      if (action === "create-test-event") createInFlight = false;
     });
   authChain = result.then(
     () => undefined,
@@ -221,6 +233,89 @@ async function verifyCalendar(token) {
   return calendarFailure(result.status);
 }
 
+function readyTestEvent(now) {
+  return Object.assign(
+    { phase: "ready", htmlLink: "" },
+    self.QuickCalTestEvent.localTomorrowWindow(now || new Date())
+  );
+}
+
+function publicTestEvent(record) {
+  return {
+    phase: record.phase,
+    summary: record.summary,
+    description: record.description,
+    startDateTime: record.startDateTime,
+    endDateTime: record.endDateTime,
+    timeZone: record.timeZone,
+    dateText: record.dateText,
+    timeText: record.timeText,
+    htmlLink: typeof record.htmlLink === "string" ? record.htmlLink : "",
+  };
+}
+
+function isRfc3339(value) {
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/.test(value)
+  );
+}
+
+function clientPayload(event) {
+  if (!event || typeof event !== "object") return null;
+  const payload = {
+    summary: event.summary,
+    description: event.description,
+    startDateTime: event.startDateTime,
+    endDateTime: event.endDateTime,
+    timeZone: event.timeZone,
+  };
+  if (payload.summary !== self.QuickCalTestEvent.SUMMARY) return null;
+  if (payload.description !== self.QuickCalTestEvent.DESCRIPTION) return null;
+  if (!isRfc3339(payload.startDateTime) || !isRfc3339(payload.endDateTime)) return null;
+  if (typeof payload.timeZone !== "string" || payload.timeZone.length < 1 || payload.timeZone.length > 100) {
+    return null;
+  }
+  return payload;
+}
+
+function createEventId() {
+  const alphabet = "0123456789abcdefghijklmnopqrstuv";
+  const bytes = new Uint8Array(26);
+  crypto.getRandomValues(bytes);
+  let id = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    id += alphabet[bytes[index] & 31];
+  }
+  return id;
+}
+
+async function loadTestEvent() {
+  const stored = await chrome.storage.local.get(TEST_EVENT_KEY);
+  const record = stored[TEST_EVENT_KEY];
+  if (!record || typeof record !== "object") return null;
+  if (!self.QuickCalTestEvent.isValidEventId(record.id)) return null;
+  if (record.phase !== "pending" && record.phase !== "created") return null;
+  if (!clientPayload(record)) return null;
+  if (typeof record.dateText !== "string" || typeof record.timeText !== "string") return null;
+  return record;
+}
+
+async function saveTestEvent(record) {
+  await chrome.storage.local.set({ [TEST_EVENT_KEY]: record });
+}
+
+async function clearTestEvent() {
+  await chrome.storage.local.remove(TEST_EVENT_KEY);
+}
+
+async function withTestEvent(result) {
+  if (!result || result.state !== "connected") return result;
+  const stored = await loadTestEvent();
+  result.testEvent = stored ? publicTestEvent(stored) : readyTestEvent(new Date());
+  return result;
+}
+
 async function refreshStatus() {
   if (await isSuppressed()) return disconnected();
 
@@ -231,7 +326,7 @@ async function refreshStatus() {
     return authFailure(error, false);
   }
   if (!token) return disconnected();
-  return verifyCalendar(token);
+  return withTestEvent(await verifyCalendar(token));
 }
 
 async function connectCalendar() {
@@ -245,7 +340,7 @@ async function connectCalendar() {
 
   const result = await verifyCalendar(token);
   if (result.state === "connected") await setSuppressed(false);
-  return result;
+  return withTestEvent(result);
 }
 
 async function disconnectCalendar() {
@@ -285,9 +380,18 @@ async function disconnectCalendar() {
     // An empty token cache can reject. Local suppression still blocks reconnecting.
   }
 
+  let storageError = false;
   try {
     await setSuppressed(true);
   } catch (error) {
+    storageError = true;
+  }
+  try {
+    await clearTestEvent();
+  } catch (error) {
+    storageError = true;
+  }
+  if (storageError) {
     return failed("QuickCalAI could not clear its saved authorization state.");
   }
 
@@ -299,10 +403,322 @@ async function disconnectCalendar() {
   return disconnected();
 }
 
-function performAuth(action) {
+function eventReadUrl(id) {
+  return (
+    CALENDAR_EVENTS_URL +
+    "/" +
+    encodeURIComponent(id) +
+    "?fields=id,summary,htmlLink,status"
+  );
+}
+
+function eventInsertUrl() {
+  return CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=id,summary,htmlLink,status";
+}
+
+function insertBody(record) {
+  return JSON.stringify({
+    id: record.id,
+    summary: record.summary,
+    description: record.description,
+    start: { dateTime: record.startDateTime, timeZone: record.timeZone },
+    end: { dateTime: record.endDateTime, timeZone: record.timeZone },
+    reminders: { useDefault: false },
+  });
+}
+
+function safeCalendarLink(value) {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    const calendarHost =
+      url.hostname === "calendar.google.com" ||
+      (url.hostname === "www.google.com" && url.pathname.indexOf("/calendar/") === 0);
+    if (url.protocol !== "https:" || !calendarHost) return "";
+    return url.href;
+  } catch (error) {
+    return "";
+  }
+}
+
+function confirmedRecord(record, body) {
+  if (!body || body.id !== record.id || body.summary !== record.summary) return null;
+  if (body.status === "cancelled") return null;
+  const link = safeCalendarLink(body.htmlLink);
+  if (!link) return null;
+  return {
+    id: record.id,
+    phase: "created",
+    summary: record.summary,
+    description: record.description,
+    startDateTime: record.startDateTime,
+    endDateTime: record.endDateTime,
+    timeZone: record.timeZone,
+    dateText: record.dateText,
+    timeText: record.timeText,
+    htmlLink: link,
+  };
+}
+
+function connectedWith(testEvent, message) {
+  return { state: "connected", message: message || "", testEvent: testEvent };
+}
+
+function createAuthFailure(error) {
+  const result = authFailure(error, false);
+  if (result.state === "disconnected" && !result.message) {
+    return failed("Google Calendar rejected the authorization. Connect again.");
+  }
+  return result;
+}
+
+async function calendarFetch(token, url, options) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: options.method,
+      credentials: "omit",
+      headers: Object.assign(
+        { Authorization: "Bearer " + token },
+        options.body ? { "Content-Type": "application/json" } : null
+      ),
+      body: options.body,
+    });
+  } catch (error) {
+    return { network: true };
+  }
+
+  if (response.status === 401) return { unauthorized: true };
+  if (response.status === 404) return { notFound: true };
+  if (response.status === 409) return { conflict: true };
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (error) {
+    body = null;
+  }
+  if (response.ok) return { ok: true, status: response.status, body: body };
+  return { status: response.status, body: body };
+}
+
+async function calendarCall(url, options) {
+  let token = "";
+  try {
+    token = await requestToken(false);
+  } catch (error) {
+    return { authError: error };
+  }
+  if (!token) return { authError: new Error("OAuth2 not granted or revoked.") };
+
+  let result = await calendarFetch(token, url, options);
+  if (!result.unauthorized) return result;
+
+  await removeCachedToken(token);
+  try {
+    token = await requestToken(false);
+  } catch (error) {
+    return { authError: error, unauthorized: true };
+  }
+  if (!token) return { unauthorized: true };
+
+  result = await calendarFetch(token, url, options);
+  if (result.unauthorized) await removeCachedToken(token);
+  return result;
+}
+
+async function lookupEvent(record) {
+  return calendarCall(eventReadUrl(record.id), { method: "GET" });
+}
+
+async function postEvent(record) {
+  return calendarCall(eventInsertUrl(), { method: "POST", body: insertBody(record) });
+}
+
+async function finishSaved(record, body) {
+  const saved = confirmedRecord(record, body);
+  if (!saved) {
+    return connectedWith(
+      publicTestEvent(record),
+      "Google Calendar did not confirm the saved test event."
+    );
+  }
+  try {
+    await saveTestEvent(saved);
+  } catch (error) {
+    return connectedWith(
+      publicTestEvent(saved),
+      "The test event was saved, but QuickCalAI could not remember it. Check Google Calendar before trying again."
+    );
+  }
+  return connectedWith(publicTestEvent(saved), "");
+}
+
+function pendingError(record, message) {
+  return connectedWith(publicTestEvent(record), message);
+}
+
+function callFailed(result) {
+  if (result.unauthorized) return calendarFailure(401);
+  if (result.authError) return createAuthFailure(result.authError);
+  return null;
+}
+
+function withEvent(result, record) {
+  if (result && record) result.testEvent = publicTestEvent(record);
+  return result;
+}
+
+async function insertOrRecover(record) {
+  const existing = await lookupEvent(record);
+  const existingFailure = callFailed(existing);
+  if (existingFailure) return withEvent(existingFailure, record);
+  if (existing.network) {
+    return pendingError(
+      record,
+      "QuickCalAI could not reach Google Calendar. Check your connection and try again."
+    );
+  }
+  if (existing.ok) return finishSaved(record, existing.body);
+  if (!existing.notFound) {
+    if (existing.status === 403) {
+      return pendingError(
+        record,
+        "This Google account did not allow QuickCalAI to create a Calendar event."
+      );
+    }
+    return pendingError(
+      record,
+      "Google Calendar could not be checked (" + (existing.status || "unknown") + ")."
+    );
+  }
+
+  const created = await postEvent(record);
+  const createdFailure = callFailed(created);
+  if (createdFailure) return withEvent(createdFailure, record);
+  if (created.ok) return finishSaved(record, created.body);
+
+  const uncertain =
+    created.network || created.conflict || (created.status && created.status >= 500);
+  if (!uncertain) {
+    if (created.status === 403) {
+      return pendingError(
+        record,
+        "This Google account did not allow QuickCalAI to create a Calendar event."
+      );
+    }
+    return pendingError(
+      record,
+      "Google Calendar could not save the test event (" + (created.status || "unknown") + ")."
+    );
+  }
+
+  const check = await lookupEvent(record);
+  const checkFailure = callFailed(check);
+  if (checkFailure) return withEvent(checkFailure, record);
+  if (check.ok) return finishSaved(record, check.body);
+  if (check.notFound && (created.network || (created.status && created.status >= 500))) {
+    const second = await postEvent(record);
+    const secondFailure = callFailed(second);
+    if (secondFailure) return withEvent(secondFailure, record);
+    if (second.ok) return finishSaved(record, second.body);
+    if (second.conflict || second.network || (second.status && second.status >= 500)) {
+      const again = await lookupEvent(record);
+      const againFailure = callFailed(again);
+      if (againFailure) return withEvent(againFailure, record);
+      if (again.ok) return finishSaved(record, again.body);
+    } else if (second.status === 403) {
+      return pendingError(
+        record,
+        "This Google account did not allow QuickCalAI to create a Calendar event."
+      );
+    } else {
+      return pendingError(
+        record,
+        "Google Calendar could not save the test event (" + (second.status || "unknown") + ")."
+      );
+    }
+  }
+
+  return pendingError(
+    record,
+    "QuickCalAI could not confirm whether the test event was saved. It will use the same event if you try again."
+  );
+}
+
+async function createTestEvent(event) {
+  if (await isSuppressed()) {
+    return disconnected("Connect Google Calendar before creating a test event.");
+  }
+
+  const status = await refreshStatus();
+  if (!status || status.state !== "connected") return status;
+
+  const proposed = clientPayload(event);
+  if (!proposed) {
+    return connectedWith(status.testEvent, "The test event details are not valid.");
+  }
+
+  const stored = await loadTestEvent();
+  if (stored && stored.phase === "created") {
+    return connectedWith(publicTestEvent(stored), "");
+  }
+
+  let record = stored;
+  if (stored && stored.phase === "pending") {
+    if (!self.QuickCalTestEvent.sameTestPayload(stored, proposed)) {
+      return connectedWith(
+        publicTestEvent(stored),
+        "Review the test event time shown below, then create that event."
+      );
+    }
+  } else {
+    const canonical = self.QuickCalTestEvent.localTomorrowWindow(new Date());
+    if (!self.QuickCalTestEvent.sameTestPayload(canonical, proposed)) {
+      return connectedWith(
+        readyTestEvent(new Date()),
+        "The test event time changed. Review the updated time, then create that event."
+      );
+    }
+    record = {
+      id: createEventId(),
+      phase: "pending",
+      summary: canonical.summary,
+      description: canonical.description,
+      startDateTime: canonical.startDateTime,
+      endDateTime: canonical.endDateTime,
+      timeZone: canonical.timeZone,
+      dateText: canonical.dateText,
+      timeText: canonical.timeText,
+      htmlLink: "",
+    };
+    try {
+      await saveTestEvent(record);
+    } catch (error) {
+      return failed("QuickCalAI could not save the test event request.");
+    }
+  }
+
+  return insertOrRecover(record);
+}
+
+function reply(result) {
+  const safe = {
+    state: result && result.state ? result.state : "error",
+    message: result && typeof result.message === "string" ? result.message : "",
+  };
+  if (result && result.testEvent && typeof result.testEvent === "object") {
+    safe.testEvent = publicTestEvent(result.testEvent);
+  }
+  return safe;
+}
+
+function performAuth(message) {
+  const action = message && message.action;
   if (action === "status") return refreshStatus();
   if (action === "connect") return connectCalendar();
   if (action === "disconnect") return disconnectCalendar();
+  if (action === "create-test-event") return createTestEvent(message.event);
   return Promise.resolve(failed("QuickCalAI could not complete that request."));
 }
 
@@ -313,9 +729,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  runAuth(message.action)
+  runAuth(message)
     .then((result) => {
-      sendResponse(result);
+      sendResponse(reply(result));
     })
     .catch(() => {
       sendResponse(failed("QuickCalAI could not complete that request."));

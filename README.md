@@ -44,6 +44,22 @@ Reload the extension from `chrome://extensions` after pulling these manifest cha
 - [ ] Click **Connect Google Calendar** again. After approval and the Calendar check, it says connected.
 - [ ] On a normal webpage, the toolbar icon still toggles the same input bar.
 
+## Test event creation
+
+After Calendar is connected, the settings page shows one predefined event: **QuickCalAI — Test Event**, tomorrow from 10:00–10:30 AM in this computer’s time zone. The page shows that calendar date, time, and time zone before anything is created. **Create test event** sends that event to the primary calendar. The floating input bar does not create events.
+
+Reload the extension, connect Calendar, and use this checklist:
+
+- [ ] While disconnected, **Create test event** stays disabled. The section still shows the title, tomorrow’s calendar date, 10:00–10:30 AM, and the time zone.
+- [ ] Connect Google Calendar. Review that date, time, and time zone, then click **Create test event** once. The button stays disabled and the page says it is creating the event.
+- [ ] When Google has saved it, the page says **Test event saved**, shows the same title and time, and offers **View in Google Calendar**. **Create test event** stays disabled.
+- [ ] Open **View in Google Calendar** and confirm the event is tomorrow, 10:00–10:30 AM, on your primary calendar, with no guests.
+- [ ] Close and reopen the settings page. It still shows the saved event and does not create another one.
+- [ ] Click **Disconnect**. The saved confirmation disappears. Connect again and confirm the previous success is not shown.
+- [ ] On a normal webpage, the toolbar icon still only toggles the input bar. Enter still does not create an event.
+
+To delete the test event, open **View in Google Calendar**, or open [Google Calendar](https://calendar.google.com/) and go to the date shown on the settings page. Open **QuickCalAI — Test Event** and choose **Delete**. QuickCalAI does not delete it for you. A later connection can create the test event again, so delete any copies you no longer want.
+
 ## Checkpoint 1 manual checklist
 
 Test on a normal webpage, such as `https://example.com`. Chrome restricts injection into internal pages, so the bar will not appear on `chrome://` pages, the New Tab page, the Chrome Web Store, or other browser UI.
