@@ -60,6 +60,57 @@ Reload the extension, connect Calendar, and use this checklist:
 
 To delete the test event, open **View in Google Calendar**, or open [Google Calendar](https://calendar.google.com/) and go to the date shown on the settings page. Open **QuickCalAI — Test Event** and choose **Delete**. QuickCalAI does not delete it for you. A later connection can create the test event again, so delete any copies you no longer want.
 
+## Local event extraction
+
+`backend/` is a separate local service. It turns event text into validated fields. It does not change the Chrome extension, and it does not write to Google Calendar. The server listens only on `127.0.0.1:3000`.
+
+When you later pack QuickCalAI as an installable extension ZIP, exclude the whole `backend/` directory, `node_modules/`, `backend/.env`, and any other secret or key files. The ZIP should contain the extension only. Do not put an API key in that package, and do not serve this repository as the extension’s files.
+
+The service reads `OPENAI_API_KEY` and `OPENAI_MODEL` from `backend/.env`. If `OPENAI_MODEL` is empty, it uses `gpt-6-luna` and does not switch models after an error. Install dependencies and run the simulated checks from `backend/`:
+
+```powershell
+Set-Location "C:\Users\charl\OneDrive - Cal Poly\Cal Poly\Third Year\Fall Semester\IME4403\QuickCal-AI Project\quickcal-ai\backend"
+npm install
+npm test
+```
+
+`npm test` does not call OpenAI and does not read a real API key. To try the model yourself, copy the example environment file, put your key only in `backend/.env`, and start the server:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+npm start
+```
+
+Leave that window open. In a second PowerShell window, check that the server is up. This does not call OpenAI:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:3000/health
+```
+
+The response includes `ok: true` and `apiKeyConfigured`. `apiKeyConfigured` is true only when `backend/.env` has a non-empty `OPENAI_API_KEY`. Put the key on that same line, as `OPENAI_API_KEY=...`. A key pasted on the following line by itself is also accepted. Restart the server after changing `.env`. Then send one of the examples below. Each one is a paid model call. Use your own IANA time zone if it is not `America/Los_Angeles`.
+
+```powershell
+function Send-ParseEvent($Text) {
+  $json = @{ text = $Text; timeZone = "America/Los_Angeles" } | ConvertTo-Json
+  Invoke-RestMethod `
+    -Uri http://127.0.0.1:3000/parse-event `
+    -Method POST `
+    -ContentType "application/json; charset=utf-8" `
+    -Body ([System.Text.Encoding]::UTF8.GetBytes($json))
+}
+
+Send-ParseEvent "Lunch with Priya on October 21, 2026 from 12:00 PM to 1:00 PM at Avila"
+Send-ParseEvent "Coffee with Alex tomorrow from 10 to 10:30 AM"
+Send-ParseEvent "Coffee with Alex"
+```
+
+- The lunch example is fully specified. Expect a title, the date `2026-10-21`, start `12:00`, end `13:00`, the requested time zone, location Avila, and `needsClarification` false.
+- The coffee example gives a relative date and a range. Expect the local tomorrow for the time zone in the request, start `10:00`, end `10:30`, and no invented location. `needsClarification` can stay false when the date and both times are clear.
+- The last example has no date or time. Expect those fields to be null, `needsClarification` true, and questions asking for the missing date and times. A missing location by itself is not a reason to ask.
+
+The wording of the questions can vary. The server still checks that dates exist, times are `HH:mm`, and the end is later than the start on the same day. Stop the server with Ctrl+C in the window where `npm start` is running.
+
 ## Checkpoint 1 manual checklist
 
 Test on a normal webpage, such as `https://example.com`. Chrome restricts injection into internal pages, so the bar will not appear on `chrome://` pages, the New Tab page, the Chrome Web Store, or other browser UI.

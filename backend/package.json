@@ -1,0 +1,17 @@
+{
+  "name": "quickcal-ai-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local QuickCalAI service that extracts one calendar event from text.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "openai": "7.34.0"
+  }
+}
