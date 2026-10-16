@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "QuickCalAI",
+  "version": "0.1.0",
+  "description": "Type a calendar event from any webpage.",
+  "action": {
+    "default_title": "Show or hide QuickCalAI"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["activeTab", "scripting"],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/mic.svg", "content/widget.css"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}
