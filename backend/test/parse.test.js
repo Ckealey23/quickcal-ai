@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { describeModelFailure, createParser } from "../src/parse.js";
+import { prepareForSave } from "../src/schedule.js";
 
 const zone = "America/Los_Angeles";
 const secret = "sk-testsecretvalue123";
@@ -13,6 +14,7 @@ function modelEvent() {
     endTime: "10:30",
     timeZone: zone,
     location: null,
+    recurrence: null,
     needsClarification: false,
     clarificationQuestions: [],
   };
@@ -121,6 +123,81 @@ describe("model request", () => {
       message: /declined/,
     });
     assert.equal(client.calls.length, 1);
+  });
+});
+
+describe("weekly defaults", () => {
+  function weeklyModel(overrides) {
+    return {
+      title: "Date with John",
+      date: "2026-01-02",
+      startTime: "18:00",
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: { frequency: "weekly", weekdays: ["FR"], until: null, count: null },
+      needsClarification: true,
+      clarificationQuestions: ["When should this weekly series end?", "What time does this event end?"],
+      ...overrides,
+    };
+  }
+
+  async function parseAt(now, text, model) {
+    const client = fakeClient({ status: "completed", output_text: JSON.stringify(model), output: [] });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date(now),
+    });
+    const event = await parseEvent({ text: text, timeZone: zone });
+    return { event: event, instructions: client.calls[0].body.instructions };
+  }
+
+  it("resolves the next Friday from the supplied clock and drops unnecessary questions", async () => {
+    const phrase = "Make a date every Friday with John at 6pm";
+    const upcoming = await parseAt("2026-10-14T22:00:00.000Z", phrase, weeklyModel());
+    assert.match(upcoming.instructions, /Weekly recurrence is supported/);
+    assert.doesNotMatch(upcoming.instructions, /recurrence, an all-day/);
+    assert.match(upcoming.instructions, /Do not add attendees/);
+    assert.equal(upcoming.event.title, "Date with John");
+    assert.equal(upcoming.event.date, "2026-10-16");
+    assert.equal(upcoming.event.endTime, "19:00");
+    assert.equal(upcoming.event.durationDefaulted, true);
+    assert.equal(upcoming.event.location, null);
+    assert.equal(upcoming.event.needsClarification, false);
+    assert.equal(upcoming.event.seriesEndText, "No end date");
+    assert.equal(prepareForSave(upcoming.event).recurrenceRule, "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=FR");
+
+    const before = await parseAt("2026-10-16T22:00:00.000Z", phrase, weeklyModel());
+    assert.equal(before.event.date, "2026-10-16");
+    const after = await parseAt("2026-10-17T02:00:00.000Z", phrase, weeklyModel());
+    assert.equal(after.event.date, "2026-10-23");
+
+    const minutes = await parseAt(
+      "2026-10-14T22:00:00.000Z",
+      "Make a date every Friday with John at 6pm for 90 minutes",
+      weeklyModel()
+    );
+    assert.equal(minutes.event.endTime, "19:30");
+    assert.equal(minutes.event.durationDefaulted, false);
+
+    const coffee = await parseAt("2026-10-14T22:00:00.000Z", "Coffee with John", {
+      title: "Coffee with John",
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      needsClarification: false,
+      clarificationQuestions: [],
+    });
+    assert.equal(coffee.event.needsClarification, true);
+    assert.match(coffee.event.clarificationQuestions.join(" "), /date/);
+    assert.match(coffee.event.clarificationQuestions.join(" "), /start/);
+    assert.equal(coffee.event.clarificationQuestions.some((question) => /end/i.test(question)), false);
+    assert.equal(prepareForSave(coffee.event), null);
   });
 });
 

@@ -97,6 +97,31 @@ describe("local server", { concurrency: false }, () => {
     assert.equal(wrongMethod.status, 405);
     assert.equal(response.headers.get("access-control-allow-origin"), null);
   });
+
+  it("allows only the QuickCalAI extension origin", async () => {
+    const origin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+    const allowed = await request(base, "/health", { headers: { origin } });
+    const other = await request(base, "/health", {
+      headers: { origin: "https://example.com" },
+    });
+    const preflight = await request(base, "/parse-event", {
+      method: "OPTIONS",
+      headers: { origin, "access-control-request-headers": "content-type" },
+    });
+    const denied = await request(base, "/parse-event", {
+      method: "OPTIONS",
+      headers: { origin: "https://example.com" },
+    });
+    assert.equal(allowed.headers.get("access-control-allow-origin"), origin);
+    assert.equal(allowed.headers.get("vary"), "Origin");
+    assert.equal(other.headers.get("access-control-allow-origin"), null);
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
+    assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, POST, OPTIONS");
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get("access-control-allow-origin"), null);
+    assert.equal(String(allowed.headers.get("access-control-allow-origin")).includes("*"), false);
+  });
 });
 
 describe("listen address", () => {

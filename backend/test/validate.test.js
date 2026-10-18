@@ -17,6 +17,7 @@ function event(overrides = {}) {
     endTime: "13:00",
     timeZone: zone,
     location: "Avila",
+    recurrence: null,
     needsClarification: false,
     clarificationQuestions: [],
     ...overrides,
@@ -110,8 +111,25 @@ describe("calendar values", () => {
     assert.deepEqual(result.event.clarificationQuestions, [
       "What date should this event use?",
       "What time does this event start?",
-      "What time does this event end?",
     ]);
+  });
+
+  it("does not ask for a missing end time or a weekly date", () => {
+    const openEnded = validateExtraction(event({ endTime: null, location: null }), zone);
+    assert.equal(openEnded.event.needsClarification, false);
+    assert.equal(openEnded.event.endTime, null);
+    assert.deepEqual(openEnded.event.clarificationQuestions, []);
+
+    const weekly = validateExtraction(event({
+      date: null,
+      endTime: null,
+      location: null,
+      recurrence: { frequency: "weekly", weekdays: ["FR"], until: null, count: null },
+    }), zone);
+    assert.equal(weekly.ok, true);
+    assert.equal(weekly.event.date, null);
+    assert.equal(weekly.event.needsClarification, false);
+    assert.deepEqual(Array.from(weekly.event.recurrence.weekdays), ["FR"]);
   });
 
   it("flags an end time that is not after the start and keeps both times", () => {
@@ -125,11 +143,13 @@ describe("calendar values", () => {
     assert.match(result.event.clarificationQuestions[0], /not later than the start time/);
   });
 
-  it("rejects impossible dates, bad types, and a different time zone", () => {
+  it("rejects impossible dates, bad types, and an invalid time zone", () => {
     assert.equal(validateExtraction(event({ date: "2026-02-31" }), zone).ok, false);
     assert.equal(validateExtraction(event({ startTime: "25:00" }), zone).ok, false);
     assert.equal(validateExtraction(event({ needsClarification: "yes" }), zone).ok, false);
-    assert.equal(validateExtraction(event({ timeZone: "UTC" }), zone).ok, false);
+    assert.equal(validateExtraction(event({ timeZone: "PST" }), zone).ok, false);
+    assert.equal(validateExtraction(event({ timeZone: "UTC" }), zone).event.timeZone, "UTC");
+    assert.equal(validateExtraction(event({ recurrence: { frequency: "daily" } }), zone).ok, false);
     assert.equal(validateExtraction(event({ extra: true }), zone).ok, false);
   });
 });

@@ -3,14 +3,28 @@ import { HOST, MAX_BODY_BYTES } from "./config.js";
 import { ParseError } from "./parse.js";
 import { validateRequest } from "./validate.js";
 
-function sendJson(response, status, body) {
+const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+
+function writeJson(response, status, body, extraHeaders) {
   const payload = JSON.stringify(body);
-  response.writeHead(status, {
+  response.writeHead(status, Object.assign({
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(payload),
     "Cache-Control": "no-store",
-  });
+  }, extraHeaders || {}));
   response.end(payload);
+}
+
+function corsHeaders(request) {
+  if (!request || !request.headers || request.headers.origin !== EXTENSION_ORIGIN) return {};
+  return {
+    "Access-Control-Allow-Origin": EXTENSION_ORIGIN,
+    Vary: "Origin",
+  };
+}
+
+function sendJson(request, response, status, body) {
+  writeJson(response, status, body, corsHeaders(request));
 }
 
 function readBody(request) {
@@ -44,26 +58,42 @@ function readBody(request) {
 export function createHandler({ parseEvent, apiKeyConfigured = false }) {
   return async function handle(request, response) {
     const url = new URL(request.url || "/", "http://" + HOST);
+    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/parse-event")) {
+      if (request.headers.origin !== EXTENSION_ORIGIN) {
+        sendJson(request, response, 403, { error: "Origin is not allowed." });
+        return;
+      }
+      response.writeHead(204, {
+        "Access-Control-Allow-Origin": EXTENSION_ORIGIN,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Max-Age": "600",
+        Vary: "Origin",
+        "Content-Length": "0",
+      });
+      response.end();
+      return;
+    }
     if (url.pathname === "/health" && request.method === "GET") {
-      sendJson(response, 200, { ok: true, apiKeyConfigured: Boolean(apiKeyConfigured) });
+      sendJson(request, response, 200, { ok: true, apiKeyConfigured: Boolean(apiKeyConfigured) });
       return;
     }
     if (url.pathname === "/health") {
-      sendJson(response, 405, { error: "Method not allowed." });
+      sendJson(request, response, 405, { error: "Method not allowed." });
       return;
     }
     if (url.pathname !== "/parse-event") {
-      sendJson(response, 404, { error: "Not found." });
+      sendJson(request, response, 404, { error: "Not found." });
       return;
     }
     if (request.method !== "POST") {
-      sendJson(response, 405, { error: "Method not allowed." });
+      sendJson(request, response, 405, { error: "Method not allowed." });
       return;
     }
 
     const contentType = String(request.headers["content-type"] || "");
     if (!contentType.toLowerCase().startsWith("application/json")) {
-      sendJson(response, 415, { error: "Content-Type must be application/json." });
+      sendJson(request, response, 415, { error: "Content-Type must be application/json." });
       return;
     }
 
@@ -72,10 +102,10 @@ export function createHandler({ parseEvent, apiKeyConfigured = false }) {
       raw = await readBody(request);
     } catch (error) {
       if (error instanceof ParseError) {
-        sendJson(response, error.status, { error: error.message });
+        sendJson(request, response, error.status, { error: error.message });
         return;
       }
-      sendJson(response, 400, { error: "QuickCalAI could not read the request." });
+      sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
       return;
     }
 
@@ -83,25 +113,29 @@ export function createHandler({ parseEvent, apiKeyConfigured = false }) {
     try {
       body = JSON.parse(raw);
     } catch (error) {
-      sendJson(response, 400, { error: "Request body must be JSON." });
+      sendJson(request, response, 400, { error: "Request body must be JSON." });
       return;
     }
 
     const input = validateRequest(body);
     if (!input.ok) {
-      sendJson(response, 400, { error: input.error });
+      sendJson(request, response, 400, { error: input.error });
       return;
     }
 
     try {
-      const event = await parseEvent({ text: input.text, timeZone: input.timeZone });
-      sendJson(response, 200, event);
+      const event = await parseEvent({
+        text: input.text,
+        timeZone: input.timeZone,
+        currentEvent: input.currentEvent,
+      });
+      sendJson(request, response, 200, event);
     } catch (error) {
       if (error instanceof ParseError) {
-        sendJson(response, error.status, { error: error.message });
+        sendJson(request, response, error.status, { error: error.message });
         return;
       }
-      sendJson(response, 500, { error: "QuickCalAI could not complete that request." });
+      sendJson(request, response, 500, { error: "QuickCalAI could not complete that request." });
     }
   };
 }
@@ -110,7 +144,7 @@ export function startServer({ host = HOST, port = 0, parseEvent, apiKeyConfigure
   const server = createServer((request, response) => {
     createHandler({ parseEvent, apiKeyConfigured })(request, response).catch(() => {
       if (!response.headersSent) {
-        sendJson(response, 500, { error: "QuickCalAI could not complete that request." });
+        writeJson(response, 500, { error: "QuickCalAI could not complete that request." });
       }
     });
   });

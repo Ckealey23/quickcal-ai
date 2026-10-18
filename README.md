@@ -46,7 +46,7 @@ Reload the extension from `chrome://extensions` after pulling these manifest cha
 
 ## Test event creation
 
-After Calendar is connected, the settings page shows one predefined event: **QuickCalAI — Test Event**, tomorrow from 10:00–10:30 AM in this computer’s time zone. The page shows that calendar date, time, and time zone before anything is created. **Create test event** sends that event to the primary calendar. The floating input bar does not create events.
+After Calendar is connected, the settings page shows one predefined event: **QuickCalAI — Test Event**, tomorrow from 10:00–10:30 AM in this computer’s time zone. The page shows that calendar date, time, and time zone before anything is created. **Create test event** sends that event to the primary calendar. A normal event is created from the floating bar when you press Enter.
 
 Reload the extension, connect Calendar, and use this checklist:
 
@@ -56,7 +56,7 @@ Reload the extension, connect Calendar, and use this checklist:
 - [ ] Open **View in Google Calendar** and confirm the event is tomorrow, 10:00–10:30 AM, on your primary calendar, with no guests.
 - [ ] Close and reopen the settings page. It still shows the saved event and does not create another one.
 - [ ] Click **Disconnect**. The saved confirmation disappears. Connect again and confirm the previous success is not shown.
-- [ ] On a normal webpage, the toolbar icon still only toggles the input bar. Enter still does not create an event.
+- [ ] On a normal webpage, the toolbar icon still toggles the input bar. Pressing Enter on a complete sentence creates a normal event. **Create test event** remains on the settings page.
 
 To delete the test event, open **View in Google Calendar**, or open [Google Calendar](https://calendar.google.com/) and go to the date shown on the settings page. Open **QuickCalAI — Test Event** and choose **Delete**. QuickCalAI does not delete it for you. A later connection can create the test event again, so delete any copies you no longer want.
 
@@ -107,9 +107,49 @@ Send-ParseEvent "Coffee with Alex"
 
 - The lunch example is fully specified. Expect a title, the date `2026-10-21`, start `12:00`, end `13:00`, the requested time zone, location Avila, and `needsClarification` false.
 - The coffee example gives a relative date and a range. Expect the local tomorrow for the time zone in the request, start `10:00`, end `10:30`, and no invented location. `needsClarification` can stay false when the date and both times are clear.
-- The last example has no date or time. Expect those fields to be null, `needsClarification` true, and questions asking for the missing date and times. A missing location by itself is not a reason to ask.
+- The last example has no date or time. Expect those fields to be null, `needsClarification` true, and questions asking for the missing date and start time. A missing end time defaults to one hour. A missing location by itself is not a reason to ask.
+- `Make a date every Friday with John at 6pm` is a weekly series. Expect the title **Date with John**, the next Friday at 6:00–7:00 PM in the request’s time zone, no location, and no end date. If that Friday’s 6 PM is already past, the series starts the following Friday.
 
 The wording of the questions can vary. The server still checks that dates exist, times are `HH:mm`, and the end is later than the start on the same day. Stop the server with Ctrl+C in the window where `npm start` is running.
+
+## Event preview and save
+
+With the backend running, the floating bar sends what you type to `http://127.0.0.1:3000/parse-event`. A complete event is created immediately. The card says **Creating event…** and then **Event successfully created** only after Google confirms it. If the date and start time are clear and no end time or duration was given, the event lasts one hour and the card says **1-hour default**. Incomplete text asks a question and creates nothing. After a successful save, the field says **Tell me what to change…**. A follow-up such as `Move it to 11 AM` updates that same calendar event. **New event** inside the card starts a separate event.
+
+Start the backend from `backend/` if it is not already running. Restart it after pulling these parser changes:
+
+```powershell
+Set-Location "C:\Users\charl\OneDrive - Cal Poly\Cal Poly\Third Year\Fall Semester\IME4403\QuickCal-AI Project\quickcal-ai\backend"
+npm install
+npm test
+npm start
+```
+
+Leave `npm start` running. In a second window, confirm the health check before using Chrome:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:3000/health
+```
+
+`ok` should be true. `apiKeyConfigured` should be true before you expect a real preview. Reload QuickCalAI on `chrome://extensions` after this update. Connect Google Calendar from the extension’s settings page, then test on `https://example.com`:
+
+- [ ] Click the toolbar icon. Only the rounded input pill opens. The field is focused, the microphone still says **Voice input coming soon**, and a downward chevron inside the pill can hide it.
+- [ ] Type `Coffee with Alex tomorrow from 10 to 10:30 AM` and press Enter. The card says **Creating event…**, then **Event successfully created**, and offers **View in Google Calendar**. Open that link and confirm the event is on your primary calendar.
+- [ ] Closing and reopening the bar does not create another copy. Pressing Enter again while it is still saving does not either. If saving fails, **Try again** uses the same attempt.
+- [ ] The field now says **Tell me what to change…**. Type `Move it to 11 AM` and press Enter. The same calendar event moves to 11:00 and keeps its previous length. The card updates only after Google confirms the change.
+- [ ] Click **New event**. The next complete sentence creates a separate event.
+- [ ] Type `Coffee with Alex tomorrow at 10 AM` and press Enter. The created event ends one hour later and the card says **1-hour default**.
+- [ ] Type `Coffee with Alex` and press Enter. The card asks for the missing date and time, and nothing is created.
+- [ ] Disconnect on the settings page, submit a complete sentence, and choose **Connect Google Calendar**. The settings page opens and the sentence remains in the bar. Disconnect also clears the event that follow-up edits would change.
+- [ ] Stop the backend with Ctrl+C, type a sentence, and press Enter again. The text stays in the field and the bar explains that the local parser could not be reached.
+- [ ] Hide the pill with the chevron, Escape, and the toolbar icon. The same bar toggles, and a second bar never appears.
+- [ ] Narrow the window and raise the browser zoom. The pill, its controls, and its shadow stay inside the window.
+- [ ] Type `Make a date every Friday with John at 6pm` and press Enter. The card shows **Date with John**, the next Friday, **6:00–7:00 PM**, **Every Friday**, the time zone, and **No end date**. Open **View in Google Calendar** and confirm one weekly series with no guests and no end date.
+- [ ] On a Friday before 6 PM, the same sentence starts today. After 6 PM, it starts the next Friday.
+- [ ] Type `Coffee with John` and press Enter. The card asks for the date and start time and creates nothing.
+- [ ] After the Friday series is saved, type `Move it to 7 PM`. The card asks before changing the series. Type `Change the entire series to 7 PM` to move that same series. **New event**, then a one-time sentence such as `Move it to 11 AM` on a non-repeating event, still changes only that event.
+
+These browser steps use your real parser and your real calendar. The automated checks stub both and do not.
 
 ## Checkpoint 1 manual checklist
 
@@ -117,7 +157,7 @@ Test on a normal webpage, such as `https://example.com`. Chrome restricts inject
 
 - [ ] Click the QuickCalAI toolbar icon. The input bar opens near the bottom-right, and the text field is focused.
 - [ ] Type and edit text in the field.
-- [ ] Press Enter. The page stays put, and no event-created message appears.
-- [ ] Close the bar with Escape, then reopen it from the toolbar icon. The field is focused again.
-- [ ] Close it with the close button, then click the toolbar icon several times. The same bar toggles open and closed, and a second bar never appears.
+- [ ] Press Enter. With the local parser running and Calendar connected, a complete sentence is created after Google confirms it. Incomplete text asks a question and creates nothing.
+- [ ] After a successful save, type a change such as `Move it to 11 AM` and press Enter. That saved event is updated. **New event** returns to creating a separate event.
+- [ ] Hide the pill with the chevron inside it, with Escape, and with the toolbar icon. The same bar toggles, and a second bar never appears.
 - [ ] Narrow the browser window. The bar stays inside the window.

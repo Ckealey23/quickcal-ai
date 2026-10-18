@@ -1,4 +1,5 @@
 import { MAX_TEXT_LENGTH } from "./config.js";
+import { normalizeCurrentEvent, normalizeRecurrence } from "./schedule.js";
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -9,6 +10,7 @@ const EVENT_FIELDS = [
   "endTime",
   "timeZone",
   "location",
+  "recurrence",
   "needsClarification",
   "clarificationQuestions",
 ];
@@ -49,7 +51,9 @@ export function validateRequest(body) {
   if (!isValidTimeZone(timeZone)) {
     return { ok: false, error: "Time zone must be a valid IANA time zone." };
   }
-  return { ok: true, text, timeZone };
+  const current = normalizeCurrentEvent(body.currentEvent, timeZone);
+  if (!current.ok) return current;
+  return { ok: true, text, timeZone, currentEvent: current.event };
 }
 
 export function isRealDate(value) {
@@ -109,8 +113,12 @@ export function validateExtraction(raw, requestedTimeZone) {
   const startTime = optionalTime(raw.startTime);
   const endTime = optionalTime(raw.endTime);
   const location = optionalText(raw.location, 200);
-  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok) return failure;
-  if (typeof raw.timeZone !== "string" || raw.timeZone !== requestedTimeZone) return failure;
+  const recurrence = normalizeRecurrence(raw.recurrence);
+  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok) {
+    return failure;
+  }
+  if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
+  if (typeof raw.timeZone !== "string" || !isValidTimeZone(raw.timeZone)) return failure;
   if (typeof raw.needsClarification !== "boolean") return failure;
   if (!Array.isArray(raw.clarificationQuestions) || raw.clarificationQuestions.length > 8) {
     return failure;
@@ -126,17 +134,14 @@ export function validateExtraction(raw, requestedTimeZone) {
   }
 
   let needsClarification = raw.needsClarification;
-  if (!date.value) {
+  const weekly = recurrence.recurrence && recurrence.recurrence.weekdays.length > 0;
+  if (!date.value && !weekly) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");
   }
   if (!startTime.value) {
     needsClarification = true;
     addQuestion(questions, "What time does this event start?");
-  }
-  if (!endTime.value) {
-    needsClarification = true;
-    addQuestion(questions, "What time does this event end?");
   }
   if (startTime.value && endTime.value && endTime.value <= startTime.value) {
     needsClarification = true;
@@ -156,8 +161,9 @@ export function validateExtraction(raw, requestedTimeZone) {
       date: date.value,
       startTime: startTime.value,
       endTime: endTime.value,
-      timeZone: requestedTimeZone,
+      timeZone: raw.timeZone,
       location: location.value,
+      recurrence: recurrence.recurrence,
       needsClarification,
       clarificationQuestions: questions,
     },

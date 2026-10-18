@@ -1,4 +1,4 @@
-importScripts("shared/test-event.js");
+importScripts("shared/schedule.js", "shared/test-event.js", "shared/local-parse.js", "shared/preview.js");
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
 
@@ -24,7 +24,7 @@ chrome.action.onClicked.addListener((tab) => {
     chrome.scripting
       .executeScript({
         target: { tabId: tab.id },
-        files: ["content/widget.js"],
+        files: ["shared/schedule.js", "shared/preview.js", "content/widget.js"],
       })
       .catch(reportBlocked);
   } catch (error) {
@@ -75,6 +75,33 @@ function extensionToken(result) {
   if (typeof result === "string") return result;
   if (result && typeof result.token === "string") return result.token;
   return "";
+}
+
+const PARSE_MESSAGE = "quickcal-parse";
+const CALENDAR_MESSAGE = "quickcal-calendar";
+const DRAFT_EVENT_KEY = "quickcalDraftEvent";
+const WIDGET_DESCRIPTION = "Created by QuickCalAI.";
+
+function isParseSender(sender) {
+  if (!sender || sender.id !== chrome.runtime.id || !sender.tab || sender.tab.id == null) {
+    return false;
+  }
+  if (typeof sender.url !== "string" || !/^https?:\/\//i.test(sender.url)) return false;
+  try {
+    const senderUrl = new URL(sender.url);
+    const optionsUrl = new URL(chrome.runtime.getURL("options/options.html"));
+    return !(
+      senderUrl.origin === optionsUrl.origin && senderUrl.pathname === optionsUrl.pathname
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+async function parseForContent(message) {
+  const input = self.QuickCalLocalParse.validateParseRequest(message);
+  if (!input.ok) return { ok: false, error: input.error };
+  return self.QuickCalLocalParse.requestLocalParse(input, { fetchImpl: fetch });
 }
 
 function isOptionsSender(sender) {
@@ -391,6 +418,11 @@ async function disconnectCalendar() {
   } catch (error) {
     storageError = true;
   }
+  try {
+    await clearDraftEvent();
+  } catch (error) {
+    storageError = true;
+  }
   if (storageError) {
     return failed("QuickCalAI could not clear its saved authorization state.");
   }
@@ -401,6 +433,15 @@ async function disconnectCalendar() {
     );
   }
   return disconnected();
+}
+
+function eventPatchUrl(id) {
+  return (
+    CALENDAR_EVENTS_URL +
+    "/" +
+    encodeURIComponent(id) +
+    "?sendUpdates=none&fields=id,summary,htmlLink,status"
+  );
 }
 
 function eventReadUrl(id) {
@@ -702,6 +743,344 @@ async function createTestEvent(event) {
   return insertOrRecover(record);
 }
 
+const widgetSaves = new Map();
+
+function scheduleFields(source) {
+  return {
+    fingerprint: source.fingerprint,
+    location: source.location || "",
+    date: source.date,
+    endDate: source.endDate,
+    startTime: source.startTime,
+    endTime: source.endTime,
+    recurrence: source.recurrence || null,
+    recurrenceRule: source.recurrenceRule || "",
+    recurrenceText: source.recurrenceText || "",
+    seriesEndText: source.seriesEndText || "",
+  };
+}
+
+function applyScheduleFields(target, source) {
+  const fields = scheduleFields(source);
+  Object.keys(fields).forEach((key) => {
+    target[key] = fields[key];
+  });
+  return target;
+}
+
+function publicSavedEvent(record) {
+  return {
+    ok: true,
+    summary: record.summary,
+    dateText: record.dateText,
+    timeText: record.timeText,
+    timeZone: record.timeZone,
+    htmlLink: record.htmlLink,
+    title: record.summary,
+    date: record.date,
+    endDate: record.endDate,
+    startTime: record.startTime,
+    endTime: record.endTime,
+    location: record.location || null,
+    durationDefaulted: false,
+    recurrence: record.recurrence || null,
+    recurrenceText: record.recurrenceText || "",
+    seriesEndText: record.seriesEndText || "",
+  };
+}
+
+function widgetInsertBody(record) {
+  const body = {
+    id: record.id,
+    summary: record.summary,
+    description: record.description,
+    start: { dateTime: record.startDateTime, timeZone: record.timeZone },
+    end: { dateTime: record.endDateTime, timeZone: record.timeZone },
+    reminders: { useDefault: false },
+  };
+  if (record.location) body.location = record.location;
+  if (record.recurrenceRule) body.recurrence = [record.recurrenceRule];
+  return JSON.stringify(body);
+}
+
+async function loadDraftEvent() {
+  const stored = await chrome.storage.local.get(DRAFT_EVENT_KEY);
+  const record = stored[DRAFT_EVENT_KEY];
+  if (!record || typeof record !== "object") return null;
+  if (!self.QuickCalTestEvent.isValidEventId(record.id)) return null;
+  if (record.phase !== "pending" && record.phase !== "created") return null;
+  if (typeof record.fingerprint !== "string" || !record.fingerprint) return null;
+  if (record.description !== WIDGET_DESCRIPTION) return null;
+  if (!isRfc3339(record.startDateTime) || !isRfc3339(record.endDateTime)) return null;
+  if (typeof record.summary !== "string" || typeof record.dateText !== "string" || typeof record.timeText !== "string") {
+    return null;
+  }
+  return record;
+}
+
+async function clearDraftEvent() {
+  await chrome.storage.local.remove(DRAFT_EVENT_KEY);
+}
+
+async function saveDraftEvent(record) {
+  await chrome.storage.local.set({ [DRAFT_EVENT_KEY]: record });
+}
+
+async function commitWidgetRecord(record) {
+  const existing = await lookupEvent(record);
+  const existingFailure = callFailed(existing);
+  if (existingFailure) {
+    return { ok: false, error: existingFailure.message || "Google Calendar could not be checked." };
+  }
+  if (existing.network) {
+    return {
+      ok: false,
+      error: "QuickCalAI could not reach Google Calendar. Check your connection and try again.",
+    };
+  }
+  if (existing.ok) {
+    const saved = confirmedRecord(record, existing.body);
+    if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+    applyScheduleFields(saved, record);
+    try {
+      await saveDraftEvent(saved);
+    } catch (error) {
+      return publicSavedEvent(saved);
+    }
+    return publicSavedEvent(saved);
+  }
+  if (!existing.notFound) {
+    if (existing.status === 403) {
+      return { ok: false, error: "This Google account did not allow QuickCalAI to create a Calendar event." };
+    }
+    return {
+      ok: false,
+      error: "Google Calendar could not be checked (" + (existing.status || "unknown") + ").",
+    };
+  }
+
+  const created = await calendarCall(eventInsertUrl(), { method: "POST", body: widgetInsertBody(record) });
+  const createdFailure = callFailed(created);
+  if (createdFailure) {
+    return { ok: false, error: createdFailure.message || "Google Calendar could not save this event." };
+  }
+  if (created.ok) {
+    const saved = confirmedRecord(record, created.body);
+    if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+    applyScheduleFields(saved, record);
+    try {
+      await saveDraftEvent(saved);
+    } catch (error) {
+      return publicSavedEvent(saved);
+    }
+    return publicSavedEvent(saved);
+  }
+
+  const uncertain = created.network || created.conflict || (created.status && created.status >= 500);
+  if (!uncertain) {
+    if (created.status === 403) {
+      return { ok: false, error: "This Google account did not allow QuickCalAI to create a Calendar event." };
+    }
+    return {
+      ok: false,
+      error: "Google Calendar could not save this event (" + (created.status || "unknown") + ").",
+    };
+  }
+
+  const check = await lookupEvent(record);
+  const checkFailure = callFailed(check);
+  if (checkFailure) {
+    return { ok: false, error: checkFailure.message || "Google Calendar could not be checked." };
+  }
+  if (check.ok) {
+    const saved = confirmedRecord(record, check.body);
+    if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+    applyScheduleFields(saved, record);
+    await saveDraftEvent(saved);
+    return publicSavedEvent(saved);
+  }
+  if (check.notFound && (created.network || (created.status && created.status >= 500))) {
+    const second = await calendarCall(eventInsertUrl(), { method: "POST", body: widgetInsertBody(record) });
+    if (second.ok) {
+      const saved = confirmedRecord(record, second.body);
+      if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+      applyScheduleFields(saved, record);
+      await saveDraftEvent(saved);
+      return publicSavedEvent(saved);
+    }
+  }
+
+  return {
+    ok: false,
+    error: "QuickCalAI could not confirm whether this event was saved. It will use the same event if you try again.",
+  };
+}
+
+async function saveWidgetEventOnce(prepared) {
+  if (await isSuppressed()) {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before saving this event.",
+    };
+  }
+  const status = await refreshStatus();
+  if (!status || status.state !== "connected") {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before saving this event.",
+    };
+  }
+
+  const stored = await loadDraftEvent();
+  if (stored && stored.fingerprint === prepared.fingerprint && stored.phase === "created" && stored.htmlLink) {
+    return publicSavedEvent(stored);
+  }
+
+  let record = stored;
+  if (!stored || stored.fingerprint !== prepared.fingerprint || stored.phase !== "pending") {
+    record = applyScheduleFields({
+      id: createEventId(),
+      phase: "pending",
+      summary: prepared.summary,
+      description: prepared.description,
+      startDateTime: prepared.startDateTime,
+      endDateTime: prepared.endDateTime,
+      timeZone: prepared.timeZone,
+      dateText: prepared.dateText,
+      timeText: prepared.timeText,
+      htmlLink: "",
+    }, prepared);
+    try {
+      await saveDraftEvent(record);
+    } catch (error) {
+      return { ok: false, error: "QuickCalAI could not save this event request." };
+    }
+  }
+
+  return commitWidgetRecord(record);
+}
+
+function saveWidgetEvent(event) {
+  const prepared = self.QuickCalSchedule.prepareForSave(event);
+  if (!prepared) {
+    return Promise.resolve({
+      ok: false,
+      error: "This event needs a title, date, and start and end time before it can be saved.",
+    });
+  }
+  const current = widgetSaves.get(prepared.fingerprint);
+  if (current) return current;
+  const promise = saveWidgetEventOnce(prepared).finally(() => {
+    widgetSaves.delete(prepared.fingerprint);
+  });
+  widgetSaves.set(prepared.fingerprint, promise);
+  return promise;
+}
+
+function rememberedEvent(record, prepared) {
+  return applyScheduleFields({
+    id: record.id,
+    phase: "created",
+    summary: prepared.summary,
+    description: record.description,
+    startDateTime: prepared.startDateTime,
+    endDateTime: prepared.endDateTime,
+    timeZone: prepared.timeZone,
+    dateText: prepared.dateText,
+    timeText: prepared.timeText,
+    htmlLink: record.htmlLink,
+  }, prepared);
+}
+
+async function patchWidgetEvent(stored, prepared) {
+  if (await isSuppressed()) {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before changing this event.",
+    };
+  }
+  const status = await refreshStatus();
+  if (!status || status.state !== "connected") {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before changing this event.",
+    };
+  }
+  const next = rememberedEvent(stored, prepared);
+  const patched = await calendarCall(eventPatchUrl(stored.id), {
+    method: "PATCH",
+    body: widgetInsertBody(next),
+  });
+  const failure = callFailed(patched);
+  if (failure) return { ok: false, error: failure.message || "Google Calendar could not update this event." };
+  if (patched.network) {
+    return { ok: false, error: "QuickCalAI could not reach Google Calendar. Check your connection and try again." };
+  }
+  if (!patched.ok) {
+    return {
+      ok: false,
+      error: "Google Calendar could not update this event (" + (patched.status || "unknown") + ").",
+    };
+  }
+  const saved = confirmedRecord(next, patched.body);
+  if (!saved) return { ok: false, error: "Google Calendar did not confirm the update." };
+  applyScheduleFields(saved, next);
+  try {
+    await saveDraftEvent(saved);
+  } catch (error) {
+    return publicSavedEvent(saved);
+  }
+  return publicSavedEvent(saved);
+}
+
+function updateWidgetEvent(event) {
+  const prepared = self.QuickCalSchedule.prepareForSave(event);
+  if (!prepared) {
+    return Promise.resolve({
+      ok: false,
+      error: "QuickCalAI needs a clearer change before it can update this event.",
+    });
+  }
+  return loadDraftEvent().then((stored) => {
+    if (!stored || stored.phase !== "created" || !stored.htmlLink) {
+      return {
+        ok: false,
+        state: "disconnected",
+        error: "Connect Google Calendar before changing this event.",
+      };
+    }
+    const key = "update:" + stored.id;
+    const current = widgetSaves.get(key);
+    if (current) return current;
+    const promise = patchWidgetEvent(stored, prepared).finally(() => {
+      widgetSaves.delete(key);
+    });
+    widgetSaves.set(key, promise);
+    return promise;
+  });
+}
+
+async function activeWidgetEvent() {
+  if (await isSuppressed()) return { ok: true, connected: false, event: null };
+  const stored = await loadDraftEvent();
+  if (!stored || stored.phase !== "created" || !stored.htmlLink) {
+    return { ok: true, connected: true, event: null };
+  }
+  const event = publicSavedEvent(stored);
+  delete event.ok;
+  return { ok: true, connected: true, event: event };
+}
+
+async function widgetCalendarStatus() {
+  if (await isSuppressed()) return { ok: true, connected: false };
+  const status = await refreshStatus();
+  return { ok: true, connected: !!(status && status.state === "connected") };
+}
+
 function reply(result) {
   const safe = {
     state: result && result.state ? result.state : "error",
@@ -723,6 +1102,60 @@ function performAuth(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === PARSE_MESSAGE) {
+    if (!isParseSender(sender)) return false;
+    parseForContent(message)
+      .then((result) => {
+        sendResponse(result);
+      })
+      .catch(() => {
+        sendResponse({
+          ok: false,
+          error: "QuickCalAI could not reach the local event parser. Start the backend and try again.",
+        });
+      });
+    return true;
+  }
+  if (message && message.type === CALENDAR_MESSAGE) {
+    if (!isParseSender(sender)) return false;
+    if (message.action === "status") {
+      widgetCalendarStatus()
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: true, connected: false }));
+      return true;
+    }
+    if (message.action === "open-settings") {
+      chrome.runtime.openOptionsPage()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not open Calendar settings." }));
+      return true;
+    }
+    if (message.action === "create") {
+      saveWidgetEvent(message.event)
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not save this event." }));
+      return true;
+    }
+    if (message.action === "update") {
+      updateWidgetEvent(message.event)
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not update this event." }));
+      return true;
+    }
+    if (message.action === "active") {
+      activeWidgetEvent()
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: true, connected: false, event: null }));
+      return true;
+    }
+    if (message.action === "new") {
+      clearDraftEvent()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not start a new event." }));
+      return true;
+    }
+    return false;
+  }
   if (!isOptionsSender(sender)) return false;
   if (!message || message.type !== AUTH_MESSAGE || !AUTH_ACTIONS.has(message.action)) {
     sendResponse(failed("QuickCalAI could not complete that request."));

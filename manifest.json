@@ -17,7 +17,8 @@
   "permissions": ["activeTab", "scripting", "identity", "storage"],
   "host_permissions": [
     "https://www.googleapis.com/calendar/*",
-    "https://oauth2.googleapis.com/*"
+    "https://oauth2.googleapis.com/*",
+    "http://127.0.0.1:3000/*"
   ],
   "oauth2": {
     "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
@@ -25,7 +26,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/mic.svg", "content/widget.css"],
+      "resources": ["assets/mic.svg", "assets/check.svg", "assets/calendar.svg", "assets/clock.svg", "assets/chevron.svg", "content/widget.css"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ]
