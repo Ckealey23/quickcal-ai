@@ -18,11 +18,14 @@
   "host_permissions": [
     "https://www.googleapis.com/calendar/*",
     "https://oauth2.googleapis.com/*",
-    "http://127.0.0.1:3000/*"
+    "https://quickcal-ai.onrender.com/*"
   ],
   "oauth2": {
     "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
-    "scopes": ["https://www.googleapis.com/auth/calendar.events.owned"]
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.events.owned",
+      "https://www.googleapis.com/auth/userinfo.email"
+    ]
   },
   "web_accessible_resources": [
     {

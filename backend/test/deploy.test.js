@@ -169,8 +169,9 @@ describe("google token verification", () => {
     const unverified = await verify("Bearer ya29.unverified-account");
     const expired = await verify("Bearer ya29.expired-access-token");
     assert.equal(audience.status, 403);
-    assert.equal(unapproved.status, 403);
+    assert.match(unapproved.error, /not approved/);
     assert.equal(unverified.status, 403);
+    assert.match(unverified.error, /confirm an email/);
     assert.equal(expired.status, 401);
     assert.equal(await verify("Bearer").then((result) => result.status), 401);
   });
@@ -261,6 +262,7 @@ describe("production parse access", { concurrency: false }, () => {
 
   it("does not call the paid model for health or unauthorized requests", async () => {
     const health = await request(base, "/health");
+    const access = await request(base, "/access");
     assert.equal(health.status, 200);
     assert.deepEqual(health.body, { ok: true, apiKeyConfigured: true });
     assert.equal(health.text.includes(SECRET), false);
@@ -278,6 +280,7 @@ describe("production parse access", { concurrency: false }, () => {
     });
 
     assert.equal(missing.status, 401);
+    assert.equal(access.status, 401);
     assert.equal(origin.status, 401);
     assert.equal(sharedSecret.status, 401);
     assert.equal(wrongApp.status, 403);
@@ -300,6 +303,14 @@ describe("production parse access", { concurrency: false }, () => {
     assert.equal(allowed.text.includes("ada@example.com"), false);
     assert.equal(limited.status, 429);
     assert.equal(limited.headers.get("retry-after") > "0", true);
+    assert.equal(parserCalls.length, before + 1);
+    const approved = await request(base, "/access", {
+      headers: { authorization: "Bearer " + APPROVED },
+    });
+    assert.equal(approved.status, 200);
+    assert.deepEqual(approved.body, { ok: true, approved: true });
+    assert.equal(approved.text.includes(APPROVED), false);
+    assert.equal(approved.text.includes("ada@example.com"), false);
     assert.equal(parserCalls.length, before + 1);
   });
 });

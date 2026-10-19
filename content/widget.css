@@ -119,6 +119,27 @@
   display: block;
 }
 
+.connect-route,
+.health-retry {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6f9fd8;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.connect-route:focus-visible,
+.health-retry:focus-visible {
+  outline: 2px solid #8aa4d6;
+  outline-offset: 2px;
+}
+
 .status,
 .card {
   box-sizing: border-box;

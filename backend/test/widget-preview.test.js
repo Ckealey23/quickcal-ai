@@ -23,6 +23,7 @@ const page = `<!DOCTYPE html>
 <pre id="result">pending</pre>
 <script src="${fileUrl(path.join(root, "shared/schedule.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/preview.js"))}"></script>
+<script src="${fileUrl(path.join(root, "shared/startup.js"))}"></script>
 <script>
   const calls = [];
   let release = null;
@@ -34,8 +35,9 @@ const page = `<!DOCTYPE html>
       },
       sendMessage(message) {
         calls.push(message);
+        if (message && message.type === "quickcal-backend") return Promise.resolve({ ok: true });
         if (message.action === "status" || message.action === "active" || message.action === "new" || message.action === "open-settings") {
-          return Promise.resolve({ ok: true, connected: true, event: null });
+          return Promise.resolve({ ok: true, connected: true, quickcalReady: true, event: null });
         }
         return new Promise((resolve) => {
           release = () => resolve(nextResult);
@@ -90,6 +92,7 @@ const page = `<!DOCTYPE html>
   }
 
   ready(async () => {
+    await settle();
     const field = input();
     const shadow = rootNode();
     const parses = () => calls.filter((message) => message.type === "quickcal-parse");
@@ -256,11 +259,11 @@ const page = `<!DOCTYPE html>
 
     field.value = "Coffee with Alex tomorrow at 10 AM";
     field.dispatchEvent(new Event("input", { bubbles: true }));
-    nextResult = { ok: false, error: "QuickCalAI could not reach the local event parser. Start the backend and try again." };
+    nextResult = { ok: false, error: "QuickCalAI could not reach QuickCal. Try again." };
     enter(field);
     release();
     await settle();
-    check("unavailable", shadow.querySelector(".status").textContent.includes("could not reach the local event parser"));
+    check("unavailable", shadow.querySelector(".status").textContent.includes("could not reach QuickCal"));
     check("text kept", field.value === "Coffee with Alex tomorrow at 10 AM" && shadow.querySelector(".body").hidden === true);
 
     nextResult = preview;

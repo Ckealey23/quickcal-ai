@@ -1,5 +1,7 @@
 (function (root) {
-  const PARSE_URL = "http://127.0.0.1:3000/parse-event";
+  const PARSE_URL = "https://quickcal-ai.onrender.com/parse-event";
+  const HEALTH_URL = "https://quickcal-ai.onrender.com/health";
+  const ACCESS_URL = "https://quickcal-ai.onrender.com/access";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
 
@@ -130,11 +132,23 @@
   async function requestLocalParse(input, dependencies) {
     const fetchImpl = dependencies && dependencies.fetchImpl;
     const timeoutMs = dependencies && dependencies.timeoutMs ? dependencies.timeoutMs : TIMEOUT_MS;
+    const token = dependencies && typeof dependencies.token === "string" ? dependencies.token : "";
+    if (!token) {
+      return {
+        ok: false,
+        state: "disconnected",
+        error: "Connect Google Calendar before using QuickCalAI.",
+      };
+    }
     let response;
     try {
       response = await fetchImpl(PARSE_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + token,
+        },
         body: JSON.stringify(
           input.currentEvent
             ? { text: input.text, timeZone: input.timeZone, currentEvent: input.currentEvent }
@@ -147,10 +161,7 @@
       if (name === "TimeoutError" || name === "AbortError") {
         return { ok: false, error: "The event parser timed out. Try again." };
       }
-      return {
-        ok: false,
-        error: "QuickCalAI could not reach the local event parser. Start the backend and try again.",
-      };
+      return { ok: false, error: "QuickCalAI could not reach QuickCal. Try again." };
     }
 
     let payload = null;
@@ -161,7 +172,12 @@
     }
     if (!response.ok) {
       const message = payload && typeof payload.error === "string" ? payload.error : "";
-      return { ok: false, error: publicError(message) };
+      const error = publicError(message);
+      if (response.status === 401) {
+        return { ok: false, state: "disconnected", error: "Connect Google Calendar before using QuickCalAI." };
+      }
+      if (response.status === 403) return { ok: false, state: "unapproved", error: error };
+      return { ok: false, error: error };
     }
     const event = sanitizeEvent(payload);
     if (!event) return { ok: false, error: "The event parser returned an unreadable response." };
@@ -170,6 +186,8 @@
 
   root.QuickCalLocalParse = {
     PARSE_URL: PARSE_URL,
+    HEALTH_URL: HEALTH_URL,
+    ACCESS_URL: ACCESS_URL,
     MAX_TEXT_LENGTH: MAX_TEXT_LENGTH,
     validateParseRequest: validateParseRequest,
     sanitizeEvent: sanitizeEvent,

@@ -22,6 +22,7 @@ function loadBackground(fetchImpl) {
             listeners.message = listener;
           },
         },
+        onInstalled: { addListener() {} },
       },
       scripting: { executeScript() { return Promise.resolve(); } },
       storage: {
@@ -31,7 +32,13 @@ function loadBackground(fetchImpl) {
           async remove() {},
         },
       },
-      identity: {},
+      identity: {
+        async getAuthToken() {
+          return "ya29.extension-test-token";
+        },
+        async removeCachedAuthToken() {},
+        async clearAllCachedAuthTokens() {},
+      },
     },
     fetch: fetchImpl,
     console,
@@ -100,14 +107,17 @@ describe("parser messages", () => {
     assert.equal(keep, true);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, "http://127.0.0.1:3000/parse-event");
+    assert.equal(calls[0].url, "https://quickcal-ai.onrender.com/parse-event");
+    assert.equal(calls[0].options.headers.Authorization, "Bearer ya29.extension-test-token");
     assert.deepEqual(JSON.parse(calls[0].options.body), {
       text: "Coffee with Alex tomorrow at 10 AM",
       timeZone: "America/Los_Angeles",
     });
+    assert.equal(calls[0].options.body.includes("ya29.extension-test-token"), false);
     assert.equal(reply.ok, true);
     assert.equal(reply.event.location, "Avila");
     assert.equal(reply.token, undefined);
+    assert.equal(JSON.stringify(reply).includes("ya29.extension-test-token"), false);
   });
 
   it("reports a timeout and a parser error without retrying", async () => {
@@ -162,7 +172,7 @@ describe("parser messages", () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(calls, 1);
     assert.equal(reply.ok, false);
-    assert.match(reply.error, /could not reach the local event parser/i);
+    assert.match(reply.error, /could not reach QuickCal/i);
   });
 
   it("rejects senders and payloads that are not a page parse", async () => {

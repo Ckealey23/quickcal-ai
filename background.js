@@ -24,7 +24,7 @@ chrome.action.onClicked.addListener((tab) => {
     chrome.scripting
       .executeScript({
         target: { tabId: tab.id },
-        files: ["shared/schedule.js", "shared/preview.js", "content/widget.js"],
+        files: ["shared/schedule.js", "shared/preview.js", "shared/startup.js", "content/widget.js"],
       })
       .catch(reportBlocked);
   } catch (error) {
@@ -34,12 +34,30 @@ chrome.action.onClicked.addListener((tab) => {
 
 const AUTH_MESSAGE = "quickcal-auth";
 const SUPPRESS_KEY = "quickcalCalendarSuppressed";
+const WELCOME_KEY = "quickcalWelcomeSeen";
 const CALENDAR_PROBE_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=1&fields=kind";
 const TEST_EVENT_KEY = "quickcalTestEvent";
 const CALENDAR_EVENTS_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events";
 const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event"]);
+const BACKEND_MESSAGE = "quickcal-backend";
+const HEALTH_ATTEMPT_MS = 10000;
+const ACCESS_TIMEOUT_MS = 10000;
+
+let healthInFlight = null;
+
+chrome.runtime.onInstalled.addListener((details) => openWelcomeOnce(details).catch(() => {}));
+
+async function openWelcomeOnce(details) {
+  if (!details || (details.reason !== "install" && details.reason !== "update")) return;
+  if (details.reason === "update") {
+    const stored = await chrome.storage.local.get(WELCOME_KEY);
+    if (stored[WELCOME_KEY] === true) return;
+  }
+  await chrome.storage.local.set({ [WELCOME_KEY]: true });
+  await chrome.runtime.openOptionsPage();
+}
 
 let authChain = Promise.resolve();
 let connectInFlight = false;
@@ -101,7 +119,31 @@ function isParseSender(sender) {
 async function parseForContent(message) {
   const input = self.QuickCalLocalParse.validateParseRequest(message);
   if (!input.ok) return { ok: false, error: input.error };
-  return self.QuickCalLocalParse.requestLocalParse(input, { fetchImpl: fetch });
+  if (await isSuppressed()) {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before using QuickCalAI.",
+    };
+  }
+  let token = "";
+  try {
+    token = await requestToken(false);
+  } catch (error) {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before using QuickCalAI.",
+    };
+  }
+  if (!token) {
+    return {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before using QuickCalAI.",
+    };
+  }
+  return self.QuickCalLocalParse.requestLocalParse(input, { fetchImpl: fetch, token: token });
 }
 
 function isOptionsSender(sender) {
@@ -343,6 +385,65 @@ async function withTestEvent(result) {
   return result;
 }
 
+async function readJson(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
+async function verifyAccess(token) {
+  let response;
+  try {
+    response = await fetch(self.QuickCalLocalParse.ACCESS_URL, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { Authorization: "Bearer " + token },
+      signal: AbortSignal.timeout(ACCESS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return { ready: false, message: "QuickCalAI could not be reached. Try again." };
+  }
+  const body = await readJson(response);
+  if (response.status === 200 && body && body.ok === true && body.approved === true) {
+    return { ready: true, message: "" };
+  }
+  const message = body && typeof body.error === "string" ? body.error : "";
+  if (response.status === 403 && message.indexOf("confirm an email") !== -1) {
+    return { ready: false, needsReconnect: true, message: message };
+  }
+  if (response.status === 403) {
+    return {
+      ready: false,
+      message: message || "This Google account is not approved for QuickCalAI.",
+    };
+  }
+  if (response.status === 401) {
+    return {
+      ready: false,
+      needsReconnect: true,
+      message: "Google sign-in is required. Connect again.",
+    };
+  }
+  return { ready: false, message: "QuickCalAI could not be reached. Try again." };
+}
+
+function accessResult(calendar, access) {
+  if (!calendar || calendar.state !== "connected") return calendar;
+  if (access && access.ready) {
+    return { state: "ready", message: "", googleConnected: true, quickcalReady: true };
+  }
+  return {
+    state: "connected",
+    message: access && access.message ? access.message : "QuickCalAI could not be reached. Try again.",
+    googleConnected: true,
+    quickcalReady: false,
+    needsReconnect: !!(access && access.needsReconnect),
+  };
+}
+
 async function refreshStatus() {
   if (await isSuppressed()) return disconnected();
 
@@ -353,10 +454,20 @@ async function refreshStatus() {
     return authFailure(error, false);
   }
   if (!token) return disconnected();
-  return withTestEvent(await verifyCalendar(token));
+  const calendar = await verifyCalendar(token);
+  if (!calendar || calendar.state !== "connected") return calendar;
+  return accessResult(calendar, await verifyAccess(token));
 }
 
 async function connectCalendar() {
+  let existing = "";
+  try {
+    existing = await requestToken(false);
+  } catch (error) {
+    existing = "";
+  }
+  if (existing) await removeCachedToken(existing);
+
   let token = "";
   try {
     token = await requestToken(true);
@@ -365,9 +476,14 @@ async function connectCalendar() {
   }
   if (!token) return failed("Google Calendar could not be connected.");
 
-  const result = await verifyCalendar(token);
-  if (result.state === "connected") await setSuppressed(false);
-  return withTestEvent(result);
+  const calendar = await verifyCalendar(token);
+  if (!calendar || calendar.state !== "connected") return calendar;
+  try {
+    await setSuppressed(false);
+  } catch (error) {
+    return failed("QuickCalAI could not save the Calendar connection.");
+  }
+  return accessResult(calendar, await verifyAccess(token));
 }
 
 async function disconnectCalendar() {
@@ -693,7 +809,8 @@ async function createTestEvent(event) {
   }
 
   const status = await refreshStatus();
-  if (!status || status.state !== "connected") return status;
+  if (!status || (status.state !== "connected" && status.state !== "ready")) return status;
+  if (!status.testEvent) status.testEvent = readyTestEvent(new Date());
 
   const proposed = clientPayload(event);
   if (!proposed) {
@@ -1076,15 +1193,52 @@ async function activeWidgetEvent() {
 }
 
 async function widgetCalendarStatus() {
-  if (await isSuppressed()) return { ok: true, connected: false };
+  if (await isSuppressed()) return { ok: true, connected: false, quickcalReady: false, message: "" };
   const status = await refreshStatus();
-  return { ok: true, connected: !!(status && status.state === "connected") };
+  const googleConnected = !!(
+    status &&
+    (status.state === "connected" || status.state === "ready" || status.googleConnected === true)
+  );
+  return {
+    ok: true,
+    connected: googleConnected,
+    quickcalReady: !!(status && status.quickcalReady === true),
+    message: status && typeof status.message === "string" ? status.message : "",
+  };
+}
+
+async function checkHealth() {
+  if (healthInFlight) return healthInFlight;
+  const pending = (async () => {
+    try {
+      const response = await fetch(self.QuickCalLocalParse.HEALTH_URL, {
+        method: "GET",
+        credentials: "omit",
+        cache: "no-store",
+        signal: AbortSignal.timeout(HEALTH_ATTEMPT_MS),
+      });
+      if (!response.ok) return { ok: false };
+      const body = await readJson(response);
+      return { ok: !!(body && body.ok === true) };
+    } catch (error) {
+      return { ok: false };
+    }
+  })();
+  healthInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (healthInFlight === pending) healthInFlight = null;
+  }
 }
 
 function reply(result) {
   const safe = {
     state: result && result.state ? result.state : "error",
     message: result && typeof result.message === "string" ? result.message : "",
+    googleConnected: !!(result && result.googleConnected === true),
+    quickcalReady: !!(result && result.quickcalReady === true),
+    needsReconnect: !!(result && result.needsReconnect === true),
   };
   if (result && result.testEvent && typeof result.testEvent === "object") {
     safe.testEvent = publicTestEvent(result.testEvent);
@@ -1102,6 +1256,13 @@ function performAuth(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === BACKEND_MESSAGE && message.action === "health") {
+    if (!isParseSender(sender)) return false;
+    checkHealth()
+      .then((result) => sendResponse({ ok: !!(result && result.ok) }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
   if (message && message.type === PARSE_MESSAGE) {
     if (!isParseSender(sender)) return false;
     parseForContent(message)
@@ -1111,7 +1272,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(() => {
         sendResponse({
           ok: false,
-          error: "QuickCalAI could not reach the local event parser. Start the backend and try again.",
+          error: "QuickCalAI could not reach QuickCal. Try again.",
         });
       });
     return true;

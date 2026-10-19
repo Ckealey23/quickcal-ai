@@ -112,8 +112,32 @@ export function createHandler({
   parseTimeoutMs = PARSE_TIMEOUT_MS,
 }) {
   return async function handle(request, response) {
+    async function identify(request) {
+      if (!requireAuth) return { ok: true, userId: "" };
+      if (typeof authenticate !== "function") {
+        return { ok: false, status: 503, error: "QuickCalAI is not available." };
+      }
+      let identity;
+      try {
+        identity = await authenticate(request.headers.authorization);
+      } catch (error) {
+        return { ok: false, status: 503, error: "QuickCalAI could not verify Google sign-in." };
+      }
+      if (!identity || !identity.ok) {
+        return {
+          ok: false,
+          status: identity && Number.isInteger(identity.status) ? identity.status : 401,
+          error: identity && identity.error ? identity.error : "Sign in with Google is required.",
+        };
+      }
+      if (typeof identity.userId !== "string" || !identity.userId) {
+        return { ok: false, status: 403, error: "Google did not confirm this account." };
+      }
+      return { ok: true, userId: identity.userId };
+    }
+
     const url = new URL(request.url || "/", "http://" + HOST);
-    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/parse-event")) {
+    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/access" || url.pathname === "/parse-event")) {
       if (request.headers.origin !== EXTENSION_ORIGIN) {
         sendJson(request, response, 403, { error: "Origin is not allowed." });
         return;
@@ -134,6 +158,20 @@ export function createHandler({
       return;
     }
     if (url.pathname === "/health") {
+      sendJson(request, response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (url.pathname === "/access" && request.method === "GET") {
+      const identity = await identify(request);
+      if (!identity.ok) {
+        sendJson(request, response, identity.status, { error: identity.error });
+        finishUnread(request);
+        return;
+      }
+      sendJson(request, response, 200, { ok: true, approved: true });
+      return;
+    }
+    if (url.pathname === "/access") {
       sendJson(request, response, 405, { error: "Method not allowed." });
       return;
     }
@@ -166,24 +204,14 @@ export function createHandler({
     }
 
     if (requireAuth) {
-      if (typeof authenticate !== "function" || typeof rateLimit !== "function") {
+      if (typeof rateLimit !== "function") {
         sendJson(request, response, 503, { error: "QuickCalAI is not available." });
         finishUnread(request);
         return;
       }
-      let identity;
-      try {
-        identity = await authenticate(request.headers.authorization);
-      } catch (error) {
-        sendJson(request, response, 503, { error: "QuickCalAI could not verify Google sign-in." });
-        finishUnread(request);
-        return;
-      }
-      if (!identity || !identity.ok) {
-        const status = identity && Number.isInteger(identity.status) ? identity.status : 401;
-        sendJson(request, response, status, {
-          error: identity && identity.error ? identity.error : "Sign in with Google is required.",
-        });
+      const identity = await identify(request);
+      if (!identity.ok) {
+        sendJson(request, response, identity.status, { error: identity.error });
         finishUnread(request);
         return;
       }

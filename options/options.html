@@ -2,32 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>QuickCalAI settings</title>
+    <title>QuickCalAI</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="card">
       <h1>QuickCalAI</h1>
-      <p class="lead">Connect Google Calendar, then create one predefined test event.</p>
+      <p id="lead" class="lead">Connect Google Calendar to start adding events from any webpage.</p>
       <p id="status" class="status connecting" role="status" aria-live="polite">
-        Checking Google Calendar connection…
+        Checking your QuickCal connection…
       </p>
       <p id="detail" class="detail" hidden></p>
       <button id="connect" type="button" disabled>Connect Google Calendar</button>
       <button id="disconnect" type="button" hidden disabled>Disconnect</button>
-      <section class="test-event" aria-labelledby="test-event-heading">
-        <h2 id="test-event-heading">Test event creation</h2>
-        <p id="test-summary"></p>
-        <p id="test-when"></p>
-        <p id="test-zone"></p>
-        <p id="test-description" class="muted"></p>
-        <p id="test-detail" class="detail" hidden aria-live="polite"></p>
-        <p id="test-success" hidden aria-live="polite">Test event saved.</p>
-        <a id="test-link" hidden target="_blank" rel="noopener noreferrer">View in Google Calendar</a>
-        <button id="create-test" type="button" disabled>Create test event</button>
+      <section id="ready" hidden>
+        <h2>How to open QuickCalAI</h2>
+        <p>Click the QuickCalAI icon in the Chrome toolbar. On a normal webpage, type an event and press Enter.</p>
       </section>
     </main>
-    <script src="../shared/test-event.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

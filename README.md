@@ -30,35 +30,23 @@ After `manifest.json` changes, reload the extension and confirm the ID:
 
 The manifest `oauth2.client_id` is the Chrome extension OAuth client for Google Calendar. In Google Cloud, that client must be the Chrome extension type and must allow extension ID `mkihiedalmccmhoebiiikpdoafhdfglf`. The project uses that client ID directly. Do not download, import, or commit a credentials JSON file or a client secret.
 
-The toolbar icon still only shows or hides the input bar. Calendar settings open in their own tab:
+The toolbar icon still only shows or hides the input bar. A new installation opens this welcome page once. Google’s prompt starts only after **Connect Google Calendar** is clicked.
 
 1. Open `chrome://extensions`.
 2. Find QuickCalAI and click **Details**, then **Extension options**. You can also right-click the QuickCalAI toolbar icon and choose **Options**.
 
-Reload the extension from `chrome://extensions` after pulling these manifest changes, then use this checklist:
+Reload the extension from `chrome://extensions` after these manifest changes, then use this checklist:
 
-- [ ] Click **Connect Google Calendar**, approve the Google prompt, and wait until the page says **Google Calendar connected**. That text appears only after the Calendar API accepts a read-only check.
-- [ ] Click **Connect Google Calendar** and close or cancel the Google prompt. The page explains that connection was cancelled and does not say connected.
-- [ ] Close the settings tab and open Options again. If Calendar is still authorized, it says connected without a new Google prompt. If it is not authorized, it stays disconnected and does not prompt.
-- [ ] Click **Disconnect**. The page no longer says connected. Reopening settings does not immediately connect again.
-- [ ] Click **Connect Google Calendar** again. After approval and the Calendar check, it says connected.
-- [ ] On a normal webpage, the toolbar icon still toggles the same input bar.
+- [ ] On a fresh install, the welcome page opens by itself. No Google prompt appears until **Connect Google Calendar** is clicked.
+- [ ] Approve the prompt. The page says **QuickCalAI is ready.** only after both Calendar and the hosted parser accept the account, and it explains the Chrome toolbar icon.
+- [ ] Cancel the Google prompt. The page says the connection was cancelled and does not say QuickCalAI is ready.
+- [ ] If Calendar connects but the account is not approved, the page says **Google Calendar connected** and shows that this account is not approved.
+- [ ] Click **Disconnect**. Reopening the page does not connect again until **Connect Google Calendar** is clicked.
+- [ ] On a normal webpage, the toolbar icon still toggles the input bar. The welcome page does not show a backend address, an API key, or a test-event control.
 
-## Test event creation
+## Welcome page
 
-After Calendar is connected, the settings page shows one predefined event: **QuickCalAI — Test Event**, tomorrow from 10:00–10:30 AM in this computer’s time zone. The page shows that calendar date, time, and time zone before anything is created. **Create test event** sends that event to the primary calendar. A normal event is created from the floating bar when you press Enter.
-
-Reload the extension, connect Calendar, and use this checklist:
-
-- [ ] While disconnected, **Create test event** stays disabled. The section still shows the title, tomorrow’s calendar date, 10:00–10:30 AM, and the time zone.
-- [ ] Connect Google Calendar. Review that date, time, and time zone, then click **Create test event** once. The button stays disabled and the page says it is creating the event.
-- [ ] When Google has saved it, the page says **Test event saved**, shows the same title and time, and offers **View in Google Calendar**. **Create test event** stays disabled.
-- [ ] Open **View in Google Calendar** and confirm the event is tomorrow, 10:00–10:30 AM, on your primary calendar, with no guests.
-- [ ] Close and reopen the settings page. It still shows the saved event and does not create another one.
-- [ ] Click **Disconnect**. The saved confirmation disappears. Connect again and confirm the previous success is not shown.
-- [ ] On a normal webpage, the toolbar icon still toggles the input bar. Pressing Enter on a complete sentence creates a normal event. **Create test event** remains on the settings page.
-
-To delete the test event, open **View in Google Calendar**, or open [Google Calendar](https://calendar.google.com/) and go to the date shown on the settings page. Open **QuickCalAI — Test Event** and choose **Delete**. QuickCalAI does not delete it for you. A later connection can create the test event again, so delete any copies you no longer want.
+The options page is the customer welcome screen. It connects Google Calendar and checks that the hosted parser accepts the account. It does not create a test event.
 
 ## Local event extraction
 
@@ -154,33 +142,15 @@ The token Google returns must be for this extension’s client ID and must inclu
 
 ### Extension changes for the hosted service
 
-The extension still calls `http://127.0.0.1:3000/parse-event` and does not send the Google token. Local development can stay that way because local authentication is off. To use Render, change the extension as follows and then reload it. Each reference customer must connect Google Calendar again so the new email scope is on the token.
+The extension calls `https://quickcal-ai.onrender.com/parse-event`. The service worker attaches the Google access token as `Authorization: Bearer`. The widget never receives that token. `GET /health` checks that Render is awake and does not call the model. `GET /access` checks that this Google account is approved. It uses the same token check as `/parse-event` and does not call the model. Deploy the backend that provides `/access` before testing approval in Chrome. Until that deploy, an approved account can still look unapproved.
 
-- In `manifest.json` `host_permissions`, add `https://YOUR_SERVICE.onrender.com/*`. Keep the Calendar and `https://oauth2.googleapis.com/*` permissions.
-- In `manifest.json` `oauth2.scopes`, add `https://www.googleapis.com/auth/userinfo.email` next to the existing `https://www.googleapis.com/auth/calendar.events.owned` scope. Do not widen Calendar access.
-- In `shared/local-parse.js`, set `PARSE_URL` to `https://YOUR_SERVICE.onrender.com/parse-event`.
-- When `requestLocalParse` runs in `background.js`, send `Authorization: Bearer` and the access token already returned by `chrome.identity.getAuthToken`. Send the event text, time zone, and current event only. Do not send the user’s email or an API key.
+Reference customers do not need a local server, `backend/.env`, or Node.js. After reloading the extension, each person connects Google Calendar again so the token includes the email scope.
 
 ## Event preview and save
 
-With the backend running, the floating bar sends what you type to `http://127.0.0.1:3000/parse-event`. A complete event is created immediately. The card says **Creating event…** and then **Event successfully created** only after Google confirms it. If the date and start time are clear and no end time or duration was given, the event lasts one hour and the card says **1-hour default**. Incomplete text asks a question and creates nothing. After a successful save, the field says **Tell me what to change…**. A follow-up such as `Move it to 11 AM` updates that same calendar event. **New event** inside the card starts a separate event.
+With Calendar connected and QuickCalAI ready, the floating bar sends what you type to the hosted parser. A complete event is created immediately. The card says **Creating event…** and then **Event successfully created** only after Google confirms it. If the date and start time are clear and no end time or duration was given, the event lasts one hour and the card says **1-hour default**. Incomplete text asks a question and creates nothing. After a successful save, the field says **Tell me what to change…**. A follow-up such as `Move it to 11 AM` updates that same calendar event. **New event** inside the card starts a separate event.
 
-Start the backend from `backend/` if it is not already running. Restart it after pulling these parser changes:
-
-```powershell
-Set-Location "C:\Users\charl\OneDrive - Cal Poly\Cal Poly\Third Year\Fall Semester\IME4403\QuickCal-AI Project\quickcal-ai\backend"
-npm install
-npm test
-npm start
-```
-
-Leave `npm start` running. In a second window, confirm the health check before using Chrome:
-
-```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:3000/health
-```
-
-`ok` should be true. `apiKeyConfigured` should be true before you expect a real preview. Reload QuickCalAI on `chrome://extensions` after this update. Connect Google Calendar from the extension’s settings page, then test on `https://example.com`:
+Customer use does not need a local server. Reload the extension, connect Calendar from the welcome page, and test on `https://example.com`:
 
 - [ ] Click the toolbar icon. Only the rounded input pill opens. The field is focused, the microphone still says **Voice input coming soon**, and a downward chevron inside the pill can hide it.
 - [ ] Type `Coffee with Alex tomorrow from 10 to 10:30 AM` and press Enter. The card says **Creating event…**, then **Event successfully created**, and offers **View in Google Calendar**. Open that link and confirm the event is on your primary calendar.
@@ -190,7 +160,7 @@ Invoke-RestMethod -Uri http://127.0.0.1:3000/health
 - [ ] Type `Coffee with Alex tomorrow at 10 AM` and press Enter. The created event ends one hour later and the card says **1-hour default**.
 - [ ] Type `Coffee with Alex` and press Enter. The card asks for the missing date and time, and nothing is created.
 - [ ] Disconnect on the settings page, submit a complete sentence, and choose **Connect Google Calendar**. The settings page opens and the sentence remains in the bar. Disconnect also clears the event that follow-up edits would change.
-- [ ] Stop the backend with Ctrl+C, type a sentence, and press Enter again. The text stays in the field and the bar explains that the local parser could not be reached.
+- [ ] If QuickCal is still waking up, the bar says **Connecting to QuickCal…** and the text stays in the field. Pressing Enter again does not send a second parser request. If it stays unavailable, **Try again** appears and the text is still there.
 - [ ] Hide the pill with the chevron, Escape, and the toolbar icon. The same bar toggles, and a second bar never appears.
 - [ ] Narrow the window and raise the browser zoom. The pill, its controls, and its shadow stay inside the window.
 - [ ] Type `Make a date every Friday with John at 6pm` and press Enter. The card shows **Date with John**, the next Friday, **6:00–7:00 PM**, **Every Friday**, the time zone, and **No end date**. Open **View in Google Calendar** and confirm one weekly series with no guests and no end date.
@@ -206,7 +176,7 @@ Test on a normal webpage, such as `https://example.com`. Chrome restricts inject
 
 - [ ] Click the QuickCalAI toolbar icon. The input bar opens near the bottom-right, and the text field is focused.
 - [ ] Type and edit text in the field.
-- [ ] Press Enter. With the local parser running and Calendar connected, a complete sentence is created after Google confirms it. Incomplete text asks a question and creates nothing.
+- [ ] Press Enter. With Calendar connected and QuickCalAI ready, a complete sentence is created after Google confirms it. Incomplete text asks a question and creates nothing.
 - [ ] After a successful save, type a change such as `Move it to 11 AM` and press Enter. That saved event is updated. **New event** returns to creating a separate event.
 - [ ] Hide the pill with the chevron inside it, with Escape, and with the toolbar icon. The same bar toggles, and a second bar never appears.
 - [ ] Narrow the browser window. The bar stays inside the window.

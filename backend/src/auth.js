@@ -26,11 +26,14 @@ function audienceMatches(payload, clientId) {
   return true;
 }
 
-function verifiedEmail(payload, allowed) {
+function accountProblem(payload, allowed) {
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
   const verified = payload.email_verified === true || payload.email_verified === "true";
-  if (!email || !verified || !allowed.has(email)) return false;
-  return true;
+  if (!email || !verified) {
+    return "Google did not confirm an email for this sign-in. Connect again so QuickCalAI can check your account.";
+  }
+  if (!allowed.has(email)) return "This Google account is not approved for QuickCalAI.";
+  return "";
 }
 
 export function createGoogleVerifier({
@@ -78,9 +81,8 @@ export function createGoogleVerifier({
     if (!audienceMatches(payload, clientId)) {
       return failed(403, "This Google sign-in is for a different app.");
     }
-    if (!verifiedEmail(payload, allowed)) {
-      return failed(403, "This Google account is not approved for QuickCalAI.");
-    }
+    const problem = accountProblem(payload, allowed);
+    if (problem) return failed(403, problem);
     const sub = typeof payload.sub === "string" ? payload.sub.trim() : "";
     if (!sub || sub.length > 255 || /\s/.test(sub)) {
       return failed(403, "Google did not confirm this account.");

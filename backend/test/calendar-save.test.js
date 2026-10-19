@@ -24,6 +24,7 @@ function loadBackground(hooks) {
             listeners.message = listener;
           },
         },
+        onInstalled: { addListener() {} },
         async openOptionsPage() {
           hooks.opened = true;
         },

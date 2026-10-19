@@ -210,7 +210,17 @@
   status.className = "status";
   status.hidden = true;
   status.setAttribute("role", "status");
-  shell.append(card, status);
+  const connectRoute = document.createElement("button");
+  connectRoute.type = "button";
+  connectRoute.className = "connect-route";
+  connectRoute.textContent = "Connect Google Calendar";
+  connectRoute.hidden = true;
+  const healthRetry = document.createElement("button");
+  healthRetry.type = "button";
+  healthRetry.className = "health-retry";
+  healthRetry.textContent = "Try again";
+  healthRetry.hidden = true;
+  shell.append(card, status, connectRoute, healthRetry);
 
   const stylesheet = document.createElement("link");
   stylesheet.rel = "stylesheet";
@@ -228,6 +238,10 @@
   let draftEvent = null;
   let draftText = "";
   let savedRecord = null;
+  const startupApi = globalThis.QuickCalStartup;
+  const session = startupApi.createSession();
+  let healthPump = null;
+  let connection = null;
 
   function focusInput() {
     input.focus();
@@ -423,6 +437,14 @@
       requestGeneration += 1;
       pending = false;
       clearStatus();
+      session.noteClosed();
+      connectRoute.hidden = true;
+      healthRetry.hidden = true;
+    } else if (session.phase() !== "ready") {
+      const step = session.begin(Date.now());
+      if (step.status) showStatus(step.status, false);
+      pumpHealth();
+      checkConnection();
     }
     open = next;
     render();
@@ -561,8 +583,16 @@
     render();
   }
 
-  async function submit(text) {
+  async function submit(text, fromWarmup) {
     if (pending || saving) return;
+    if (!fromWarmup && session.phase() !== "ready") {
+      const decision = session.requestParse(text, Date.now());
+      if (decision.status) showStatus(decision.status, !!decision.retry);
+      healthRetry.hidden = !decision.retry;
+      if (session.phase() === "waking") pumpHealth();
+      render();
+      return;
+    }
     const generation = requestGeneration + 1;
     requestGeneration = generation;
     const editing = mode === "saved" && savedRecord;
@@ -586,7 +616,7 @@
     } catch (error) {
       result = {
         ok: false,
-        error: "QuickCalAI could not reach the local event parser. Start the backend and try again.",
+        error: "QuickCalAI could not reach QuickCal. Try again.",
       };
     }
 
@@ -619,6 +649,9 @@
             : "QuickCalAI could not read that event.",
           true
         );
+        if (result && (result.state === "disconnected" || result.state === "unapproved")) {
+          connectRoute.hidden = false;
+        }
       }
       render();
       return;
@@ -687,6 +720,20 @@
     event.stopPropagation();
     chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" });
   });
+  connectRoute.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" });
+  });
+  healthRetry.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (pending || saving) return;
+    session.retry(Date.now());
+    healthRetry.hidden = true;
+    showStatus(globalThis.QuickCalStartup.CONNECTING, false);
+    pumpHealth();
+  });
   input.addEventListener("keydown", onInputKeyDown);
   input.addEventListener("input", () => {
     if (pending && mode !== "saved") {
@@ -708,10 +755,69 @@
     if (result && result.event && safeCalendarLink(result.event.htmlLink)) showSaved(result.event);
   }
 
+  async function checkConnection() {
+    let result;
+    try {
+      result = await chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "status" });
+    } catch (error) {
+      return;
+    }
+    if (!alive || !open) return;
+    connection = result;
+    const needsAccount = result && result.connected === false;
+    const needsApproval = result && result.connected === true && result.quickcalReady === false && result.message;
+    connectRoute.hidden = !(needsAccount || needsApproval);
+    if ((needsAccount || needsApproval) && session.phase() !== "waking") {
+      showStatus(
+        needsAccount ? "Connect Google Calendar to use QuickCalAI." : result.message,
+        true
+      );
+    }
+  }
+
+  async function pumpHealth() {
+    if (healthPump || !startupApi) return;
+    const run = (async () => {
+      while (alive && open && session.phase() === "waking") {
+        let result = { ok: false };
+        try {
+          result = await chrome.runtime.sendMessage({ type: "quickcal-backend", action: "health" });
+        } catch (error) {
+          result = { ok: false };
+        }
+        if (!alive || !open || session.phase() !== "waking") return;
+        const step = session.healthResult(!!(result && result.ok), Date.now());
+        if (step.status) showStatus(step.status, !!step.retry);
+        else if (!connection || connection.connected !== false) clearStatus();
+        healthRetry.hidden = !step.retry;
+        if (step.parse && step.text && input.value.trim() === step.text) await submit(step.text, true);
+        if (step.done) {
+          if (connection && connection.connected === false) {
+            showStatus("Connect Google Calendar to use QuickCalAI.", true);
+            connectRoute.hidden = false;
+          } else if (connection && connection.quickcalReady === false && connection.message) {
+            showStatus(connection.message, true);
+            connectRoute.hidden = false;
+          }
+          return;
+        }
+        if (step.waitMs) await new Promise((resolve) => setTimeout(resolve, step.waitMs));
+      }
+    })();
+    healthPump = run;
+    run.finally(() => {
+      if (healthPump === run) healthPump = null;
+    });
+  }
+
   stylesheet.addEventListener("load", () => {
     styled = true;
     render();
     restoreActive();
+    const step = session.begin(Date.now());
+    if (step.status) showStatus(step.status, false);
+    pumpHealth();
+    checkConnection();
   });
 
   stylesheet.addEventListener("error", () => {
