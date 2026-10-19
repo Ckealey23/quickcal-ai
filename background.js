@@ -1033,22 +1033,27 @@ async function commitWidgetRecord(record) {
   };
 }
 
+function missingCalendarGrant(status, message) {
+  const authorized = !!(
+    status &&
+    (status.state === "connected" || status.state === "ready" || status.googleConnected === true)
+  );
+  if (authorized) return null;
+  if (!status || status.state === "disconnected") {
+    return { ok: false, state: "disconnected", error: message };
+  }
+  return {
+    ok: false,
+    error: status.message || "QuickCalAI could not verify Google Calendar. Try again.",
+  };
+}
+
 async function saveWidgetEventOnce(prepared) {
-  if (await isSuppressed()) {
-    return {
-      ok: false,
-      state: "disconnected",
-      error: "Connect Google Calendar before saving this event.",
-    };
-  }
-  const status = await refreshStatus();
-  if (!status || status.state !== "connected") {
-    return {
-      ok: false,
-      state: "disconnected",
-      error: "Connect Google Calendar before saving this event.",
-    };
-  }
+  const denied = missingCalendarGrant(
+    await refreshStatus(),
+    "Connect Google Calendar before saving this event."
+  );
+  if (denied) return denied;
 
   const stored = await loadDraftEvent();
   if (stored && stored.fingerprint === prepared.fingerprint && stored.phase === "created" && stored.htmlLink) {
@@ -1112,21 +1117,11 @@ function rememberedEvent(record, prepared) {
 }
 
 async function patchWidgetEvent(stored, prepared) {
-  if (await isSuppressed()) {
-    return {
-      ok: false,
-      state: "disconnected",
-      error: "Connect Google Calendar before changing this event.",
-    };
-  }
-  const status = await refreshStatus();
-  if (!status || status.state !== "connected") {
-    return {
-      ok: false,
-      state: "disconnected",
-      error: "Connect Google Calendar before changing this event.",
-    };
-  }
+  const denied = missingCalendarGrant(
+    await refreshStatus(),
+    "Connect Google Calendar before changing this event."
+  );
+  if (denied) return denied;
   const next = rememberedEvent(stored, prepared);
   const patched = await calendarCall(eventPatchUrl(stored.id), {
     method: "PATCH",

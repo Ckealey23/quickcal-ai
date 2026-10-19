@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 const root = path.resolve(import.meta.dirname, "../..");
 
 function loadBackground(hooks) {
-  const store = {};
+  const store = hooks.store || {};
   const fetches = [];
   let releasePost = null;
   const listeners = {};
@@ -44,7 +44,9 @@ function loadBackground(hooks) {
         },
       },
       identity: {
-        async getAuthToken() {
+        async getAuthToken(details) {
+          hooks.tokenCalls = hooks.tokenCalls || [];
+          hooks.tokenCalls.push(!!(details && details.interactive));
           if (hooks.disconnected) return "";
           return "test-token";
         },
@@ -55,7 +57,16 @@ function loadBackground(hooks) {
     fetch: async (url, options) => {
       fetches.push({ url: String(url), options: options || {} });
       if (String(url).includes("127.0.0.1")) throw new Error("parser called");
+      if (String(url).includes("/access")) {
+        const status = hooks.accessStatus == null ? 200 : hooks.accessStatus;
+        const body = hooks.accessBody || { ok: true, approved: true };
+        return { ok: status === 200, status: status, async json() { return body; } };
+      }
       if (String(url).includes("maxResults=1")) {
+        if (hooks.calendarNetwork) throw new TypeError("Failed to fetch");
+        if (hooks.calendarStatus) {
+          return { ok: false, status: hooks.calendarStatus, async json() { return {}; } };
+        }
         return { ok: true, status: 200, async json() { return { kind: "calendar#events" }; } };
       }
       if (String(url).includes("revoke")) {
@@ -416,5 +427,107 @@ describe("widget calendar save", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(active.event, null);
+  });
+});
+
+function optionsSender() {
+  return {
+    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    url: "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/options/options.html",
+  };
+}
+
+function ask(listener, message, from) {
+  return new Promise((resolve) => {
+    const keep = listener(message, from, resolve);
+    if (keep !== true) resolve(undefined);
+  });
+}
+
+describe("hosted calendar authorization", () => {
+  it("saves from the widget after options connect when the account is approved", async () => {
+    const hooks = { posts: 0, ids: [], bodies: [], tokenCalls: [] };
+    const loaded = loadBackground(hooks);
+    const connected = await ask(loaded.listener, { type: "quickcal-auth", action: "connect" }, optionsSender());
+    assert.equal(connected.state, "ready");
+    assert.equal(connected.googleConnected, true);
+    assert.equal(hooks.tokenCalls.includes(true), true);
+    assert.equal(loaded.store.quickcalCalendarSuppressed, false);
+    const interactive = hooks.tokenCalls.filter(Boolean).length;
+
+    const saved = await ask(loaded.listener, createMessage(), sender());
+    assert.equal(saved.ok, true);
+    assert.equal(saved.summary, "Coffee with Alex");
+    assert.equal(hooks.posts, 1);
+    assert.equal(hooks.tokenCalls.filter(Boolean).length, interactive);
+    assert.equal(loaded.fetches.some((call) => String(call.url).endsWith("/parse-event")), false);
+    assert.equal(loaded.fetches.some((call) => String(call.url).endsWith("/access")), true);
+  });
+
+  it("saves the same draft after the service worker restarts", async () => {
+    const store = {};
+    const hooks = { posts: 0, ids: [], bodies: [], tokenCalls: [], store: store, failPost: true };
+    const first = loadBackground(hooks);
+    const connected = await ask(first.listener, { type: "quickcal-auth", action: "connect" }, optionsSender());
+    assert.equal(connected.state, "ready");
+    const failed = await ask(first.listener, createMessage(), sender());
+    assert.equal(failed.ok, false);
+    assert.match(failed.error, /did not allow/);
+    assert.equal(failed.state, undefined);
+    assert.equal(hooks.posts, 1);
+
+    hooks.failPost = false;
+    hooks.tokenCalls = [];
+    const restarted = loadBackground(hooks);
+    const saved = await ask(restarted.listener, createMessage(), sender());
+    assert.equal(saved.ok, true);
+    assert.equal(hooks.posts, 2);
+    assert.equal(hooks.ids[0], hooks.ids[1]);
+    assert.equal(hooks.tokenCalls.includes(true), false);
+    assert.equal(restarted.fetches.some((call) => String(call.url).endsWith("/parse-event")), false);
+    assert.equal(store.quickcalDraftEvent.id, hooks.ids[0]);
+    assert.equal(store.quickcalDraftEvent.phase, "created");
+  });
+
+  it("keeps the widget disconnected after Disconnect", async () => {
+    const hooks = { posts: 0, ids: [], bodies: [], tokenCalls: [] };
+    const loaded = loadBackground(hooks);
+    await ask(loaded.listener, { type: "quickcal-auth", action: "connect" }, optionsSender());
+    const disconnected = await ask(loaded.listener, { type: "quickcal-auth", action: "disconnect" }, optionsSender());
+    assert.equal(disconnected.state, "disconnected");
+    assert.equal(loaded.store.quickcalCalendarSuppressed, true);
+    const calls = hooks.tokenCalls.length;
+
+    const status = await ask(loaded.listener, { type: "quickcal-calendar", action: "status" }, sender());
+    const saved = await ask(loaded.listener, createMessage(), sender());
+    assert.equal(status.connected, false);
+    assert.equal(saved.ok, false);
+    assert.equal(saved.state, "disconnected");
+    assert.match(saved.error, /Connect Google Calendar before saving/);
+    assert.equal(hooks.posts, 0);
+    assert.equal(hooks.tokenCalls.length, calls);
+  });
+
+  it("does not describe a Calendar or backend failure as a missing connection", async () => {
+    const denied = { posts: 0, ids: [], bodies: [], calendarStatus: 403 };
+    const deniedLoad = loadBackground(denied);
+    const permission = await ask(deniedLoad.listener, createMessage(), sender());
+    assert.equal(permission.ok, false);
+    assert.equal(permission.state, undefined);
+    assert.match(permission.error, /did not allow QuickCalAI to access Calendar/);
+    assert.equal(denied.posts, 0);
+
+    const offline = { posts: 0, ids: [], bodies: [], calendarNetwork: true };
+    const offlineLoad = loadBackground(offline);
+    const network = await ask(offlineLoad.listener, createMessage(), sender());
+    assert.equal(network.state, undefined);
+    assert.match(network.error, /could not reach Google Calendar/);
+    assert.equal(offline.posts, 0);
+
+    const backend = { posts: 0, ids: [], bodies: [], accessStatus: 503 };
+    const backendLoad = loadBackground(backend);
+    const saved = await ask(backendLoad.listener, createMessage(), sender());
+    assert.equal(saved.ok, true);
+    assert.equal(backend.posts, 1);
   });
 });

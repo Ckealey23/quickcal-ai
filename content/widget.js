@@ -440,10 +440,12 @@
       session.noteClosed();
       connectRoute.hidden = true;
       healthRetry.hidden = true;
-    } else if (session.phase() !== "ready") {
-      const step = session.begin(Date.now());
-      if (step.status) showStatus(step.status, false);
-      pumpHealth();
+    } else {
+      if (session.phase() !== "ready") {
+        const step = session.begin(Date.now());
+        if (step.status) showStatus(step.status, false);
+        pumpHealth();
+      }
       checkConnection();
     }
     open = next;
@@ -684,12 +686,18 @@
     submit(text);
   }
 
+  function onVisible() {
+    if (!alive || !open || document.visibilityState !== "visible") return;
+    checkConnection();
+  }
+
   function destroy() {
     if (!alive) return;
     alive = false;
     requestGeneration += 1;
     saveGeneration += 1;
     document.removeEventListener("keydown", onEscape, true);
+    document.removeEventListener("visibilitychange", onVisible);
     host.remove();
     if (globalThis[STATE_KEY] && globalThis[STATE_KEY].destroy === destroy) {
       delete globalThis[STATE_KEY];
@@ -772,6 +780,13 @@
         needsAccount ? "Connect Google Calendar to use QuickCalAI." : result.message,
         true
       );
+    } else if (!needsAccount && !needsApproval && status.textContent === "Connect Google Calendar to use QuickCalAI.") {
+      clearStatus();
+    }
+    if (mode === "failed" && !saving && draftEvent && !connectButton.hidden && result && result.connected === true) {
+      showSaveError("");
+      connectButton.hidden = true;
+      retryButton.hidden = false;
     }
   }
 
@@ -826,6 +841,7 @@
   });
 
   document.addEventListener("keydown", onEscape, true);
+  document.addEventListener("visibilitychange", onVisible);
   document.documentElement.appendChild(host);
   host.dataset.mode = "input";
   render();

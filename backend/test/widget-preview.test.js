@@ -350,6 +350,67 @@ const page = `<!DOCTYPE html>
     release();
     await settle();
     check("series edit asks", shadow.textContent.includes("entire weekly series") && updates().length === updatesBeforeSeries);
+
+    visibleAction("New event").click();
+    await settle();
+    const parsesBeforeReconnect = parses().length;
+    const createsBeforeReconnect = creates().length;
+    field.value = "Hosted backend test tomorrow at 10 AM for 30 minutes";
+    nextResult = {
+      ok: true,
+      event: {
+        title: "Hosted backend test",
+        date: "2026-10-20",
+        endDate: "2026-10-20",
+        startTime: "10:00",
+        endTime: "10:30",
+        timeZone: "America/Los_Angeles",
+        location: null,
+        needsClarification: false,
+        durationDefaulted: false,
+        clarificationQuestions: [],
+      },
+    };
+    enter(field);
+    release();
+    await settle();
+    nextResult = {
+      ok: false,
+      state: "disconnected",
+      error: "Connect Google Calendar before saving this event.",
+    };
+    release();
+    await settle();
+    check("save asks to connect", shadow.querySelector(".save-error").textContent.includes("Connect Google Calendar before saving"));
+    check("connect action", visibleAction("Connect Google Calendar") !== null);
+    check("draft kept", field.value === "Hosted backend test tomorrow at 10 AM for 30 minutes");
+    globalThis.__quickcalAi.toggle();
+    globalThis.__quickcalAi.toggle();
+    await settle();
+    check("reopen clears stale connect error", shadow.querySelector(".save-error").hidden === true);
+    check("retry after reconnect", visibleAction("Try again") !== null);
+    check("reopen does not create", creates().length === createsBeforeReconnect + 1 && parses().length === parsesBeforeReconnect + 1);
+    field.focus();
+    check("focus does not create", creates().length === createsBeforeReconnect + 1 && parses().length === parsesBeforeReconnect + 1);
+    nextResult = {
+      ok: true,
+      summary: "Hosted backend test",
+      title: "Hosted backend test",
+      date: "2026-10-20",
+      endDate: "2026-10-20",
+      startTime: "10:00",
+      endTime: "10:30",
+      dateText: "Oct 20, 2026",
+      timeText: "10:00–10:30 AM",
+      timeZone: "America/Los_Angeles",
+      htmlLink: "https://calendar.google.com/calendar/event?eid=hosted",
+    };
+    visibleAction("Try again").click();
+    check("retry does not reparse", parses().length === parsesBeforeReconnect + 1 && creates().length === createsBeforeReconnect + 2);
+    check("retry reuses draft", creates()[creates().length - 1].event.title === "Hosted backend test" && creates()[creates().length - 1].event.startTime === "10:00" && creates()[creates().length - 1].event.endTime === "10:30");
+    release();
+    await settle();
+    check("retried save succeeds", shadow.textContent.includes("Event successfully created"));
     finish();
   });
 </script>
