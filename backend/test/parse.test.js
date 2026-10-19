@@ -201,6 +201,57 @@ describe("weekly defaults", () => {
     assert.equal(coffee.event.clarificationQuestions.some((question) => /end/i.test(question)), false);
     assert.equal(prepareForSave(coffee.event), null);
   });
+
+  it("combines a clarification answer with the unsaved draft", async () => {
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify({
+        title: null,
+        date: "2026-10-20",
+        startTime: "20:00",
+        endTime: null,
+        timeZone: zone,
+        location: null,
+        recurrence: null,
+        needsClarification: false,
+        clarificationQuestions: [],
+      }),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-10-19T20:00:00.000Z"),
+    });
+    const event = await parseEvent({
+      text: "Tuesday at 8 PM",
+      timeZone: zone,
+      clarification: {
+        originalText: "Coffee with Alex",
+        draft: {
+          title: "Coffee with Alex",
+          date: null,
+          startTime: null,
+          endTime: null,
+          timeZone: zone,
+          location: null,
+          recurrence: null,
+        },
+      },
+    });
+    assert.match(client.calls[0].body.instructions, /unsaved event/);
+    assert.match(client.calls[0].body.instructions, /Original request: Coffee with Alex/);
+    assert.doesNotMatch(client.calls[0].body.instructions, /changing an existing event/);
+    assert.match(client.calls[0].body.input, /Original request: Coffee with Alex/);
+    assert.match(client.calls[0].body.input, /Answer: Tuesday at 8 PM/);
+    assert.equal(event.title, "Coffee with Alex");
+    assert.equal(event.date, "2026-10-20");
+    assert.equal(event.startTime, "20:00");
+    assert.equal(event.endTime, "21:00");
+    assert.equal(event.durationDefaulted, true);
+    assert.equal(event.needsClarification, false);
+  });
 });
 
 describe("model errors", () => {

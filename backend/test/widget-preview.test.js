@@ -39,6 +39,12 @@ const page = `<!DOCTYPE html>
         calls.push(message);
         if (message && message.type === "quickcal-backend") return Promise.resolve({ ok: true });
         if (message && message.type === "quickcal-voice") {
+          if (globalThis.voiceTranscript && message.action === "start") {
+            return Promise.resolve({ ok: true, phase: "recording", sessionId: 1 });
+          }
+          if (globalThis.voiceTranscript && (message.action === "stop" || message.action === "retry")) {
+            return Promise.resolve({ ok: true, text: globalThis.voiceTranscript, phase: "idle" });
+          }
           return Promise.resolve({ ok: false, phase: "idle", error: "QuickCalAI could not find a microphone." });
         }
         if (message.action === "status" || message.action === "active" || message.action === "new" || message.action === "open-settings") {
@@ -272,8 +278,148 @@ const page = `<!DOCTYPE html>
     release();
     await settle();
     check("question once", shadow.querySelectorAll(".questions li").length === 1);
-    check("question", shadow.textContent.includes("What date should I use?"));
+    check("question", shadow.textContent.includes("What date and time?"));
+    check("draft summary", shadow.querySelector(".event-title").textContent === "Coffee with Alex");
+    check("answer cleared", field.value === "" && field.placeholder === "Tuesday at 8 PM");
+    check("first parse is not an answer", !parses()[parses().length - 1].clarification && !parses()[parses().length - 1].currentEvent);
     check("no create for clarification", creates().length === 2);
+
+    field.value = "Tuesday";
+    enter(field);
+    enter(field);
+    const tuesday = parses()[parses().length - 1];
+    check("tuesday once", parses().filter((message) => message.text === "Tuesday").length === 1);
+    check("tuesday context", tuesday.text === "Tuesday" && tuesday.clarification.originalText === "Coffee with Alex" && tuesday.clarification.draft.title === "Coffee with Alex" && !tuesday.currentEvent && !tuesday.clarification.draft.date);
+    nextResult = {
+      ok: true,
+      event: {
+        title: "Coffee with Alex",
+        date: "2026-10-20",
+        endDate: "2026-10-20",
+        startTime: null,
+        endTime: null,
+        timeZone: "America/Los_Angeles",
+        location: null,
+        needsClarification: true,
+        durationDefaulted: false,
+        clarificationQuestions: ["What time does this event start?"],
+      },
+    };
+    release();
+    await settle();
+    check("time question", shadow.textContent.includes("What time?") && shadow.textContent.includes("Coffee with Alex") && shadow.textContent.includes("Oct 20"));
+    check("time placeholder", field.value === "" && field.placeholder === "8 PM");
+    check("still no create", creates().length === 2);
+    const parsesBeforeClose = parses().length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    globalThis.__quickcalAi.toggle();
+    await settle();
+    check("reopen keeps draft", document.getElementById("quickcal-ai-host").dataset.mode === "clarifying" && shadow.textContent.includes("What time?") && parses().length === parsesBeforeClose && field.value === "");
+
+    deliverSelection("Lunch Monday at noon", "op-clarify");
+    await settle();
+    check("selection does not answer", parses().length === parsesBeforeClose && shadow.querySelector(".selection-choice").hidden === false);
+    shadow.querySelector(".keep-draft").click();
+    check("keep clarification", shadow.textContent.includes("What time?") && parses().length === parsesBeforeClose);
+
+    globalThis.voiceTranscript = "8 PM";
+    shadow.querySelector(".mic").click();
+    await settle();
+    shadow.querySelector(".mic").click();
+    await settle();
+    const spoken = parses()[parses().length - 1];
+    check("voice answer", spoken.text === "8 PM" && spoken.clarification.originalText === "Coffee with Alex" && spoken.clarification.draft.date === "2026-10-20" && !spoken.currentEvent);
+    nextResult = { ok: false, error: "QuickCalAI could not reach QuickCal. Try again." };
+    release();
+    await settle();
+    check("voice failure keeps answer", field.value === "8 PM" && shadow.textContent.includes("Coffee with Alex") && shadow.textContent.includes("What time?") && creates().length === 2);
+    globalThis.voiceTranscript = "";
+
+    field.value = "Thursday at 7 PM";
+    enter(field);
+    const corrected = parses()[parses().length - 1];
+    check("correction context", corrected.text === "Thursday at 7 PM" && corrected.clarification.draft.date === "2026-10-20" && corrected.clarification.draft.title === "Coffee with Alex" && !corrected.currentEvent);
+    nextResult = {
+      ok: true,
+      event: {
+        title: "Coffee with Alex",
+        date: "2026-10-22",
+        endDate: "2026-10-22",
+        startTime: "19:00",
+        endTime: "20:00",
+        timeZone: "America/Los_Angeles",
+        location: null,
+        needsClarification: false,
+        durationDefaulted: true,
+        clarificationQuestions: [],
+      },
+    };
+    release();
+    await settle();
+    check("clarification creates once", creates().length === 3 && creates()[2].event.title === "Coffee with Alex" && creates()[2].event.startTime === "19:00" && creates()[2].event.endTime === "20:00");
+    nextResult = {
+      ok: true,
+      summary: "Coffee with Alex",
+      title: "Coffee with Alex",
+      date: "2026-10-22",
+      endDate: "2026-10-22",
+      startTime: "19:00",
+      endTime: "20:00",
+      dateText: "Oct 22, 2026",
+      timeText: "7:00\u20138:00 PM",
+      timeZone: "America/Los_Angeles",
+      htmlLink: "https://calendar.google.com/calendar/event?eid=coffee",
+    };
+    release();
+    await settle();
+    check("clarification saved", shadow.textContent.includes("Event successfully created") && document.getElementById("quickcal-ai-host").dataset.mode === "saved");
+    field.value = "move it to 9";
+    enter(field);
+    const followUp = parses()[parses().length - 1];
+    check("saved edit is not clarification", followUp.currentEvent && followUp.currentEvent.title === "Coffee with Alex" && !followUp.clarification);
+    nextResult = {
+      ok: true,
+      event: {
+        title: "Coffee with Alex",
+        date: null,
+        startTime: null,
+        endTime: null,
+        timeZone: "America/Los_Angeles",
+        needsClarification: true,
+        clarificationQuestions: ["Which time?"],
+      },
+    };
+    release();
+    await settle();
+    visibleAction("New event").click();
+    await settle();
+
+    field.value = "Lunch";
+    nextResult = {
+      ok: true,
+      event: {
+        title: "Lunch",
+        date: null,
+        startTime: null,
+        endTime: null,
+        timeZone: "America/Los_Angeles",
+        location: null,
+        needsClarification: true,
+        durationDefaulted: false,
+        clarificationQuestions: ["What date should I use?"],
+      },
+    };
+    enter(field);
+    release();
+    await settle();
+    check("cancel target", shadow.textContent.includes("What date and time?") && field.value === "");
+    visibleAction("Cancel").click();
+    await settle();
+    check("cancel clears draft", document.getElementById("quickcal-ai-host").dataset.mode === "input" && field.value === "" && field.placeholder === "Coffee with Alex tomorrow at 10 AM" && creates().length === 3);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    globalThis.__quickcalAi.toggle();
+    await settle();
+    check("reopen after cancel", document.getElementById("quickcal-ai-host").dataset.mode === "input" && parses().filter((message) => message.text === "Lunch").length === 1);
 
     field.value = "Coffee with Alex tomorrow at 10 AM";
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -291,14 +437,14 @@ const page = `<!DOCTYPE html>
     field.dispatchEvent(new Event("input", { bubbles: true }));
     held();
     await settle();
-    check("stale edit", shadow.querySelector(".body").hidden === true && creates().length === 2);
+    check("stale edit", shadow.querySelector(".body").hidden === true && creates().length === 3);
 
     field.value = "Coffee with Alex tomorrow at 10 AM";
     enter(field);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     release();
     await settle();
-    check("closed during parse", document.getElementById("quickcal-ai-host").dataset.open === "false" && creates().length === 2);
+    check("closed during parse", document.getElementById("quickcal-ai-host").dataset.open === "false" && creates().length === 3);
     globalThis.__quickcalAi.toggle();
     check("reopen input", document.getElementById("quickcal-ai-host").dataset.mode === "input");
     check("still one host", document.querySelectorAll("#quickcal-ai-host").length === 1);

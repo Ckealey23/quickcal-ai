@@ -60,6 +60,46 @@ describe("request validation", () => {
     );
     assert.equal(validateRequest({ text: "Lunch", timeZone: "UTC" }).ok, true);
   });
+
+  it("accepts an unsaved clarification and rejects mixing it with a saved event", () => {
+    const draft = {
+      title: "Coffee with Alex",
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+    };
+    const result = validateRequest({
+      text: "Tuesday at 8 PM",
+      timeZone: zone,
+      clarification: { originalText: "Coffee with Alex", draft: draft },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.currentEvent, null);
+    assert.equal(result.clarification.originalText, "Coffee with Alex");
+    assert.equal(result.clarification.draft.title, "Coffee with Alex");
+    assert.equal(result.clarification.draft.date, null);
+    const saved = {
+      title: "Coffee with Alex",
+      date: "2026-10-20",
+      endDate: "2026-10-20",
+      startTime: "20:00",
+      endTime: "21:00",
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+    };
+    const mixed = validateRequest({
+      text: "Tuesday at 8 PM",
+      timeZone: zone,
+      currentEvent: saved,
+      clarification: { originalText: "Coffee with Alex", draft: draft },
+    });
+    assert.equal(mixed.ok, false);
+    assert.match(mixed.error, /saved event/);
+  });
 });
 
 describe("calendar values", () => {

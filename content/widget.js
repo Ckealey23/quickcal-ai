@@ -221,7 +221,13 @@
   newButton.textContent = "New event";
   newButton.hidden = true;
 
-  actions.append(retryButton, connectButton, viewLink, newButton);
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "action";
+  cancelButton.textContent = "Cancel";
+  cancelButton.hidden = true;
+
+  actions.append(retryButton, connectButton, viewLink, newButton, cancelButton);
   body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, noteLine, questionList, saveError, rule, actions);
   bar.append(input, listening, dismissButton, micButton);
   card.append(bar, body);
@@ -271,6 +277,7 @@
   let draftEvent = null;
   let draftText = "";
   let savedRecord = null;
+  let clarification = null;
   const startupApi = globalThis.QuickCalStartup;
   const session = startupApi.createSession();
   let healthPump = null;
@@ -347,6 +354,7 @@
     connectButton.hidden = true;
     viewLink.hidden = true;
     newButton.hidden = true;
+    cancelButton.hidden = true;
     viewLink.removeAttribute("href");
     rule.hidden = true;
     actions.hidden = true;
@@ -357,8 +365,10 @@
     draftEvent = null;
     body.hidden = true;
     card.classList.remove("expanded");
+    card.classList.remove("clarifying");
     dismissButton.hidden = false;
     input.placeholder = INPUT_PLACEHOLDER;
+    input.setAttribute("aria-label", "Event description");
     host.dataset.mode = "input";
   }
 
@@ -373,19 +383,66 @@
     return view;
   }
 
-  function showClarifying(event) {
+  function draftFromEvent(event) {
+    return {
+      title: event.title || null,
+      date: event.date || null,
+      startTime: event.startTime || null,
+      endTime: event.endTime || null,
+      timeZone: event.timeZone,
+      location: event.location || null,
+      recurrence: event.recurrence || null,
+    };
+  }
+
+  function isScheduleQuestion(question) {
+    return /what date should|which date|what time does this event start/i.test(question);
+  }
+
+  function clarificationPrompt(event) {
+    const questions = [];
+    (event.clarificationQuestions || []).forEach((question) => {
+      if (typeof question !== "string") return;
+      const trimmed = question.trim();
+      if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
+    });
+    const special = questions.filter((question) => !isScheduleQuestion(question));
+    if (special.length) return { question: special[0], placeholder: "Your answer" };
+    if (!event.date && !event.startTime) return { question: "What date and time?", placeholder: "Tuesday at 8 PM" };
+    if (!event.date) return { question: "What date?", placeholder: "Tuesday" };
+    if (!event.startTime) return { question: "What time?", placeholder: "8 PM" };
+    return { question: questions[0] || "What should be clarified?", placeholder: "Your answer" };
+  }
+
+  function showClarifying(event, sourceText) {
     mode = "clarifying";
+    const originalText = clarification && clarification.originalText ? clarification.originalText : sourceText;
+    clarification = { originalText: originalText, draft: draftFromEvent(event) };
     draftEvent = null;
     clearStatus();
     successRow.hidden = true;
     creatingLine.hidden = true;
     showSaveError("");
     showCard(event);
+    const prompt = clarificationPrompt(event);
+    fillList(questionList, [prompt.question]);
     hideActions();
+    newButton.hidden = false;
+    cancelButton.hidden = false;
+    rule.hidden = false;
+    actions.hidden = false;
+    card.classList.add("clarifying");
+    input.value = "";
+    input.placeholder = prompt.placeholder;
+    input.setAttribute("aria-label", "Answer");
+    host.dataset.mode = "clarifying";
+    input.focus();
   }
 
   function showCreating(event) {
     mode = "creating";
+    clarification = null;
+    card.classList.remove("clarifying");
     draftEvent = event;
     draftText = input.value.trim();
     clearStatus();
@@ -409,6 +466,7 @@
     connectButton.hidden = !disconnected;
     viewLink.hidden = true;
     newButton.hidden = true;
+    cancelButton.hidden = true;
     rule.hidden = false;
     actions.hidden = false;
     if (disconnected) connectButton.focus();
@@ -417,6 +475,8 @@
 
   function showSaved(result) {
     mode = "saved";
+    clarification = null;
+    card.classList.remove("clarifying");
     savedRecord = result;
     draftEvent = null;
     card.classList.add("expanded");
@@ -445,6 +505,8 @@
     actions.hidden = false;
     input.value = "";
     input.placeholder = FOLLOW_PLACEHOLDER;
+    input.setAttribute("aria-label", "Event description");
+    cancelButton.hidden = true;
     host.dataset.mode = "saved";
     input.focus();
   }
@@ -472,7 +534,7 @@
 
   function render() {
     paintHost(host, styled && open, mode !== "input");
-    if (styled && open && mode === "input" && !pending && !saving && voicePhase === "idle") focusInput();
+    if (styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
   }
 
   function setOpen(next) {
@@ -644,6 +706,10 @@
     const generation = requestGeneration + 1;
     requestGeneration = generation;
     const editing = mode === "saved" && savedRecord;
+    const answering = mode === "clarifying" && clarification;
+    const clarificationContext = answering
+      ? { originalText: clarification.originalText, draft: clarification.draft }
+      : null;
     pending = true;
     if (!editing) showStatus("Reading your event\u2026", false);
     else {
@@ -657,9 +723,14 @@
       const message = {
         type: "quickcal-parse",
         text: text,
-        timeZone: editing ? savedRecord.timeZone : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        timeZone: answering && clarificationContext.draft.timeZone
+          ? clarificationContext.draft.timeZone
+          : editing
+            ? savedRecord.timeZone
+            : Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       };
-      if (editing) message.currentEvent = currentEventPayload();
+      if (answering) message.clarification = clarificationContext;
+      else if (editing) message.currentEvent = currentEventPayload();
       result = await chrome.runtime.sendMessage(message);
     } catch (error) {
       result = {
@@ -674,8 +745,8 @@
     }
     if (!open) {
       pending = false;
-      if (!editing) showInputMode();
-      else creatingLine.hidden = true;
+      if (!editing && !clarification) showInputMode();
+      else if (editing) creatingLine.hidden = true;
       clearStatus();
       return;
     }
@@ -689,6 +760,16 @@
             ? result.error
             : "QuickCalAI could not read that change."
         );
+      } else if (answering) {
+        showStatus(
+          result && typeof result.error === "string"
+            ? result.error
+            : "QuickCalAI could not read that answer.",
+          true
+        );
+        if (result && (result.state === "disconnected" || result.state === "unapproved")) {
+          connectRoute.hidden = false;
+        }
       } else {
         showInputMode();
         showStatus(
@@ -708,7 +789,7 @@
     const view = previewApi.previewModel(result.event);
     if (!view.saveable) {
       if (editing) showEditQuestion(result.event);
-      else showClarifying(result.event);
+      else showClarifying(result.event, text);
       render();
       return;
     }
@@ -740,9 +821,22 @@
     return pending || saving || voicePhase !== "idle";
   }
 
+  function discardClarification() {
+    requestGeneration += 1;
+    pending = false;
+    clarification = null;
+    savedRecord = null;
+    input.value = "";
+    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" }).catch(() => {});
+    showInputMode();
+    clearStatus();
+    render();
+  }
+
   async function beginNewEvent(text) {
     dismissSelectionChoice();
     selectionHold = false;
+    clarification = null;
     savedRecord = null;
     showInputMode();
     input.value = text;
@@ -763,7 +857,7 @@
       maxLength: globalThis.QuickCalSelection.MAX_TEXT_LENGTH,
       seen: seenSelections,
       busy: selectionBusy(),
-      draft: input.value.trim().length > 0,
+      draft: input.value.trim().length > 0 || mode === "clarifying",
     });
     if (plan.action === "ignore") return { ok: true, ignored: true };
     rememberSelection(plan.operationId);
@@ -1043,11 +1137,12 @@
   newButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    savedRecord = null;
-    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" });
-    input.value = "";
-    showInputMode();
-    render();
+    discardClarification();
+  });
+  cancelButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    discardClarification();
   });
   connectButton.addEventListener("click", (event) => {
     event.preventDefault();

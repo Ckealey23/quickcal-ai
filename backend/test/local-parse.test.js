@@ -120,6 +120,41 @@ describe("parser messages", () => {
     assert.equal(JSON.stringify(reply).includes("ya29.extension-test-token"), false);
   });
 
+  it("sends clarification context without a saved event", async () => {
+    const calls = [];
+    const listener = listen(async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, async json() { return sampleEvent; } };
+    });
+    listener(
+      {
+        type: "quickcal-parse",
+        text: "Tuesday at 8 PM",
+        timeZone: "America/Los_Angeles",
+        clarification: {
+          originalText: "Coffee with Alex",
+          draft: {
+            title: "Coffee with Alex",
+            date: null,
+            startTime: null,
+            endTime: null,
+            timeZone: "America/Los_Angeles",
+            location: null,
+            recurrence: null,
+          },
+        },
+      },
+      contentSender(),
+      () => {}
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    const body = JSON.parse(calls[0].options.body);
+    assert.equal(body.text, "Tuesday at 8 PM");
+    assert.equal(body.clarification.originalText, "Coffee with Alex");
+    assert.equal(body.clarification.draft.title, "Coffee with Alex");
+    assert.equal(body.currentEvent, undefined);
+  });
+
   it("reports a timeout and a parser error without retrying", async () => {
     const timeoutError = new Error("timed out");
     timeoutError.name = "TimeoutError";

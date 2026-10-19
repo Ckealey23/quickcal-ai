@@ -290,6 +290,11 @@
   display: none;
 }
 
+.card.clarifying .body {
+  order: -1;
+  padding-top: 16px;
+}
+
 .body {
   display: flex;
   flex-direction: column;

@@ -349,6 +349,7 @@ export function createHandler({
         text: input.text,
         timeZone: input.timeZone,
         currentEvent: input.currentEvent,
+        clarification: input.clarification,
       }), parseTimeoutMs);
       sendJson(request, response, 200, event);
     } catch (error) {

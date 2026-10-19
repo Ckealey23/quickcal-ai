@@ -658,6 +658,73 @@
     return finish(next, recurrence);
   }
 
+  function normalizeDraft(value, timeZone) {
+    if (value == null) return { ok: false, error: "Clarification draft is not valid." };
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, error: "Clarification draft is not valid." };
+    }
+    const title = value.title == null ? null : typeof value.title === "string" ? value.title.trim() : null;
+    if (value.title != null && !title) return { ok: false, error: "Clarification draft is not valid." };
+    if (title && title.length > 200) return { ok: false, error: "Clarification draft is not valid." };
+    const location = value.location == null ? null : typeof value.location === "string" ? value.location.trim() : null;
+    if (value.location != null && location == null) return { ok: false, error: "Clarification draft is not valid." };
+    if (location && location.length > 200) return { ok: false, error: "Clarification draft is not valid." };
+    const date = value.date == null ? null : value.date;
+    const startTime = value.startTime == null ? null : value.startTime;
+    const endTime = value.endTime == null ? null : value.endTime;
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: "Clarification draft is not valid." };
+    if (startTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) {
+      return { ok: false, error: "Clarification draft is not valid." };
+    }
+    if (endTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime)) {
+      return { ok: false, error: "Clarification draft is not valid." };
+    }
+    if (value.timeZone != null && value.timeZone !== timeZone) {
+      return { ok: false, error: "Clarification draft is not valid." };
+    }
+    const series = normalizeRecurrence(value.recurrence === undefined ? null : value.recurrence);
+    if (!series.ok) return { ok: false, error: "Clarification draft is not valid." };
+    return {
+      ok: true,
+      event: {
+        title: title,
+        date: date,
+        startTime: startTime,
+        endTime: endTime,
+        timeZone: timeZone,
+        location: location,
+        recurrence: series.recurrence,
+      },
+    };
+  }
+
+  function applyClarification(extracted, draft, answerText, originalText, clock) {
+    const current = draft || {};
+    const title = extracted.title || current.title || null;
+    const date = extracted.date || current.date || null;
+    const startTime = extracted.startTime || current.startTime || null;
+    const location = extracted.location == null ? current.location || null : extracted.location;
+    const recurrence = extracted.recurrence || current.recurrence || null;
+    const answerSetsEnd = mentionsScheduleChange(answerText);
+    const endTime = answerSetsEnd ? extracted.endTime : current.endTime || null;
+    const source = [originalText, answerText].filter(Boolean).join("\n");
+    return applySchedule(
+      {
+        title: title,
+        date: date,
+        startTime: startTime,
+        endTime: endTime,
+        timeZone: current.timeZone || extracted.timeZone,
+        location: location,
+        recurrence: recurrence,
+        needsClarification: false,
+        clarificationQuestions: extracted.clarificationQuestions || [],
+      },
+      source,
+      clock
+    );
+  }
+
   function normalizeCurrentEvent(value, timeZone) {
     if (value == null) return { ok: true, event: null };
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -877,5 +944,7 @@
     recurrenceScheduleText: recurrenceScheduleText,
     seriesEndText: seriesEndText,
     applyEdit: applyEdit,
+    applyClarification: applyClarification,
+    normalizeDraft: normalizeDraft,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

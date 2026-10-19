@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { referenceClock } from "../src/clock.js";
-import { applyEdit, applySchedule, prepareForSave, resolveEventZone } from "../src/schedule.js";
+import { applyClarification, applyEdit, applySchedule, prepareForSave, resolveEventZone } from "../src/schedule.js";
 import { validateExtraction } from "../src/validate.js";
 
 const zone = "America/Los_Angeles";
@@ -357,5 +357,95 @@ describe("editing a recurring series", () => {
     assert.equal(series.endTime, "20:00");
     assert.equal(series.recurrence.weekdays[0], "FR");
     assert.equal(prepareForSave(series).recurrenceRule, "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=FR");
+  });
+});
+
+describe("unsaved clarification", () => {
+  const clock = referenceClock(new Date("2026-10-19T20:00:00.000Z"), zone);
+
+  function extracted(overrides) {
+    return validateExtraction(event({
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      needsClarification: false,
+      clarificationQuestions: [],
+      ...overrides,
+    }), zone).event;
+  }
+
+  it("keeps the draft and fills one answer at a time", () => {
+    const draft = {
+      title: "Coffee with Alex",
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: "Avila",
+      recurrence: null,
+    };
+    const dated = applyClarification(extracted({ date: "2026-10-20" }), draft, "Tuesday", "Coffee with Alex", clock);
+    assert.equal(dated.title, "Coffee with Alex");
+    assert.equal(dated.date, "2026-10-20");
+    assert.equal(dated.location, "Avila");
+    assert.equal(dated.startTime, null);
+    assert.equal(dated.needsClarification, true);
+    assert.match(dated.clarificationQuestions.join(" "), /start/);
+    assert.equal(dated.clarificationQuestions.some((question) => /end/i.test(question)), false);
+
+    const timed = applyClarification(extracted({ startTime: "20:00" }), dated, "8 PM", "Coffee with Alex", clock);
+    assert.equal(timed.title, "Coffee with Alex");
+    assert.equal(timed.date, "2026-10-20");
+    assert.equal(timed.startTime, "20:00");
+    assert.equal(timed.endTime, "21:00");
+    assert.equal(timed.location, "Avila");
+    assert.equal(timed.durationDefaulted, true);
+    assert.equal(timed.needsClarification, false);
+    assert.equal(prepareForSave(timed).summary, "Coffee with Alex");
+  });
+
+  it("applies an explicit correction and does not treat the draft as a saved series", () => {
+    const draft = {
+      title: "Coffee with Alex",
+      date: "2026-10-20",
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+    };
+    const corrected = applyClarification(
+      extracted({ date: "2026-10-22", startTime: "19:00" }),
+      draft,
+      "Thursday at 7 PM",
+      "Coffee with Alex",
+      clock
+    );
+    assert.equal(corrected.date, "2026-10-22");
+    assert.equal(corrected.startTime, "19:00");
+    assert.equal(corrected.endTime, "20:00");
+    assert.equal(corrected.needsClarification, false);
+    assert.equal(String(corrected.clarificationQuestions || []).includes("entire weekly series"), false);
+
+    const answered = applyClarification(
+      extracted({ startTime: "20:00" }),
+      {
+        title: "Coffee with Alex",
+        date: null,
+        startTime: null,
+        endTime: null,
+        timeZone: zone,
+        location: null,
+        recurrence: { frequency: "weekly", weekdays: ["FR"], until: null, count: null },
+      },
+      "8 PM",
+      "Coffee with Alex every Friday",
+      clock
+    );
+    assert.equal(answered.needsClarification, false);
+    assert.equal(answered.startTime, "20:00");
+    assert.equal(answered.endTime, "21:00");
+    assert.equal(String(answered.clarificationQuestions || []).includes("entire weekly series"), false);
   });
 });

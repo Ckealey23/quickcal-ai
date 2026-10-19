@@ -43,7 +43,25 @@
       if (!current.ok) return { ok: false, error: current.error };
       currentEvent = current.event;
     }
-    return { ok: true, text: text, timeZone: timeZone, currentEvent: currentEvent };
+    let clarification = null;
+    if (message.clarification != null) {
+      const schedule = root.QuickCalSchedule;
+      if (!schedule || !schedule.normalizeDraft) return { ok: false, error: "Clarification is not valid." };
+      if (!message.clarification || typeof message.clarification.originalText !== "string") {
+        return { ok: false, error: "Clarification is not valid." };
+      }
+      const originalText = message.clarification.originalText.trim();
+      if (!originalText || originalText.length > MAX_TEXT_LENGTH) {
+        return { ok: false, error: "Clarification is not valid." };
+      }
+      const draft = schedule.normalizeDraft(message.clarification.draft, timeZone);
+      if (!draft.ok) return { ok: false, error: "Clarification is not valid." };
+      clarification = { originalText: originalText, draft: draft.event };
+    }
+    if (currentEvent && clarification) {
+      return { ok: false, error: "A clarification answer cannot edit a saved event." };
+    }
+    return { ok: true, text: text, timeZone: timeZone, currentEvent: currentEvent, clarification: clarification };
   }
 
   function optionalText(value) {
@@ -150,9 +168,11 @@
           Authorization: "Bearer " + token,
         },
         body: JSON.stringify(
-          input.currentEvent
-            ? { text: input.text, timeZone: input.timeZone, currentEvent: input.currentEvent }
-            : { text: input.text, timeZone: input.timeZone }
+          input.clarification
+            ? { text: input.text, timeZone: input.timeZone, clarification: input.clarification }
+            : input.currentEvent
+              ? { text: input.text, timeZone: input.timeZone, currentEvent: input.currentEvent }
+              : { text: input.text, timeZone: input.timeZone }
         ),
         signal: AbortSignal.timeout(timeoutMs),
       });

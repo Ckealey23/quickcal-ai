@@ -13,6 +13,8 @@ runInContext(
 
 export const applySchedule = sandbox.QuickCalSchedule.applySchedule;
 export const applyEdit = sandbox.QuickCalSchedule.applyEdit;
+export const applyClarification = sandbox.QuickCalSchedule.applyClarification;
+export const normalizeDraft = sandbox.QuickCalSchedule.normalizeDraft;
 export const normalizeCurrentEvent = sandbox.QuickCalSchedule.normalizeCurrentEvent;
 export const normalizeRecurrence = sandbox.QuickCalSchedule.normalizeRecurrence;
 export const resolveEventZone = sandbox.QuickCalSchedule.resolveEventZone;

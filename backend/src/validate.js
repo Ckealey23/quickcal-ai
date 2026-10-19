@@ -1,5 +1,5 @@
 import { MAX_TEXT_LENGTH } from "./config.js";
-import { normalizeCurrentEvent, normalizeRecurrence } from "./schedule.js";
+import { normalizeCurrentEvent, normalizeDraft, normalizeRecurrence } from "./schedule.js";
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -53,7 +53,29 @@ export function validateRequest(body) {
   }
   const current = normalizeCurrentEvent(body.currentEvent, timeZone);
   if (!current.ok) return current;
-  return { ok: true, text, timeZone, currentEvent: current.event };
+  const clarification = normalizeClarification(body.clarification, timeZone);
+  if (!clarification.ok) return clarification;
+  if (current.event && clarification.clarification) {
+    return { ok: false, error: "A clarification answer cannot edit a saved event." };
+  }
+  return { ok: true, text, timeZone, currentEvent: current.event, clarification: clarification.clarification };
+}
+
+function normalizeClarification(value, timeZone) {
+  if (value == null) return { ok: true, clarification: null };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "Clarification must be an object." };
+  }
+  if (typeof value.originalText !== "string") {
+    return { ok: false, error: "Clarification is not valid." };
+  }
+  const originalText = value.originalText.trim();
+  if (!originalText || originalText.length > MAX_TEXT_LENGTH) {
+    return { ok: false, error: "Clarification is not valid." };
+  }
+  const draft = normalizeDraft(value.draft, timeZone);
+  if (!draft.ok) return { ok: false, error: "Clarification is not valid." };
+  return { ok: true, clarification: { originalText: originalText, draft: draft.event } };
 }
 
 export function isRealDate(value) {
