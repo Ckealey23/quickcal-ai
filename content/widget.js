@@ -241,7 +241,19 @@
   healthRetry.className = "health-retry";
   healthRetry.textContent = "Try again";
   healthRetry.hidden = true;
-  shell.append(card, status, connectRoute, healthRetry);
+  const selectionChoice = document.createElement("div");
+  selectionChoice.className = "selection-choice";
+  selectionChoice.hidden = true;
+  const useSelection = document.createElement("button");
+  useSelection.type = "button";
+  useSelection.className = "use-selection";
+  useSelection.textContent = "Use selection";
+  const keepDraft = document.createElement("button");
+  keepDraft.type = "button";
+  keepDraft.className = "keep-draft";
+  keepDraft.textContent = "Keep draft";
+  selectionChoice.append(useSelection, keepDraft);
+  shell.append(card, status, selectionChoice, connectRoute, healthRetry);
 
   const stylesheet = document.createElement("link");
   stylesheet.rel = "stylesheet";
@@ -269,6 +281,9 @@
   let voiceStartedAt = 0;
   let voiceTimer = 0;
   let typedDraft = "";
+  let pendingSelection = "";
+  let selectionHold = false;
+  const seenSelections = new Set();
 
   function focusInput() {
     input.focus();
@@ -295,6 +310,7 @@
   }
 
   function clearStatus() {
+    selectionHold = false;
     status.hidden = true;
     status.textContent = "";
     status.className = "status";
@@ -464,6 +480,8 @@
       requestGeneration += 1;
       pending = false;
       clearStatus();
+      pendingSelection = "";
+      selectionChoice.hidden = true;
       session.noteClosed();
       connectRoute.hidden = true;
       healthRetry.hidden = true;
@@ -703,6 +721,79 @@
     await saveDraft();
   }
 
+  function rememberSelection(operationId) {
+    seenSelections.add(operationId);
+    if (seenSelections.size > 30) seenSelections.delete(seenSelections.values().next().value);
+  }
+
+  function dismissSelectionChoice() {
+    pendingSelection = "";
+    selectionChoice.hidden = true;
+  }
+
+  function showSelectionStatus(message) {
+    selectionHold = true;
+    showStatus(message, true);
+  }
+
+  function selectionBusy() {
+    return pending || saving || voicePhase !== "idle";
+  }
+
+  async function beginNewEvent(text) {
+    dismissSelectionChoice();
+    selectionHold = false;
+    savedRecord = null;
+    showInputMode();
+    input.value = text;
+    try {
+      await chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" });
+    } catch (error) {
+      // A failed clear still starts a new event because this submission has no saved record.
+    }
+    if (!alive || !open || input.value.trim() !== text) return;
+    submit(text);
+  }
+
+  function acceptSelection(message) {
+    const plan = globalThis.QuickCalSelection.planSelection({
+      operationId: message && message.operationId,
+      text: message && message.text,
+      tooLong: !!(message && message.tooLong),
+      maxLength: globalThis.QuickCalSelection.MAX_TEXT_LENGTH,
+      seen: seenSelections,
+      busy: selectionBusy(),
+      draft: input.value.trim().length > 0,
+    });
+    if (plan.action === "ignore") return { ok: true, ignored: true };
+    rememberSelection(plan.operationId);
+    if (!open) setOpen(true);
+    if (plan.action === "tooLong" || plan.action === "busy") {
+      showSelectionStatus(plan.message);
+      return { ok: true, action: plan.action };
+    }
+    if (plan.action === "confirm") {
+      pendingSelection = plan.text;
+      selectionChoice.hidden = false;
+      showStatus(plan.message, false);
+      return { ok: true, action: "confirm" };
+    }
+    beginNewEvent(plan.text);
+    return { ok: true, action: "submit" };
+  }
+
+  function onRuntimeMessage(message, sender, sendResponse) {
+    if (message && message.type === "quickcal-selection") {
+      try {
+        sendResponse(acceptSelection(message));
+      } catch (error) {
+        sendResponse({ ok: true, ignored: true });
+      }
+      return false;
+    }
+    onVoiceMessage(message);
+  }
+
   function onInputKeyDown(event) {
     if (event.key !== "Enter") return;
     if (event.isComposing || event.keyCode === 229) return;
@@ -803,6 +894,7 @@
 
   async function startVoice() {
     if (pending || saving || voicePhase !== "idle") return;
+    dismissSelectionChoice();
     if (connection && connection.connected === false) {
       showStatus("Connect Google Calendar to use QuickCalAI.", true);
       connectRoute.hidden = false;
@@ -927,7 +1019,7 @@
     saveGeneration += 1;
     document.removeEventListener("keydown", onEscape, true);
     document.removeEventListener("visibilitychange", onVisible);
-    chrome.runtime.onMessage.removeListener(onVoiceMessage);
+    chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     if (voicePhase !== "idle") {
       chrome.runtime.sendMessage({ type: "quickcal-voice", action: "cancel", sessionId: voiceSession }).catch(() => {});
       stopVoiceTimer();
@@ -988,8 +1080,25 @@
     showStatus(globalThis.QuickCalStartup.CONNECTING, false);
     pumpHealth();
   });
+  useSelection.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const text = pendingSelection;
+    if (!text || selectionBusy()) return;
+    beginNewEvent(text);
+  });
+  keepDraft.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dismissSelectionChoice();
+    if (status.textContent === "Replace your current text with the selection?") clearStatus();
+  });
   input.addEventListener("keydown", onInputKeyDown);
   input.addEventListener("input", () => {
+    if (!selectionChoice.hidden) {
+      dismissSelectionChoice();
+      if (status.className === "status") clearStatus();
+    }
     if (pending && mode !== "saved") {
       requestGeneration += 1;
       pending = false;
@@ -1005,7 +1114,7 @@
     } catch (error) {
       return;
     }
-    if (!alive || !open || mode !== "input" || input.value.trim() || pending || saving) return;
+    if (!alive || !open || mode !== "input" || input.value.trim() || pending || saving || selectionHold) return;
     if (result && result.event && safeCalendarLink(result.event.htmlLink)) showSaved(result.event);
   }
 
@@ -1021,7 +1130,7 @@
     const needsAccount = result && result.connected === false;
     const needsApproval = result && result.connected === true && result.quickcalReady === false && result.message;
     connectRoute.hidden = !(needsAccount || needsApproval);
-    if ((needsAccount || needsApproval) && session.phase() !== "waking") {
+    if ((needsAccount || needsApproval) && session.phase() !== "waking" && !selectionHold) {
       showStatus(
         needsAccount ? "Connect Google Calendar to use QuickCalAI." : result.message,
         true
@@ -1048,8 +1157,9 @@
         }
         if (!alive || !open || session.phase() !== "waking") return;
         const step = session.healthResult(!!(result && result.ok), Date.now());
-        if (step.status) showStatus(step.status, !!step.retry);
-        else if (!connection || connection.connected !== false) clearStatus();
+        if (step.status) {
+          if (!selectionHold) showStatus(step.status, !!step.retry);
+        } else if (!selectionHold && (!connection || connection.connected !== false)) clearStatus();
         healthRetry.hidden = !step.retry;
         if (step.parse && step.text && input.value.trim() === step.text) await submit(step.text, true);
         if (step.done) {
@@ -1076,7 +1186,7 @@
     render();
     restoreActive();
     const step = session.begin(Date.now());
-    if (step.status) showStatus(step.status, false);
+    if (step.status && !selectionHold) showStatus(step.status, false);
     pumpHealth();
     checkConnection();
   });
@@ -1088,7 +1198,7 @@
 
   document.addEventListener("keydown", onEscape, true);
   document.addEventListener("visibilitychange", onVisible);
-  chrome.runtime.onMessage.addListener(onVoiceMessage);
+  chrome.runtime.onMessage.addListener(onRuntimeMessage);
   paintVoice();
   document.documentElement.appendChild(host);
   host.dataset.mode = "input";

@@ -196,7 +196,9 @@
 }
 
 .connect-route,
-.health-retry {
+.health-retry,
+.use-selection,
+.keep-draft {
   display: inline-block;
   margin-top: 6px;
   padding: 0;
@@ -211,9 +213,22 @@
 }
 
 .connect-route:focus-visible,
-.health-retry:focus-visible {
+.health-retry:focus-visible,
+.use-selection:focus-visible,
+.keep-draft:focus-visible {
   outline: 2px solid #8aa4d6;
   outline-offset: 2px;
+}
+
+.selection-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  pointer-events: auto;
+}
+
+.selection-choice[hidden] {
+  display: none;
 }
 
 .status,

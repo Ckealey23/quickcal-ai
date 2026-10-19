@@ -4,7 +4,8 @@ importScripts(
   "shared/local-parse.js",
   "shared/preview.js",
   "shared/recording.js",
-  "shared/transcribe.js"
+  "shared/transcribe.js",
+  "shared/selection.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -21,6 +22,115 @@ function reportBlocked(error) {
   );
 }
 
+const WIDGET_FILES = [
+  "shared/schedule.js",
+  "shared/preview.js",
+  "shared/startup.js",
+  "shared/selection.js",
+  "content/widget.js",
+];
+const SELECTION_MENU_ID = "quickcal-add-selection";
+const SELECTION_MESSAGE = "quickcal-selection";
+const selectionChains = new Map();
+
+function createOperationId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "sel-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendSelection(tabId, message) {
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function deliverSelectionOnce(tabId, message) {
+  if (await sendSelection(tabId, message)) {
+    return { ok: true, injected: false, operationId: message.operationId };
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      files: WIDGET_FILES,
+    });
+  } catch (error) {
+    reportBlocked(error);
+    return { ok: false, injected: false, operationId: message.operationId };
+  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await sendSelection(tabId, message)) {
+      return { ok: true, injected: true, operationId: message.operationId };
+    }
+    await wait(50);
+  }
+  reportBlocked();
+  return { ok: false, injected: true, operationId: message.operationId };
+}
+
+function enqueueSelection(tabId, task) {
+  const previous = selectionChains.get(tabId) || Promise.resolve();
+  const run = previous.then(task, task);
+  selectionChains.set(
+    tabId,
+    run.then(
+      () => undefined,
+      () => undefined
+    )
+  );
+  return run;
+}
+
+function handleSelection(info, tab) {
+  if (!info || info.menuItemId !== SELECTION_MENU_ID) return Promise.resolve({ ok: false });
+  const text = typeof info.selectionText === "string" ? info.selectionText : "";
+  if (!text.trim()) return Promise.resolve({ ok: false });
+  if (!tab || tab.id == null || !canInject(tab.url)) {
+    reportBlocked();
+    return Promise.resolve({ ok: false, blocked: true });
+  }
+  const operationId = createOperationId();
+  const tooLong = text.trim().length > self.QuickCalSelection.MAX_TEXT_LENGTH;
+  const message = {
+    type: SELECTION_MESSAGE,
+    operationId: operationId,
+    text: tooLong ? "" : text,
+    tooLong: tooLong,
+  };
+  return enqueueSelection(tab.id, () => deliverSelectionOnce(tab.id, message));
+}
+
+function registerSelectionMenu() {
+  if (!chrome.contextMenus || !chrome.contextMenus.create) return;
+  chrome.contextMenus.create(
+    {
+      id: SELECTION_MENU_ID,
+      title: "Add to QuickCal",
+      contexts: ["selection"],
+      documentUrlPatterns: ["http://*/*", "https://*/*"],
+    },
+    () => {
+      void chrome.runtime.lastError;
+    }
+  );
+}
+
+registerSelectionMenu();
+
+if (chrome.contextMenus && chrome.contextMenus.onClicked) {
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    const run = handleSelection(info, tab);
+    run.catch(() => {});
+    return run;
+  });
+}
+
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || tab.id == null || !canInject(tab.url)) {
     reportBlocked();
@@ -31,7 +141,7 @@ chrome.action.onClicked.addListener((tab) => {
     chrome.scripting
       .executeScript({
         target: { tabId: tab.id },
-        files: ["shared/schedule.js", "shared/preview.js", "shared/startup.js", "content/widget.js"],
+        files: WIDGET_FILES,
       })
       .catch(reportBlocked);
   } catch (error) {

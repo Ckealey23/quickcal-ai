@@ -14,7 +14,7 @@
     "page": "options/options.html",
     "open_in_tab": true
   },
-  "permissions": ["activeTab", "scripting", "identity", "storage", "offscreen"],
+  "permissions": ["activeTab", "scripting", "identity", "storage", "offscreen", "contextMenus"],
   "host_permissions": [
     "https://www.googleapis.com/calendar/*",
     "https://oauth2.googleapis.com/*",

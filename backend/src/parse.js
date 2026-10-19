@@ -113,7 +113,8 @@ export function instructionsFor(clock, currentEvent) {
     "If the user gives a series end date, set recurrence.until to that YYYY-MM-DD and leave count null. If the user gives a number of occurrences, set count and leave until null. Do not set both.",
     "If there is no recurrence, set recurrence to null.",
     "If the repeat pattern is not a weekly series on specific weekdays, including daily, monthly, yearly, or every other week, set recurrence to null, set needsClarification to true, and ask one question. Do not turn that request into a one-time event.",
-    "If the text has multiple events, an all-day event, or an overnight event, set needsClarification to true and ask a question. Do not drop that information and do not turn it into one ordinary same-day timed event.",
+    "If the text has multiple distinct events, set needsClarification to true and ask the user to select one event. Do not create any of them.",
+    "If the text describes an all-day event or an overnight event, set needsClarification to true and ask a question. Do not drop that information and do not turn it into one ordinary same-day timed event.",
     "Ask only for information required to determine the schedule. Coffee with someone and no date or time still needs a date and a start time.",
     "If a date or time is ambiguous, set needsClarification to true and ask a question.",
   ];
