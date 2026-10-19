@@ -107,16 +107,92 @@
   border: 1px solid #e6eef8;
   border-radius: 30px;
   background: #ffffff;
+  color: #35322d;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
   pointer-events: auto;
-  cursor: default;
+  cursor: pointer;
 }
 
 .mic:disabled {
   opacity: 1;
+  cursor: default;
 }
 
-.mic img {
+.mic:focus-visible {
+  outline: 2px solid #8aa4d6;
+  outline-offset: 2px;
+}
+
+.mic img,
+.mic-mark {
   display: block;
+}
+
+.listening {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 16px 0 20px;
+  color: #35322d;
+  font-size: 15px;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.rec-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c45c5c;
+}
+
+.bar.recording .rec-dot {
+  animation: quickcal-pulse 1.2s ease-out infinite;
+}
+
+.listening-label {
+  min-width: 0;
+}
+
+.elapsed {
+  margin-left: auto;
+  color: #7a7f8a;
+  font-style: normal;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.discard {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6f9fd8;
+  font: inherit;
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.discard:focus-visible {
+  outline: 2px solid #8aa4d6;
+  outline-offset: 2px;
+}
+
+@keyframes quickcal-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  70% { transform: scale(1.35); opacity: 0.45; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar.recording .rec-dot { animation: none; }
 }
 
 .connect-route,

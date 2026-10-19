@@ -127,10 +127,11 @@ Set these environment variables in Render. Mark the key and the allowlist as sec
 | --- | --- |
 | `OPENAI_API_KEY` | `YOUR_OPENAI_API_KEY` |
 | `OPENAI_MODEL` | `gpt-6-luna` |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` |
 | `GOOGLE_CLIENT_ID` | the `oauth2.client_id` already in `manifest.json` |
 | `ALLOWED_EMAILS` | `reference.customer@example.com,second.customer@example.com` |
 
-Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Do not put the OpenAI key, the allowlist, or any shared password in the extension. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
+Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Parsing and transcription share that per-account limit. Do not put the OpenAI key, the allowlist, or any shared password in the extension. Audio is kept only in memory for the request. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
 
 ### Google configuration for the hosted parser
 
@@ -142,7 +143,7 @@ The token Google returns must be for this extension’s client ID and must inclu
 
 ### Extension changes for the hosted service
 
-The extension calls `https://quickcal-ai.onrender.com/parse-event`. The service worker attaches the Google access token as `Authorization: Bearer`. The widget never receives that token. `GET /health` checks that Render is awake and does not call the model. `GET /access` checks that this Google account is approved. It uses the same token check as `/parse-event` and does not call the model. Deploy the backend that provides `/access` before testing approval in Chrome. Until that deploy, an approved account can still look unapproved.
+The extension calls `https://quickcal-ai.onrender.com/parse-event`. The service worker attaches the Google access token as `Authorization: Bearer`. The widget never receives that token. `GET /health` checks that Render is awake and does not call the model. `GET /access` checks that this Google account is approved. It uses the same token check as `/parse-event` and does not call the model. `POST /transcribe` accepts one microphone recording, checks the same Google account, applies the same per-user limit, and calls the transcription model. Deploy the backend that provides `/transcribe` before testing voice in Chrome. Until that deploy, voice capture can succeed and transcription will fail.
 
 Reference customers do not need a local server, `backend/.env`, or Node.js. After reloading the extension, each person connects Google Calendar again so the token includes the email scope.
 

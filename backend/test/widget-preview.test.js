@@ -36,6 +36,9 @@ const page = `<!DOCTYPE html>
       sendMessage(message) {
         calls.push(message);
         if (message && message.type === "quickcal-backend") return Promise.resolve({ ok: true });
+        if (message && message.type === "quickcal-voice") {
+          return Promise.resolve({ ok: false, phase: "idle", error: "QuickCalAI could not find a microphone." });
+        }
         if (message.action === "status" || message.action === "active" || message.action === "new" || message.action === "open-settings") {
           return Promise.resolve({ ok: true, connected: true, quickcalReady: true, event: null });
         }
@@ -43,6 +46,7 @@ const page = `<!DOCTYPE html>
           release = () => resolve(nextResult);
         });
       },
+      onMessage: { addListener() {}, removeListener() {} },
     },
   };
 </script>
@@ -103,7 +107,13 @@ const page = `<!DOCTYPE html>
     field.focus({ focusVisible: true });
     const glow = getComputedStyle(bar).boxShadow;
     const shellStyle = getComputedStyle(shadow.querySelector(".shell"));
-    check("mic disabled", shadow.querySelector(".mic").disabled === true);
+    check("mic ready", shadow.querySelector(".mic").disabled === false && shadow.querySelector(".mic").getAttribute("aria-label") === "Start voice input");
+    field.value = "typed draft";
+    shadow.querySelector(".mic").click();
+    await settle();
+    check("voice failure keeps draft", field.value === "typed draft" && parses().length === 0);
+    check("voice error is simulated", shadow.querySelector(".status").textContent.includes("could not find a microphone"));
+    field.value = "";
     check("icons", !!shadow.querySelector("img[src*='calendar.svg']") && !!shadow.querySelector("img[src*='clock.svg']") && !!shadow.querySelector("img[src*='check.svg']"));
     check("chevron", shadow.querySelector(".dismiss").getAttribute("aria-label") === "Hide QuickCalAI" && !!shadow.querySelector(".dismiss img[src*='chevron.svg']"));
     check("no external close", shadow.querySelector(".close") === null);

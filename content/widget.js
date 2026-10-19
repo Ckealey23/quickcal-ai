@@ -87,9 +87,8 @@
   const micButton = document.createElement("button");
   micButton.type = "button";
   micButton.className = "mic";
-  micButton.disabled = true;
-  micButton.setAttribute("aria-label", "Voice input coming soon");
-  micButton.title = "Voice input coming soon";
+  micButton.setAttribute("aria-label", "Start voice input");
+  micButton.title = "Start voice input";
 
   const micIcon = document.createElement("img");
   micIcon.src = chrome.runtime.getURL("assets/mic.svg");
@@ -97,7 +96,29 @@
   micIcon.width = 18;
   micIcon.height = 18;
   micIcon.draggable = false;
-  micButton.appendChild(micIcon);
+  const micMark = document.createElement("span");
+  micMark.className = "mic-mark";
+  micMark.hidden = true;
+  micButton.append(micIcon, micMark);
+
+  const listening = document.createElement("div");
+  listening.className = "listening";
+  listening.hidden = true;
+  const recDot = document.createElement("span");
+  recDot.className = "rec-dot";
+  recDot.setAttribute("aria-hidden", "true");
+  const listeningLabel = document.createElement("span");
+  listeningLabel.className = "listening-label";
+  listeningLabel.textContent = "Listening";
+  const elapsed = document.createElement("span");
+  elapsed.className = "elapsed";
+  elapsed.textContent = "0:00";
+  const discardButton = document.createElement("button");
+  discardButton.type = "button";
+  discardButton.className = "discard";
+  discardButton.textContent = "Discard";
+  discardButton.hidden = true;
+  listening.append(recDot, listeningLabel, elapsed, discardButton);
 
   const body = document.createElement("div");
   body.className = "body";
@@ -202,7 +223,7 @@
 
   actions.append(retryButton, connectButton, viewLink, newButton);
   body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, noteLine, questionList, saveError, rule, actions);
-  bar.append(input, dismissButton, micButton);
+  bar.append(input, listening, dismissButton, micButton);
   card.append(bar, body);
   card.setAttribute("aria-labelledby", "quickcal-event-title");
 
@@ -242,6 +263,12 @@
   const session = startupApi.createSession();
   let healthPump = null;
   let connection = null;
+  let voicePhase = "idle";
+  let voiceSession = 0;
+  let voiceGeneration = 0;
+  let voiceStartedAt = 0;
+  let voiceTimer = 0;
+  let typedDraft = "";
 
   function focusInput() {
     input.focus();
@@ -429,7 +456,7 @@
 
   function render() {
     paintHost(host, styled && open, mode !== "input");
-    if (styled && open && mode === "input" && !pending && !saving) focusInput();
+    if (styled && open && mode === "input" && !pending && !saving && voicePhase === "idle") focusInput();
   }
 
   function setOpen(next) {
@@ -440,6 +467,7 @@
       session.noteClosed();
       connectRoute.hidden = true;
       healthRetry.hidden = true;
+      if (voicePhase !== "idle") cancelVoice();
     } else {
       if (session.phase() !== "ready") {
         const step = session.begin(Date.now());
@@ -680,15 +708,216 @@
     if (event.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     event.stopPropagation();
-    if (pending || saving) return;
+    if (pending || saving || voicePhase === "recording" || voicePhase === "review" || voicePhase === "transcribing" || voicePhase === "permission") return;
+    if (voicePhase === "held") cancelVoice();
     const text = input.value.trim();
     if (!text) return;
     submit(text);
   }
 
+  function formatElapsed(ms) {
+    const total = Math.min(60, Math.max(0, Math.floor(ms / 1000)));
+    const seconds = total % 60;
+    return Math.floor(total / 60) + ":" + String(seconds).padStart(2, "0");
+  }
+
+  function stopVoiceTimer() {
+    if (voiceTimer) clearInterval(voiceTimer);
+    voiceTimer = 0;
+  }
+
+  function paintVoice() {
+    const active = voicePhase === "recording" || voicePhase === "review" || voicePhase === "permission" || voicePhase === "transcribing";
+    listening.hidden = !active;
+    input.hidden = active;
+    discardButton.hidden = voicePhase !== "review";
+    bar.classList.toggle("recording", voicePhase === "recording");
+    bar.classList.toggle("review", voicePhase === "review");
+    micIcon.hidden = voicePhase !== "idle" && voicePhase !== "held";
+    micMark.hidden = voicePhase === "idle" || voicePhase === "held";
+    micButton.disabled = pending || saving || voicePhase === "transcribing" || voicePhase === "permission";
+    if (voicePhase === "recording") {
+      listeningLabel.textContent = "Listening";
+      micMark.textContent = "Stop";
+      micButton.setAttribute("aria-label", "Stop and submit recording");
+      micButton.title = "Stop and submit recording";
+    } else if (voicePhase === "review") {
+      listeningLabel.textContent = "Recording stopped";
+      micMark.textContent = "Submit";
+      micButton.setAttribute("aria-label", "Submit recording");
+      micButton.title = "Submit recording";
+    } else if (voicePhase === "transcribing") {
+      listeningLabel.textContent = "Transcribing";
+      elapsed.textContent = "";
+      micButton.setAttribute("aria-label", "Transcribing");
+    } else if (voicePhase === "permission") {
+      listeningLabel.textContent = "Allow microphone";
+      elapsed.textContent = "";
+      micButton.setAttribute("aria-label", "Waiting for microphone access");
+    } else if (voicePhase === "held") {
+      micButton.setAttribute("aria-label", "Try transcription again");
+      micButton.title = "Try transcription again";
+    } else {
+      micButton.setAttribute("aria-label", "Start voice input");
+      micButton.title = "Start voice input";
+    }
+  }
+
+  function restoreTypedDraft() {
+    input.value = typedDraft;
+  }
+
+  function resetVoiceUi(restore) {
+    stopVoiceTimer();
+    voicePhase = "idle";
+    voiceSession = 0;
+    if (restore) restoreTypedDraft();
+    paintVoice();
+  }
+
+  async function sendVoice(action) {
+    return chrome.runtime.sendMessage({
+      type: "quickcal-voice",
+      action: action,
+      sessionId: voiceSession,
+    });
+  }
+
+  function cancelVoice() {
+    if (voicePhase === "idle") return;
+    const sessionId = voiceSession;
+    voiceGeneration += 1;
+    resetVoiceUi(true);
+    chrome.runtime.sendMessage({ type: "quickcal-voice", action: "cancel", sessionId: sessionId }).catch(() => {});
+  }
+
+  function startVoiceClock() {
+    stopVoiceTimer();
+    voiceStartedAt = Date.now();
+    elapsed.textContent = "0:00";
+    voiceTimer = setInterval(() => {
+      if (voicePhase !== "recording") return;
+      elapsed.textContent = formatElapsed(Date.now() - voiceStartedAt);
+    }, 200);
+  }
+
+  async function startVoice() {
+    if (pending || saving || voicePhase !== "idle") return;
+    if (connection && connection.connected === false) {
+      showStatus("Connect Google Calendar to use QuickCalAI.", true);
+      connectRoute.hidden = false;
+      return;
+    }
+    typedDraft = input.value;
+    voiceGeneration += 1;
+    const generation = voiceGeneration;
+    micButton.disabled = true;
+    let result;
+    try {
+      result = await sendVoice("start");
+    } catch (error) {
+      result = { ok: false, error: "QuickCalAI could not reach the microphone." };
+    }
+    if (!alive || generation !== voiceGeneration) return;
+    if (!result || result.ignored) return;
+    if (!result.ok) {
+      resetVoiceUi(true);
+      showStatus(result.error || "QuickCalAI could not reach the microphone.", true);
+      return;
+    }
+    voiceSession = result.sessionId || 0;
+    voicePhase = result.phase || "recording";
+    paintVoice();
+    if (voicePhase === "recording") startVoiceClock();
+    else if (voicePhase === "permission") {
+      showStatus("Allow the microphone in the QuickCalAI tab.", false);
+    }
+  }
+
+  async function submitRecording() {
+    if (voicePhase !== "recording" && voicePhase !== "review" && voicePhase !== "held") return;
+    const generation = voiceGeneration + 1;
+    voiceGeneration = generation;
+    const sessionId = voiceSession;
+    const action = voicePhase === "held" ? "retry" : "stop";
+    voicePhase = "transcribing";
+    stopVoiceTimer();
+    paintVoice();
+    showStatus("Transcribing\u2026", false);
+    let result;
+    try {
+      result = await sendVoice(action);
+    } catch (error) {
+      result = { ok: false, error: "QuickCalAI could not reach QuickCal. Try again.", phase: "held" };
+    }
+    if (!alive || generation !== voiceGeneration || sessionId !== voiceSession) return;
+    if (!result || result.ignored) return;
+    if (result.ok && typeof result.text === "string" && result.text.trim()) {
+      const text = result.text.trim();
+      resetVoiceUi(false);
+      input.value = text;
+      clearStatus();
+      await submit(text);
+      return;
+    }
+    voicePhase = result && result.phase === "held" ? "held" : "idle";
+    voiceSession = voicePhase === "held" ? sessionId : 0;
+    restoreTypedDraft();
+    paintVoice();
+    showStatus(result && result.error ? result.error : "QuickCalAI could not transcribe that recording.", true);
+    if (result && result.state === "disconnected") connectRoute.hidden = false;
+  }
+
+  function onVoiceMessage(message) {
+    if (!message || message.type !== "quickcal-voice") return;
+    if (message.sessionId && voiceSession && message.sessionId !== voiceSession) return;
+    if (!alive || !open) {
+      if (message.phase === "recording" || message.phase === "review") {
+        chrome.runtime.sendMessage({
+          type: "quickcal-voice",
+          action: "cancel",
+          sessionId: message.sessionId,
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (message.cancelled || (message.phase === "idle" && message.ok === true && !message.text)) {
+      resetVoiceUi(true);
+      return;
+    }
+    if (message.phase === "recording") {
+      voiceSession = message.sessionId || voiceSession;
+      voicePhase = "recording";
+      clearStatus();
+      paintVoice();
+      startVoiceClock();
+      return;
+    }
+    if (message.phase === "review") {
+      voicePhase = "review";
+      stopVoiceTimer();
+      elapsed.textContent = "1:00";
+      paintVoice();
+      showStatus("Recording reached 1 minute. Submit it or discard it.", false);
+      return;
+    }
+    if (message.ok === false && message.error) {
+      const retain = message.phase === "held";
+      voicePhase = retain ? "held" : "idle";
+      if (!retain) voiceSession = 0;
+      restoreTypedDraft();
+      paintVoice();
+      showStatus(message.error, true);
+    }
+  }
+
   function onVisible() {
-    if (!alive || !open || document.visibilityState !== "visible") return;
-    checkConnection();
+    if (!alive || !open) return;
+    if (document.visibilityState === "hidden" && (voicePhase === "recording" || voicePhase === "review")) {
+      cancelVoice();
+      return;
+    }
+    if (document.visibilityState === "visible") checkConnection();
   }
 
   function destroy() {
@@ -698,6 +927,11 @@
     saveGeneration += 1;
     document.removeEventListener("keydown", onEscape, true);
     document.removeEventListener("visibilitychange", onVisible);
+    chrome.runtime.onMessage.removeListener(onVoiceMessage);
+    if (voicePhase !== "idle") {
+      chrome.runtime.sendMessage({ type: "quickcal-voice", action: "cancel", sessionId: voiceSession }).catch(() => {});
+      stopVoiceTimer();
+    }
     host.remove();
     if (globalThis[STATE_KEY] && globalThis[STATE_KEY].destroy === destroy) {
       delete globalThis[STATE_KEY];
@@ -732,6 +966,18 @@
     event.preventDefault();
     event.stopPropagation();
     chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" });
+  });
+  micButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (voicePhase === "recording" || voicePhase === "review" || voicePhase === "held") submitRecording();
+    else if (voicePhase === "idle") startVoice();
+  });
+  discardButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelVoice();
+    clearStatus();
   });
   healthRetry.addEventListener("click", (event) => {
     event.preventDefault();
@@ -842,6 +1088,8 @@
 
   document.addEventListener("keydown", onEscape, true);
   document.addEventListener("visibilitychange", onVisible);
+  chrome.runtime.onMessage.addListener(onVoiceMessage);
+  paintVoice();
   document.documentElement.appendChild(host);
   host.dataset.mode = "input";
   render();

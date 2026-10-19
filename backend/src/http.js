@@ -8,6 +8,7 @@ import {
 } from "./config.js";
 import { bearerToken } from "./auth.js";
 import { ParseError } from "./parse.js";
+import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.js";
 import { validateRequest } from "./validate.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
@@ -57,10 +58,10 @@ function declaredLength(request) {
   return Number(value);
 }
 
-function withDeadline(promise, ms) {
+function withDeadline(promise, ms, timeoutMessage) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new ParseError(504, "The event parser timed out. Try again."));
+      reject(new ParseError(504, timeoutMessage || "The event parser timed out. Try again."));
     }, ms);
     Promise.resolve(promise).then(
       (value) => {
@@ -75,7 +76,7 @@ function withDeadline(promise, ms) {
   });
 }
 
-function readBody(request) {
+function readLimited(request, maxBytes, tooLarge) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -87,8 +88,8 @@ function readBody(request) {
     };
     request.on("data", (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        fail(new ParseError(413, "Request body is too large."));
+      if (size > maxBytes) {
+        fail(new ParseError(413, tooLarge));
         request.destroy();
         return;
       }
@@ -97,14 +98,19 @@ function readBody(request) {
     request.on("end", () => {
       if (settled) return;
       settled = true;
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      resolve(Buffer.concat(chunks));
     });
     request.on("error", (error) => fail(error));
   });
 }
 
+function readBody(request) {
+  return readLimited(request, MAX_BODY_BYTES, "Request body is too large.").then((buffer) => buffer.toString("utf8"));
+}
+
 export function createHandler({
   parseEvent,
+  transcribeAudio = null,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
@@ -137,7 +143,7 @@ export function createHandler({
     }
 
     const url = new URL(request.url || "/", "http://" + HOST);
-    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/access" || url.pathname === "/parse-event")) {
+    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/access" || url.pathname === "/parse-event" || url.pathname === "/transcribe")) {
       if (request.headers.origin !== EXTENSION_ORIGIN) {
         sendJson(request, response, 403, { error: "Origin is not allowed." });
         return;
@@ -173,6 +179,89 @@ export function createHandler({
     }
     if (url.pathname === "/access") {
       sendJson(request, response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (url.pathname === "/transcribe") {
+      if (request.method !== "POST") {
+        sendJson(request, response, 405, { error: "Method not allowed." });
+        return;
+      }
+      const kind = audioKind(request.headers["content-type"]);
+      if (!kind) {
+        sendJson(request, response, 415, { error: "QuickCalAI could not read that recording." });
+        finishUnread(request);
+        return;
+      }
+      const audioLength = declaredLength(request);
+      if (Number.isNaN(audioLength)) {
+        sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
+        finishUnread(request);
+        return;
+      }
+      if (audioLength != null && audioLength > MAX_AUDIO_BYTES) {
+        sendJson(request, response, 413, { error: "Recording is too large." });
+        request.destroy();
+        return;
+      }
+      if (typeof transcribeAudio !== "function") {
+        sendJson(request, response, 503, { error: "QuickCalAI is not available." });
+        finishUnread(request);
+        return;
+      }
+      if (requireAuth) {
+        if (typeof rateLimit !== "function") {
+          sendJson(request, response, 503, { error: "QuickCalAI is not available." });
+          finishUnread(request);
+          return;
+        }
+        const identity = await identify(request);
+        if (!identity.ok) {
+          sendJson(request, response, identity.status, { error: identity.error });
+          finishUnread(request);
+          return;
+        }
+        const limit = rateLimit(identity.userId);
+        if (!limit || !limit.ok) {
+          const status = limit && Number.isInteger(limit.status) ? limit.status : 429;
+          const extra = limit && limit.retryAfterSeconds
+            ? { "Retry-After": String(limit.retryAfterSeconds) }
+            : undefined;
+          sendJson(request, response, status, {
+            error: limit && limit.error ? limit.error : "Too many event requests. Try again later.",
+          }, extra);
+          finishUnread(request);
+          return;
+        }
+      }
+      let audio;
+      try {
+        audio = await readLimited(request, MAX_AUDIO_BYTES, "Recording is too large.");
+      } catch (error) {
+        if (error instanceof ParseError) {
+          sendJson(request, response, error.status, { error: error.message });
+          return;
+        }
+        sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
+        return;
+      }
+      try {
+        const text = await withDeadline(
+          transcribeAudio(audio, request.headers["content-type"]),
+          TRANSCRIBE_TIMEOUT_MS,
+          "Transcription timed out. Try again."
+        );
+        if (typeof text !== "string" || !text.trim()) {
+          sendJson(request, response, 422, { error: "QuickCalAI didn't hear any words. Try again." });
+          return;
+        }
+        sendJson(request, response, 200, { text: text.trim() });
+      } catch (error) {
+        if (error instanceof ParseError) {
+          sendJson(request, response, error.status, { error: error.message });
+          return;
+        }
+        sendJson(request, response, 500, { error: "QuickCalAI could not complete that request." });
+      }
       return;
     }
     if (url.pathname !== "/parse-event") {
@@ -276,6 +365,7 @@ export function startServer({
   host = HOST,
   port = 0,
   parseEvent,
+  transcribeAudio = null,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
@@ -285,6 +375,7 @@ export function startServer({
   const server = createServer({ maxHeaderSize: MAX_BODY_BYTES }, (request, response) => {
     createHandler({
       parseEvent,
+      transcribeAudio,
       apiKeyConfigured,
       requireAuth,
       authenticate,
@@ -296,7 +387,7 @@ export function startServer({
       }
     });
   });
-  server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
+  server.requestTimeout = Math.max(SERVER_REQUEST_TIMEOUT_MS, TRANSCRIBE_TIMEOUT_MS + 15_000);
   server.headersTimeout = HEADER_TIMEOUT_MS;
   server.keepAliveTimeout = 5_000;
   return new Promise((resolve, reject) => {

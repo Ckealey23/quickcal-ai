@@ -4,12 +4,15 @@ import { applyEnvFile, envFilePath, startupConfig } from "./config.js";
 import { startServer } from "./http.js";
 import { createParser } from "./parse.js";
 import { createRateLimiter } from "./rate-limit.js";
+import { createTranscriber, transcriptionConfig } from "./transcribe.js";
 
 export async function main() {
   applyEnvFile(envFilePath(import.meta.url));
   const startup = startupConfig();
-  if (startup.error) {
-    console.error(startup.error);
+  const speech = transcriptionConfig();
+  const startupError = [startup.error, speech.error].filter(Boolean).join(" ");
+  if (startupError) {
+    console.error(startupError);
     process.exitCode = 1;
     return;
   }
@@ -18,6 +21,11 @@ export async function main() {
     apiKey: model.apiKey,
     model: model.model,
     configError: model.error,
+  });
+  const transcribeAudio = createTranscriber({
+    apiKey: model.apiKey,
+    model: speech.model,
+    configError: model.error || speech.error,
   });
   const authenticate = auth.requireAuth
     ? createGoogleVerifier({
@@ -34,6 +42,7 @@ export async function main() {
       host: listen.host,
       port: listen.port,
       parseEvent,
+      transcribeAudio,
       apiKeyConfigured: Boolean(model.apiKey),
       requireAuth: auth.requireAuth,
       authenticate,

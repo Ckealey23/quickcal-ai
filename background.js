@@ -1,4 +1,11 @@
-importScripts("shared/schedule.js", "shared/test-event.js", "shared/local-parse.js", "shared/preview.js");
+importScripts(
+  "shared/schedule.js",
+  "shared/test-event.js",
+  "shared/local-parse.js",
+  "shared/preview.js",
+  "shared/recording.js",
+  "shared/transcribe.js"
+);
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
 
@@ -97,6 +104,9 @@ function extensionToken(result) {
 
 const PARSE_MESSAGE = "quickcal-parse";
 const CALENDAR_MESSAGE = "quickcal-calendar";
+const VOICE_MESSAGE = "quickcal-voice";
+const OFFSCREEN_MESSAGE = "quickcal-offscreen";
+const MIC_MESSAGE = "quickcal-mic";
 const DRAFT_EVENT_KEY = "quickcalDraftEvent";
 const WIDGET_DESCRIPTION = "Created by QuickCalAI.";
 
@@ -1227,6 +1237,331 @@ async function checkHealth() {
   }
 }
 
+const voice = self.QuickCalRecording.createRecordingController();
+let voiceAudio = null;
+let voiceTask = null;
+let voiceAbort = null;
+let permissionTabId = null;
+
+function isExtensionPage(sender, path) {
+  if (!sender || sender.id !== chrome.runtime.id || typeof sender.url !== "string") return false;
+  try {
+    const senderUrl = new URL(sender.url);
+    const pageUrl = new URL(chrome.runtime.getURL(path));
+    return senderUrl.origin === pageUrl.origin && senderUrl.pathname === pageUrl.pathname;
+  } catch (error) {
+    return false;
+  }
+}
+
+function tellTab(tabId, payload) {
+  if (tabId == null || !chrome.tabs || !chrome.tabs.sendMessage) return;
+  chrome.tabs.sendMessage(tabId, Object.assign({ type: VOICE_MESSAGE }, payload)).catch(() => {});
+}
+
+async function ensureOffscreen() {
+  const contexts = chrome.runtime.getContexts
+    ? await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })
+    : [];
+  if (contexts && contexts.length) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen/offscreen.html",
+    reasons: ["USER_MEDIA"],
+    justification: "Record microphone audio for a calendar event.",
+  });
+}
+
+async function closeOffscreen() {
+  try {
+    const contexts = chrome.runtime.getContexts
+      ? await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })
+      : [];
+    if (!contexts || !contexts.length) return;
+    await chrome.offscreen.closeDocument();
+  } catch (error) {
+    // The document may already be closed.
+  }
+}
+
+async function closePermissionTab() {
+  const tabId = permissionTabId;
+  permissionTabId = null;
+  if (tabId == null || !chrome.tabs || !chrome.tabs.remove) return;
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (error) {
+    // The permission tab may already be closed.
+  }
+}
+
+async function offscreenCall(message) {
+  await ensureOffscreen();
+  return chrome.runtime.sendMessage(Object.assign({ type: OFFSCREEN_MESSAGE }, message));
+}
+
+function clearVoiceAudio() {
+  voiceAudio = null;
+  if (voiceAbort) {
+    voiceAbort.abort();
+    voiceAbort = null;
+  }
+}
+
+async function beginCapture(sessionId, tabId) {
+  let started;
+  try {
+    started = await offscreenCall({ action: "start", sessionId: sessionId });
+  } catch (error) {
+    started = null;
+  }
+  if (voice.snapshot().sessionId !== sessionId) {
+    await closeOffscreen();
+    return { ok: false, ignored: true };
+  }
+  if (!started || !started.ok) {
+    voice.cancel(sessionId, tabId);
+    await closeOffscreen();
+    return {
+      ok: false,
+      phase: "idle",
+      error: started && started.error ? started.error : "QuickCalAI could not reach the microphone.",
+    };
+  }
+  voice.markRecording(sessionId);
+  return { ok: true, phase: "recording", sessionId: sessionId };
+}
+
+async function startVoice(tabId) {
+  const begun = voice.begin(tabId);
+  if (!begun.ok) return { ok: false, error: begun.error, phase: voice.snapshot().phase };
+  clearVoiceAudio();
+  let permission;
+  try {
+    permission = await offscreenCall({ action: "permission", sessionId: begun.sessionId });
+  } catch (error) {
+    permission = null;
+  }
+  if (voice.snapshot().sessionId !== begun.sessionId) return { ok: false, ignored: true };
+  if (!permission || !permission.ok) {
+    voice.cancel(begun.sessionId, tabId);
+    await closeOffscreen();
+    return { ok: false, phase: "idle", error: "QuickCalAI could not reach the microphone." };
+  }
+  if (permission.state === "granted") {
+    await closeOffscreen();
+    return beginCapture(begun.sessionId, tabId);
+  }
+  if (permission.state === "denied") {
+    voice.cancel(begun.sessionId, tabId);
+    await closeOffscreen();
+    return {
+      ok: false,
+      phase: "idle",
+      error: "Microphone access is blocked. Allow the microphone for QuickCalAI in Chrome settings, then try again.",
+    };
+  }
+  await closeOffscreen();
+  try {
+    const tab = await chrome.tabs.create({
+      url: chrome.runtime.getURL("mic/permission.html"),
+      active: true,
+    });
+    permissionTabId = tab && tab.id != null ? tab.id : null;
+  } catch (error) {
+    voice.cancel(begun.sessionId, tabId);
+    return { ok: false, phase: "idle", error: "QuickCalAI could not open microphone access." };
+  }
+  return { ok: true, phase: "permission", sessionId: begun.sessionId };
+}
+
+async function transcribeHeld(sessionId) {
+  if (voice.snapshot().sessionId !== sessionId) return { ok: false, ignored: true };
+  const health = await checkHealth();
+  if (voice.snapshot().sessionId !== sessionId) return { ok: false, ignored: true };
+  if (!health || !health.ok) {
+    voice.hold(sessionId);
+    return {
+      ok: false,
+      phase: "held",
+      sessionId: sessionId,
+      error: "QuickCalAI is still starting. Try again.",
+    };
+  }
+  if (await isSuppressed()) {
+    voice.hold(sessionId);
+    return {
+      ok: false,
+      phase: "held",
+      state: "disconnected",
+      sessionId: sessionId,
+      error: "Connect Google Calendar before using QuickCalAI.",
+    };
+  }
+  let token = "";
+  try {
+    token = await requestToken(false);
+  } catch (error) {
+    token = "";
+  }
+  if (voice.snapshot().sessionId !== sessionId) return { ok: false, ignored: true };
+  if (!token) {
+    voice.hold(sessionId);
+    return {
+      ok: false,
+      phase: "held",
+      state: "disconnected",
+      sessionId: sessionId,
+      error: "Connect Google Calendar before using QuickCalAI.",
+    };
+  }
+  voiceAbort = new AbortController();
+  const signal = voiceAbort.signal;
+  let result;
+  try {
+    result = await self.QuickCalTranscribe.requestTranscription(voiceAudio, {
+      fetchImpl: fetch,
+      token: token,
+      signal: signal,
+    });
+  } catch (error) {
+    result = { ok: false, retain: true, error: "QuickCalAI could not reach QuickCal. Try again." };
+  }
+  if (signal.aborted || voice.snapshot().sessionId !== sessionId) {
+    return { ok: false, ignored: true };
+  }
+  if (!result || !result.ok) {
+    if (result && result.ignored) return { ok: false, ignored: true };
+    if (result && result.retain) voice.hold(sessionId);
+    else {
+      voice.finish(sessionId);
+      clearVoiceAudio();
+    }
+    return {
+      ok: false,
+      phase: result && result.retain ? "held" : "idle",
+      state: result && result.state ? result.state : "",
+      sessionId: sessionId,
+      error: result && result.error ? result.error : "QuickCalAI could not transcribe that recording.",
+    };
+  }
+  const text = result.text;
+  voice.finish(sessionId);
+  clearVoiceAudio();
+  return { ok: true, text: text, sessionId: sessionId };
+}
+
+async function submitVoice(tabId, sessionId) {
+  const snap = voice.snapshot();
+  if (snap.sessionId !== sessionId || snap.tabId !== tabId) return { ok: false, ignored: true };
+  if (voiceTask) return voiceTask;
+  const decision = voice.requestSubmit(sessionId, tabId);
+  if (!decision.submit) return { ok: false, ignored: true };
+  voiceTask = (async () => {
+    if (!voiceAudio) {
+      let audio = null;
+      try {
+        audio = await offscreenCall({ action: "finish", sessionId: sessionId });
+      } catch (error) {
+        audio = null;
+      }
+      await closeOffscreen();
+      if (voice.snapshot().sessionId !== sessionId) return { ok: false, ignored: true };
+      if (!audio || !audio.ok || audio.sessionId !== sessionId || !audio.audioBase64) {
+        voice.finish(sessionId);
+        return { ok: false, phase: "idle", error: "QuickCalAI didn't hear any words. Try again." };
+      }
+      voiceAudio = { mime: audio.mime, audioBase64: audio.audioBase64 };
+    }
+    return transcribeHeld(sessionId);
+  })().finally(() => {
+    voiceTask = null;
+  });
+  return voiceTask;
+}
+
+async function cancelVoice(sessionId, tabId) {
+  const decision = voice.cancel(sessionId, tabId);
+  if (!decision.ok) return decision;
+  clearVoiceAudio();
+  try {
+    await offscreenCall({ action: "cancel", sessionId: sessionId });
+  } catch (error) {
+    // The offscreen document may already be gone.
+  }
+  await closeOffscreen();
+  await closePermissionTab();
+  return { ok: true, phase: "idle", submit: false };
+}
+
+async function onMicGranted() {
+  const snap = voice.snapshot();
+  if (snap.phase !== "arming") return { ok: true, ignored: true };
+  await closePermissionTab();
+  const result = await beginCapture(snap.sessionId, snap.tabId);
+  tellTab(snap.tabId, result);
+  return result;
+}
+
+async function onMicDenied(message) {
+  const snap = voice.snapshot();
+  if (snap.phase !== "arming") return { ok: true, ignored: true };
+  const error = message && message.error
+    ? message.error
+    : "QuickCalAI needs microphone access. Allow the microphone and try again.";
+  voice.cancel(snap.sessionId, snap.tabId);
+  await closeOffscreen();
+  tellTab(snap.tabId, { ok: false, phase: "idle", error: error, sessionId: snap.sessionId });
+  return { ok: true };
+}
+
+function onVoiceLimit(sessionId) {
+  const decision = voice.limit(sessionId);
+  if (!decision.ok) return;
+  tellTab(voice.snapshot().tabId, {
+    ok: true,
+    phase: "review",
+    sessionId: sessionId,
+    error: "",
+  });
+}
+
+function onVoiceTabActivated(info) {
+  const snap = voice.snapshot();
+  if ((snap.phase === "recording" || snap.phase === "review") && info && info.tabId !== snap.tabId) {
+    const tabId = snap.tabId;
+    const sessionId = snap.sessionId;
+    cancelVoice(sessionId, tabId).then(() => {
+      tellTab(tabId, { ok: true, phase: "idle", sessionId: sessionId, cancelled: true });
+    });
+  }
+}
+
+function onVoiceTabRemoved(tabId) {
+  if (tabId === permissionTabId && voice.snapshot().phase === "arming") {
+    const snap = voice.snapshot();
+    permissionTabId = null;
+    cancelVoice(snap.sessionId, snap.tabId).then(() => {
+      tellTab(snap.tabId, {
+        ok: false,
+        phase: "idle",
+        sessionId: snap.sessionId,
+        error: "QuickCalAI needs microphone access. Allow the microphone and try again.",
+      });
+    });
+    return;
+  }
+  const snap = voice.snapshot();
+  if (tabId === snap.tabId && snap.phase !== "idle") {
+    cancelVoice(snap.sessionId, snap.tabId);
+  }
+}
+
+function onVoiceTabUpdated(tabId, info) {
+  const snap = voice.snapshot();
+  if (tabId !== snap.tabId || snap.phase === "idle" || snap.phase === "arming") return;
+  if (info && info.status === "loading") cancelVoice(snap.sessionId, snap.tabId);
+}
+
 function reply(result) {
   const safe = {
     state: result && result.state ? result.state : "error",
@@ -1250,7 +1585,43 @@ function performAuth(message) {
   return Promise.resolve(failed("QuickCalAI could not complete that request."));
 }
 
+if (chrome.tabs && chrome.tabs.onActivated) chrome.tabs.onActivated.addListener(onVoiceTabActivated);
+if (chrome.tabs && chrome.tabs.onRemoved) chrome.tabs.onRemoved.addListener(onVoiceTabRemoved);
+if (chrome.tabs && chrome.tabs.onUpdated) chrome.tabs.onUpdated.addListener(onVoiceTabUpdated);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === OFFSCREEN_MESSAGE && isExtensionPage(sender, "offscreen/offscreen.html")) {
+    if (message.action === "limit") onVoiceLimit(message.sessionId);
+    return false;
+  }
+  if (message && message.type === MIC_MESSAGE && isExtensionPage(sender, "mic/permission.html")) {
+    const pending = message.action === "granted" ? onMicGranted() : onMicDenied(message);
+    pending.then((result) => sendResponse(result)).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  if (message && message.type === VOICE_MESSAGE) {
+    if (!isParseSender(sender)) return false;
+    const tabId = sender.tab.id;
+    const sessionId = message.sessionId;
+    if (message.action === "start") {
+      startVoice(tabId).then(sendResponse).catch(() => {
+        sendResponse({ ok: false, error: "QuickCalAI could not reach the microphone." });
+      });
+      return true;
+    }
+    if (message.action === "stop" || message.action === "retry") {
+      submitVoice(tabId, sessionId).then(sendResponse).catch(() => {
+        sendResponse({ ok: false, error: "QuickCalAI could not transcribe that recording." });
+      });
+      return true;
+    }
+    if (message.action === "cancel" || message.action === "discard") {
+      cancelVoice(sessionId, tabId).then(sendResponse).catch(() => sendResponse({ ok: true, phase: "idle" }));
+      return true;
+    }
+    sendResponse({ ok: false, error: "QuickCalAI could not complete that request." });
+    return false;
+  }
   if (message && message.type === BACKEND_MESSAGE && message.action === "health") {
     if (!isParseSender(sender)) return false;
     checkHealth()
