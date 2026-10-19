@@ -62,7 +62,7 @@ To delete the test event, open **View in Google Calendar**, or open [Google Cale
 
 ## Local event extraction
 
-`backend/` is a separate local service. It turns event text into validated fields. It does not change the Chrome extension, and it does not write to Google Calendar. The server listens only on `127.0.0.1:3000`.
+`backend/` is a separate service. It turns event text into validated fields. It does not write to Google Calendar. Local development listens on `127.0.0.1:3000`. A hosted deployment listens on the port Render assigns. The hosted setup is in [Hosted parser on Render](#hosted-parser-on-render).
 
 When you later pack QuickCalAI as an installable extension ZIP, exclude the whole `backend/` directory, `node_modules/`, `backend/.env`, and any other secret or key files. The ZIP should contain the extension only. Do not put an API key in that package, and do not serve this repository as the extension’s files.
 
@@ -111,6 +111,55 @@ Send-ParseEvent "Coffee with Alex"
 - `Make a date every Friday with John at 6pm` is a weekly series. Expect the title **Date with John**, the next Friday at 6:00–7:00 PM in the request’s time zone, no location, and no end date. If that Friday’s 6 PM is already past, the series starts the following Friday.
 
 The wording of the questions can vary. The server still checks that dates exist, times are `HH:mm`, and the end is later than the start on the same day. Stop the server with Ctrl+C in the window where `npm start` is running.
+
+## Hosted parser on Render
+
+Reference customers should use a hosted parser instead of running `backend/` themselves. The extension still writes to Google Calendar. This repository is not deployed yet; the settings below are the ones to enter in Render.
+
+The backend loads `shared/schedule.js` from the repository root (`backend/src/schedule.js` reads `../../shared/schedule.js`). Render’s root directory must be the repository root. Do not set it to `backend/`, or the schedule file will be missing and the service will not start.
+
+Create a Render Web Service:
+
+| Setting | Value |
+| --- | --- |
+| Root directory | repository root (leave Render’s root directory empty) |
+| Runtime | Node |
+| Node version | 24 (`.node-version` and `backend/package.json` `engines`) |
+| Build command | `npm ci --prefix backend` |
+| Start command | `npm start --prefix backend` |
+| Health check path | `/health` |
+
+`GET /health` returns `{ "ok": true, "apiKeyConfigured": true or false }` and does not call OpenAI. `apiKeyConfigured` is true only when `OPENAI_API_KEY` is set. The response never includes the key, the allowlist, or a Google token. Use one instance. The per-user rate limit is stored in process memory, so it is not shared by more than one instance and it resets whenever the service restarts, redeploys, or spins down.
+
+Render sets `PORT` and `RENDER=true`. With `RENDER=true`, the server binds `0.0.0.0` and that port. Local `npm start` binds `127.0.0.1:3000` when `PORT` is unset, and it stays on `127.0.0.1` if `PORT` is set. `NODE_ENV=production` or `RENDER=true` turns authentication on, and a value of `QUICKCAL_REQUIRE_AUTH=false` does not turn it off. If `GOOGLE_CLIENT_ID` or `ALLOWED_EMAILS` is missing, the process exits before it listens.
+
+Set these environment variables in Render. Mark the key and the allowlist as secret. Use placeholders here; do not commit real values.
+
+| Variable | Value |
+| --- | --- |
+| `OPENAI_API_KEY` | `YOUR_OPENAI_API_KEY` |
+| `OPENAI_MODEL` | `gpt-6-luna` |
+| `GOOGLE_CLIENT_ID` | the `oauth2.client_id` already in `manifest.json` |
+| `ALLOWED_EMAILS` | `reference.customer@example.com,second.customer@example.com` |
+
+Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Do not put the OpenAI key, the allowlist, or any shared password in the extension. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
+
+### Google configuration for the hosted parser
+
+Keep the existing Chrome-extension OAuth client. Do not create a web client, and do not download a client secret. The Render URL is not an OAuth redirect or JavaScript origin. The extension still obtains the access token with `chrome.identity.getAuthToken`, and the server checks that token with Google.
+
+On the OAuth consent screen, add the non-sensitive scope `https://www.googleapis.com/auth/userinfo.email`. Leave the Calendar scope at `https://www.googleapis.com/auth/calendar.events.owned`. Do not add `https://www.googleapis.com/auth/calendar` or a broader events scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser.
+
+The token Google returns must be for this extension’s client ID and must include a verified email. The server rejects tokens issued to another client, unverified emails, and emails that are not on `ALLOWED_EMAILS`. It does not accept an email, extension origin, or shared secret sent by the client.
+
+### Extension changes for the hosted service
+
+The extension still calls `http://127.0.0.1:3000/parse-event` and does not send the Google token. Local development can stay that way because local authentication is off. To use Render, change the extension as follows and then reload it. Each reference customer must connect Google Calendar again so the new email scope is on the token.
+
+- In `manifest.json` `host_permissions`, add `https://YOUR_SERVICE.onrender.com/*`. Keep the Calendar and `https://oauth2.googleapis.com/*` permissions.
+- In `manifest.json` `oauth2.scopes`, add `https://www.googleapis.com/auth/userinfo.email` next to the existing `https://www.googleapis.com/auth/calendar.events.owned` scope. Do not widen Calendar access.
+- In `shared/local-parse.js`, set `PARSE_URL` to `https://YOUR_SERVICE.onrender.com/parse-event`.
+- When `requestLocalParse` runs in `background.js`, send `Authorization: Bearer` and the access token already returned by `chrome.identity.getAuthToken`. Send the event text, time zone, and current event only. Do not send the user’s email or an API key.
 
 ## Event preview and save
 

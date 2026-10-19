@@ -1,33 +1,54 @@
 import { pathToFileURL } from "node:url";
-import { applyEnvFile, envFilePath, HOST, PORT, readConfig } from "./config.js";
+import { createGoogleVerifier } from "./auth.js";
+import { applyEnvFile, envFilePath, startupConfig } from "./config.js";
 import { startServer } from "./http.js";
 import { createParser } from "./parse.js";
+import { createRateLimiter } from "./rate-limit.js";
 
 export async function main() {
   applyEnvFile(envFilePath(import.meta.url));
-  const config = readConfig();
+  const startup = startupConfig();
+  if (startup.error) {
+    console.error(startup.error);
+    process.exitCode = 1;
+    return;
+  }
+  const { model, listen, auth } = startup;
   const parseEvent = createParser({
-    apiKey: config.apiKey,
-    model: config.model,
-    configError: config.error,
+    apiKey: model.apiKey,
+    model: model.model,
+    configError: model.error,
   });
+  const authenticate = auth.requireAuth
+    ? createGoogleVerifier({
+        clientId: auth.clientId,
+        allowedEmails: auth.allowedEmails,
+        fetchImpl: globalThis.fetch,
+      })
+    : null;
+  const rateLimit = auth.requireAuth
+    ? createRateLimiter({ limit: auth.rateLimitMax, windowMs: auth.rateLimitWindowMs })
+    : null;
   try {
     await startServer({
-      host: HOST,
-      port: PORT,
+      host: listen.host,
+      port: listen.port,
       parseEvent,
-      apiKeyConfigured: Boolean(config.apiKey),
+      apiKeyConfigured: Boolean(model.apiKey),
+      requireAuth: auth.requireAuth,
+      authenticate,
+      rateLimit,
     });
   } catch (error) {
     if (error && error.code === "EADDRINUSE") {
-      console.error("Port 3000 is already in use on 127.0.0.1.");
+      console.error("Port " + listen.port + " is already in use on " + listen.host + ".");
     } else {
       console.error("QuickCalAI could not start the server.");
     }
     process.exitCode = 1;
     return;
   }
-  console.log("QuickCalAI event parser listening on http://127.0.0.1:3000");
+  console.log("QuickCalAI event parser listening on http://" + listen.host + ":" + listen.port);
 }
 
 const entryArg = process.argv[1];

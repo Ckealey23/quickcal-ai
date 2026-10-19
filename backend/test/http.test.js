@@ -118,6 +118,7 @@ describe("local server", { concurrency: false }, () => {
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-origin"), origin);
     assert.equal(preflight.headers.get("access-control-allow-methods"), "GET, POST, OPTIONS");
+    assert.equal(preflight.headers.get("access-control-allow-headers"), "Content-Type, Authorization");
     assert.equal(denied.status, 403);
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
     assert.equal(String(allowed.headers.get("access-control-allow-origin")).includes("*"), false);
