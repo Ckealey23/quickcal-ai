@@ -141,6 +141,7 @@ describe("highlighted text delivery", () => {
       "shared/preview.js",
       "shared/startup.js",
       "shared/selection.js",
+      "shared/layout.js",
       "content/widget.js",
     ].join());
     assert.equal(background.delivered.length, 1);
@@ -206,13 +207,16 @@ describe("highlighted text delivery", () => {
     assert.equal(JSON.stringify(background.delivered[0].message).includes(passage), false);
   });
 
-  it("adds only the context menu permission", () => {
+  it("adds website access for the shared widget without broad tab permissions", () => {
     const manifest = JSON.parse(readFileSync(path.join(root, "manifest.json"), "utf8"));
     assert.equal(manifest.permissions.includes("contextMenus"), true);
     assert.equal(manifest.permissions.includes("clipboardRead"), false);
     assert.equal(manifest.permissions.includes("tabs"), false);
     assert.equal(manifest.permissions.includes("notifications"), false);
     assert.equal(manifest.host_permissions.includes("https://quickcal-ai.onrender.com/*"), true);
+    assert.equal(manifest.host_permissions.includes("http://*/*"), true);
+    assert.equal(manifest.host_permissions.includes("https://*/*"), true);
     assert.equal(manifest.host_permissions.some((pattern) => pattern === "<all_urls>" || pattern === "*://*/*"), false);
+    assert.equal(manifest.content_scripts[0].matches.join(), "http://*/*,https://*/*");
   });
 });

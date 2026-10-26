@@ -24,7 +24,7 @@ describe("recording session", () => {
     assert.equal(started.phase, "arming");
     assert.equal(session.begin(4).ok, false);
     assert.equal(session.markRecording(started.sessionId).phase, "recording");
-    const stop = session.requestSubmit(started.sessionId, 4);
+    const stop = session.requestSubmit(started.sessionId, 9);
     assert.equal(stop.submit, true);
     assert.equal(stop.submissions, 1);
     assert.equal(session.requestSubmit(started.sessionId, 4).submit, false);
@@ -65,8 +65,8 @@ describe("recording session", () => {
     const busy = recording.createRecordingController();
     const third = busy.begin(2);
     busy.markRecording(third.sessionId);
-    assert.equal(busy.cancel(third.sessionId, 8).ignored, true);
-    assert.equal(busy.snapshot().phase, "recording");
+    assert.equal(busy.cancel(third.sessionId, 8).phase, "idle");
+    assert.equal(busy.snapshot().phase, "idle");
     assert.equal(busy.snapshot().submissions, 0);
   });
 });

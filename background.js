@@ -5,7 +5,9 @@ importScripts(
   "shared/preview.js",
   "shared/recording.js",
   "shared/transcribe.js",
-  "shared/selection.js"
+  "shared/selection.js",
+  "shared/layout.js",
+  "shared/session.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -22,13 +24,26 @@ function reportBlocked(error) {
   );
 }
 
+function accessFailureText(error) {
+  const message = error && error.message ? error.message : "";
+  if (/cannot access|site access|permission|denied|gallery/i.test(message)) {
+    return (
+      "QuickCalAI does not have site access on this page. In chrome://extensions, open QuickCalAI, allow access to ordinary websites, and reload the page. " +
+      message
+    );
+  }
+  return message || "QuickCalAI could not open the shared panel on this page.";
+}
+
 const WIDGET_FILES = [
   "shared/schedule.js",
   "shared/preview.js",
   "shared/startup.js",
   "shared/selection.js",
+  "shared/layout.js",
   "content/widget.js",
 ];
+const WIDGET_MESSAGE = "quickcal-widget";
 const SELECTION_MENU_ID = "quickcal-add-selection";
 const SELECTION_MESSAGE = "quickcal-selection";
 const selectionChains = new Map();
@@ -72,6 +87,51 @@ async function deliverSelectionOnce(tabId, message) {
   }
   reportBlocked();
   return { ok: false, injected: true, operationId: message.operationId };
+}
+
+async function tabWidgetPresence(tabId) {
+  if (tabId == null || !chrome.tabs || !chrome.tabs.sendMessage) return { present: false, open: false };
+  try {
+    const response = await chrome.tabs.sendMessage(tabId, { type: WIDGET_MESSAGE, action: "ping" });
+    return { present: !!(response && response.ok), open: !!(response && response.open) };
+  } catch (error) {
+    return { present: false, open: false };
+  }
+}
+
+async function focusSharedWidget(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: WIDGET_MESSAGE, action: "focus" });
+  } catch (error) {
+    console.info("QuickCalAI: the shared panel is open, but this page could not focus it.");
+  }
+}
+
+async function toggleWidget(tab) {
+  if (!tab || tab.id == null || !canInject(tab.url)) {
+    reportBlocked();
+    return;
+  }
+  if (!sessionStore()) {
+    console.info("QuickCalAI: chrome.storage.session is unavailable, so QuickCal cannot share one conversation across tabs.");
+    return;
+  }
+  const incognito = !!tab.incognito;
+  const before = await readWidgetSession(incognito);
+  const presence = await tabWidgetPresence(tab.id);
+  if (before.visible && !presence.open) {
+    const delivered = await deliverSession(tab.id, before);
+    if (delivered === "blocked" || delivered === "failed") return;
+    await focusSharedWidget(tab.id);
+    return;
+  }
+  const state = await mutateWidgetSession(incognito, (current) => {
+    if (current.visible) return self.QuickCalSession.dismiss(current);
+    return self.QuickCalSession.claim(self.QuickCalSession.show(current), tab.id).state;
+  });
+  const delivered = await deliverSession(tab.id, state);
+  if (delivered === "blocked" || delivered === "failed") return;
+  if (state.visible) await focusSharedWidget(tab.id);
 }
 
 function enqueueSelection(tabId, task) {
@@ -132,21 +192,9 @@ if (chrome.contextMenus && chrome.contextMenus.onClicked) {
 }
 
 chrome.action.onClicked.addListener((tab) => {
-  if (!tab || tab.id == null || !canInject(tab.url)) {
-    reportBlocked();
-    return;
-  }
-
-  try {
-    chrome.scripting
-      .executeScript({
-        target: { tabId: tab.id },
-        files: WIDGET_FILES,
-      })
-      .catch(reportBlocked);
-  } catch (error) {
-    reportBlocked(error);
-  }
+  const run = toggleWidget(tab);
+  run.catch(() => {});
+  return run;
 });
 
 const AUTH_MESSAGE = "quickcal-auth";
@@ -1348,6 +1396,7 @@ async function checkHealth() {
 }
 
 const voice = self.QuickCalRecording.createRecordingController();
+let voiceStartedAt = 0;
 let voiceAudio = null;
 let voiceTask = null;
 let voiceAbort = null;
@@ -1438,11 +1487,13 @@ async function beginCapture(sessionId, tabId) {
     };
   }
   voice.markRecording(sessionId);
-  return { ok: true, phase: "recording", sessionId: sessionId };
+  voiceStartedAt = Date.now();
+  publishVoice().catch(() => {});
+  return { ok: true, phase: "recording", sessionId: sessionId, startedAt: voiceStartedAt };
 }
 
-async function startVoice(tabId) {
-  const begun = voice.begin(tabId);
+async function startVoice(tabId, incognito) {
+  const begun = voice.begin(tabId, incognito);
   if (!begun.ok) return { ok: false, error: begun.error, phase: voice.snapshot().phase };
   clearVoiceAudio();
   let permission;
@@ -1560,11 +1611,11 @@ async function transcribeHeld(sessionId) {
   return { ok: true, text: text, sessionId: sessionId };
 }
 
-async function submitVoice(tabId, sessionId) {
+async function submitVoice(tabId, sessionId, incognito) {
   const snap = voice.snapshot();
-  if (snap.sessionId !== sessionId || snap.tabId !== tabId) return { ok: false, ignored: true };
+  if (snap.sessionId !== sessionId || !!snap.incognito !== !!incognito) return { ok: false, ignored: true };
   if (voiceTask) return voiceTask;
-  const decision = voice.requestSubmit(sessionId, tabId);
+  const decision = voice.requestSubmit(sessionId, tabId, incognito);
   if (!decision.submit) return { ok: false, ignored: true };
   voiceTask = (async () => {
     if (!voiceAudio) {
@@ -1585,6 +1636,7 @@ async function submitVoice(tabId, sessionId) {
     return transcribeHeld(sessionId);
   })().finally(() => {
     voiceTask = null;
+    publishVoice().catch(() => {});
   });
   return voiceTask;
 }
@@ -1600,6 +1652,8 @@ async function cancelVoice(sessionId, tabId) {
   }
   await closeOffscreen();
   await closePermissionTab();
+  voiceStartedAt = 0;
+  publishVoice().catch(() => {});
   return { ok: true, phase: "idle", submit: false };
 }
 
@@ -1627,23 +1681,19 @@ async function onMicDenied(message) {
 function onVoiceLimit(sessionId) {
   const decision = voice.limit(sessionId);
   if (!decision.ok) return;
+  publishVoice().catch(() => {});
   tellTab(voice.snapshot().tabId, {
     ok: true,
     phase: "review",
     sessionId: sessionId,
+    startedAt: voiceStartedAt,
     error: "",
   });
 }
 
 function onVoiceTabActivated(info) {
-  const snap = voice.snapshot();
-  if ((snap.phase === "recording" || snap.phase === "review") && info && info.tabId !== snap.tabId) {
-    const tabId = snap.tabId;
-    const sessionId = snap.sessionId;
-    cancelVoice(sessionId, tabId).then(() => {
-      tellTab(tabId, { ok: true, phase: "idle", sessionId: sessionId, cancelled: true });
-    });
-  }
+  publishVoice().catch(() => {});
+  ensureTabSession(info && info.tabId).catch(() => {});
 }
 
 function onVoiceTabRemoved(tabId) {
@@ -1660,16 +1710,12 @@ function onVoiceTabRemoved(tabId) {
     });
     return;
   }
-  const snap = voice.snapshot();
-  if (tabId === snap.tabId && snap.phase !== "idle") {
-    cancelVoice(snap.sessionId, snap.tabId);
-  }
 }
 
-function onVoiceTabUpdated(tabId, info) {
-  const snap = voice.snapshot();
-  if (tabId !== snap.tabId || snap.phase === "idle" || snap.phase === "arming") return;
-  if (info && info.status === "loading") cancelVoice(snap.sessionId, snap.tabId);
+function onVoiceTabUpdated(tabId, info, tab) {
+  publishVoice().catch(() => {});
+  if (!info || info.status !== "complete" || !tab || !canInject(tab.url)) return;
+  ensureTabSession(tab.id).catch(() => {});
 }
 
 function reply(result) {
@@ -1699,7 +1745,374 @@ if (chrome.tabs && chrome.tabs.onActivated) chrome.tabs.onActivated.addListener(
 if (chrome.tabs && chrome.tabs.onRemoved) chrome.tabs.onRemoved.addListener(onVoiceTabRemoved);
 if (chrome.tabs && chrome.tabs.onUpdated) chrome.tabs.onUpdated.addListener(onVoiceTabUpdated);
 
+let widgetSessionChain = Promise.resolve();
+
+function sessionStore() {
+  return chrome.storage && chrome.storage.session ? chrome.storage.session : null;
+}
+
+async function readWidgetSession(incognito) {
+  const blank = self.QuickCalSession.create(!!incognito);
+  const store = sessionStore();
+  if (!store) return blank;
+  const key = self.QuickCalSession.storageKey(!!incognito);
+  const stored = await store.get(key);
+  const value = stored ? stored[key] : null;
+  if (!value || value.incognito !== !!incognito || typeof value.sessionId !== "string") return blank;
+  return value;
+}
+
+async function writeWidgetSession(state) {
+  const store = sessionStore();
+  if (!store) return state;
+  const key = self.QuickCalSession.storageKey(!!state.incognito);
+  await store.set({ [key]: state });
+  return state;
+}
+
+function mutateWidgetSession(incognito, updater) {
+  const run = widgetSessionChain.then(async () => {
+    const store = sessionStore();
+    if (!store) {
+      console.info("QuickCalAI: chrome.storage.session is unavailable, so QuickCal cannot share one conversation across tabs.");
+      return readWidgetSession(incognito);
+    }
+    const current = await readWidgetSession(incognito);
+    const next = await updater(current);
+    if (!next) return current;
+    await writeWidgetSession(next);
+    await broadcastSession(next);
+    return next;
+  });
+  widgetSessionChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+async function supportedTabs(incognito) {
+  if (!chrome.tabs || !chrome.tabs.query) return [];
+  try {
+    const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+    return (tabs || []).filter((tab) => tab && tab.id != null && !!tab.incognito === !!incognito && canInject(tab.url));
+  } catch (error) {
+    console.info("QuickCalAI: could not list open pages. " + accessFailureText(error));
+    return [];
+  }
+}
+
+async function deliverSession(tabId, state) {
+  if (tabId == null || !chrome.tabs || !chrome.tabs.sendMessage) return "failed";
+  const message = { type: WIDGET_MESSAGE, action: "render", session: state };
+  try {
+    await chrome.tabs.sendMessage(tabId, message);
+    return "delivered";
+  } catch (error) {
+    if (!state || !state.visible) return "hidden";
+    if (!chrome.scripting || !chrome.scripting.executeScript) {
+      console.info("QuickCalAI: " + accessFailureText(error));
+      return "failed";
+    }
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        files: WIDGET_FILES,
+      });
+    } catch (injectError) {
+      console.info("QuickCalAI: " + accessFailureText(injectError));
+      return "blocked";
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await chrome.tabs.sendMessage(tabId, message);
+        return "injected";
+      } catch (sendError) {
+        await wait(40);
+      }
+    }
+    console.info("QuickCalAI: the shared panel did not start on this page.");
+    return "failed";
+  }
+}
+
+async function broadcastSession(state) {
+  if (!state) return;
+  const tabs = await supportedTabs(!!state.incognito);
+  await Promise.all(tabs.map((tab) => deliverSession(tab.id, state)));
+}
+
+function ensureTabSession(tabId) {
+  if (tabId == null || !chrome.tabs || !chrome.tabs.get || !sessionStore()) return Promise.resolve();
+  return chrome.tabs.get(tabId).then((tab) => {
+    if (!tab || tab.id == null || !canInject(tab.url)) return null;
+    return readWidgetSession(!!tab.incognito).then((state) => deliverSession(tab.id, state));
+  }).catch((error) => {
+    console.info("QuickCalAI: " + accessFailureText(error));
+  });
+}
+
+function wakeSharedTabs() {
+  if (!self.QuickCalSession || !sessionStore()) return Promise.resolve();
+  return readWidgetSession(false)
+    .then((normal) => broadcastSession(normal))
+    .then(() => readWidgetSession(true))
+    .then((privateSession) => broadcastSession(privateSession))
+    .catch((error) => {
+      console.info("QuickCalAI: could not restore the shared panel. " + accessFailureText(error));
+    });
+}
+
+function voiceNotice(snap) {
+  return {
+    ok: snap.phase !== "idle",
+    phase: snap.phase,
+    sessionId: snap.sessionId,
+    startedAt: voiceStartedAt,
+    cancelled: snap.phase === "idle",
+  };
+}
+
+function voiceSnapshotState(snap) {
+  if (!snap || snap.phase === "idle") return null;
+  return {
+    phase: snap.phase,
+    sessionId: snap.sessionId,
+    startedAt: voiceStartedAt,
+    incognito: !!snap.incognito,
+  };
+}
+
+async function publishVoice() {
+  const snap = voice.snapshot();
+  const voiceState = voiceSnapshotState(snap);
+  if (self.QuickCalSession && sessionStore()) {
+    await mutateWidgetSession(snap.incognito, (state) => {
+      const current = state.voice;
+      const same = (!current && !voiceState) || (
+        current &&
+        voiceState &&
+        current.phase === voiceState.phase &&
+        current.sessionId === voiceState.sessionId &&
+        current.startedAt === voiceState.startedAt
+      );
+      if (same) return state;
+      return Object.assign({}, state, { voice: voiceState, revision: state.revision + 1 });
+    });
+  }
+  const notice = voiceNotice(snap);
+  if (chrome.tabs && chrome.tabs.query) {
+    try {
+      const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+      (tabs || []).forEach((tab) => {
+        if (!tab || !!tab.incognito !== !!snap.incognito) return;
+        tellTab(tab.id, notice);
+      });
+      return;
+    } catch (error) {
+      // Fall back to the tab that started recording.
+    }
+  }
+  if (snap.phase !== "idle") tellTab(snap.tabId, notice);
+}
+
+function savedPayload(record) {
+  if (!record) return null;
+  return {
+    title: record.title || record.summary,
+    date: record.date,
+    endDate: record.endDate || record.date,
+    startTime: record.startTime,
+    endTime: record.endTime,
+    timeZone: record.timeZone,
+    location: record.location || null,
+    recurrence: record.recurrence || null,
+  };
+}
+
+async function runWidgetSubmit(incognito, text, timeZone, operation, editing, clarification, savedRecord, originalText) {
+  const message = { text: text, timeZone: timeZone || "UTC" };
+  if (clarification) message.clarification = clarification;
+  else if (editing) message.currentEvent = savedPayload(savedRecord);
+  const result = await parseForContent(message);
+  const pendingState = await mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    if (!result || result.ok !== true || !result.event) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        statusText: result && result.error ? result.error : "QuickCalAI could not read that event.",
+        statusError: true,
+        input: text,
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    const view = self.QuickCalPreview.previewModel(result.event);
+    if (!view.saveable) {
+      if (editing) {
+        const asked = self.QuickCalSession.finishOperation(latest, operation, {
+          mode: "saved",
+          event: result.event,
+          statusText: "",
+          statusError: false,
+          input: text,
+        });
+        return asked.accepted ? asked.state : latest;
+      }
+      const noted = self.QuickCalSession.noteClarification(latest, result.event, originalText || text);
+      const finished = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "clarifying",
+        event: noted.event,
+        clarification: noted.clarification,
+        savedRecord: null,
+        draftEvent: null,
+        input: "",
+        statusText: "",
+        statusError: false,
+      });
+      return finished.accepted ? finished.state : latest;
+    }
+    return Object.assign({}, latest, {
+      mode: editing ? "saved" : "creating",
+      event: result.event,
+      draftEvent: editing ? null : result.event,
+      draftText: text,
+      statusText: editing ? "Updating event\u2026" : "Creating event\u2026",
+      statusError: false,
+    });
+  });
+  if (!self.QuickCalSession.operationCurrent(pendingState, operation)) return pendingState;
+  const saveResult = editing
+    ? await updateWidgetEvent(pendingState.event)
+    : await saveWidgetEvent(pendingState.event);
+  return mutateWidgetSession(incognito, (after) => {
+    if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
+    if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+      const saved = self.QuickCalSession.finishOperation(after, operation, {
+        mode: "saved",
+        savedRecord: saveResult,
+        event: pendingState.event,
+        draftEvent: null,
+        clarification: null,
+        input: "",
+        statusText: "",
+        statusError: false,
+      });
+      return saved.accepted ? saved.state : after;
+    }
+    const kept = self.QuickCalSession.finishOperation(after, operation, {
+      mode: "failed",
+      draftEvent: pendingState.event,
+      event: pendingState.event,
+      statusText: saveResult && saveResult.error ? saveResult.error : "QuickCalAI could not save this event.",
+      statusError: true,
+      input: text,
+    });
+    return kept.accepted ? kept.state : after;
+  });
+}
+
+function handleWidgetMessage(message, sender) {
+  const incognito = !!(sender.tab && sender.tab.incognito);
+  const tabId = sender.tab.id;
+  const action = message.action;
+  if (action === "snapshot") {
+    return readWidgetSession(incognito).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "show") {
+    return mutateWidgetSession(incognito, (state) => {
+      return self.QuickCalSession.claim(self.QuickCalSession.show(state), tabId).state;
+    }).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "toggle") {
+    return mutateWidgetSession(incognito, (state) => {
+      if (state.visible) return self.QuickCalSession.dismiss(state);
+      return self.QuickCalSession.claim(self.QuickCalSession.show(state), tabId).state;
+    }).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "dismiss") {
+    const snap = voice.snapshot();
+    if (snap.phase !== "idle" && !!snap.incognito === !!incognito) {
+      cancelVoice(snap.sessionId, tabId, incognito).catch(() => {});
+    }
+    return mutateWidgetSession(incognito, (state) => self.QuickCalSession.dismiss(state)).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "reset") {
+    return mutateWidgetSession(incognito, (state) => self.QuickCalSession.openReset(state)).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "claim") {
+    return mutateWidgetSession(incognito, (state) => self.QuickCalSession.claim(state, tabId).state).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "patch") {
+    let accepted = false;
+    return mutateWidgetSession(incognito, (state) => {
+      const patched = self.QuickCalSession.patchInput(state, {
+        tabId: tabId,
+        claim: message.claim,
+        seq: message.seq,
+        input: message.input,
+        sessionId: message.sessionId,
+      });
+      accepted = patched.accepted;
+      return patched.state;
+    }).then((state) => ({ ok: true, accepted: accepted, session: state }));
+  }
+  if (action === "layout") {
+    return mutateWidgetSession(incognito, (state) => self.QuickCalSession.setLayout(state, message.layout)).then((state) => ({ ok: true, session: state }));
+  }
+  if (action === "submit") {
+    const text = typeof message.text === "string" ? message.text.trim() : "";
+    if (!text) return Promise.resolve({ ok: false, error: "Text is required." });
+    let operation = null;
+    let context = null;
+    return mutateWidgetSession(incognito, (state) => {
+      let current = state;
+      if (message.fresh) current = self.QuickCalSession.openReset(current);
+      if (message.sessionId && !message.fresh && message.sessionId !== current.sessionId) return state;
+      const begun = self.QuickCalSession.beginOperation(
+        current,
+        "parse",
+        message.operationId || "op-" + String(current.revision + 1),
+        current.sessionId
+      );
+      if (!begun.accepted) return state;
+      operation = begun.state.operation;
+      context = {
+        editing: current.mode === "saved" && !!current.savedRecord,
+        clarification: current.mode === "clarifying" ? current.clarification : null,
+        savedRecord: current.savedRecord,
+        originalText: current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
+      };
+      return Object.assign({}, begun.state, {
+        input: text,
+        statusText: context.editing ? "Updating event\u2026" : "Reading your event\u2026",
+        statusError: false,
+      });
+    }).then((state) => {
+      if (!operation || !state.operation || state.operation.id !== operation.id) {
+        return { ok: false, ignored: true, session: state };
+      }
+      return runWidgetSubmit(
+        incognito,
+        text,
+        message.timeZone,
+        operation,
+        context.editing,
+        context.clarification,
+        context.savedRecord,
+        context.originalText
+      ).then((session) => ({ ok: true, session: session }));
+    });
+  }
+  return Promise.resolve({ ok: false });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === WIDGET_MESSAGE) {
+    if (!isParseSender(sender)) return false;
+    handleWidgetMessage(message, sender)
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not update the shared session." }));
+    return true;
+  }
   if (message && message.type === OFFSCREEN_MESSAGE && isExtensionPage(sender, "offscreen/offscreen.html")) {
     if (message.action === "limit") onVoiceLimit(message.sessionId);
     return false;
@@ -1714,19 +2127,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const tabId = sender.tab.id;
     const sessionId = message.sessionId;
     if (message.action === "start") {
-      startVoice(tabId).then(sendResponse).catch(() => {
+      startVoice(tabId, !!sender.tab.incognito).then(sendResponse).catch(() => {
         sendResponse({ ok: false, error: "QuickCalAI could not reach the microphone." });
       });
       return true;
     }
     if (message.action === "stop" || message.action === "retry") {
-      submitVoice(tabId, sessionId).then(sendResponse).catch(() => {
+      submitVoice(tabId, sessionId, !!sender.tab.incognito).then(sendResponse).catch(() => {
         sendResponse({ ok: false, error: "QuickCalAI could not transcribe that recording." });
       });
       return true;
     }
     if (message.action === "cancel" || message.action === "discard") {
-      cancelVoice(sessionId, tabId).then(sendResponse).catch(() => sendResponse({ ok: true, phase: "idle" }));
+      cancelVoice(sessionId, tabId, !!sender.tab.incognito).then(sendResponse).catch(() => sendResponse({ ok: true, phase: "idle" }));
       return true;
     }
     sendResponse({ ok: false, error: "QuickCalAI could not complete that request." });
@@ -1808,3 +2221,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
   return true;
 });
+
+self.quickcalToggleWidget = toggleWidget;
+wakeSharedTabs();

@@ -229,7 +229,7 @@ describe("voice capture", () => {
       () => {}
     );
     assert.equal(limited.fetches.some((call) => call.url.endsWith("/transcribe")), false);
-    assert.equal(limited.tabMessages[0].message.phase, "review");
+    assert.equal(limited.tabMessages.some((item) => item.message.phase === "review"), true);
     const submitted = await ask(
       limited.listeners.message,
       { type: "quickcal-voice", action: "stop", sessionId: live.sessionId },
@@ -302,14 +302,21 @@ describe("voice capture", () => {
 
     const other = loadBackground({});
     const owned = await ask(other.listeners.message, { type: "quickcal-voice", action: "start" }, contentSender(7));
+    other.listeners.removed(7);
+    other.listeners.activated({ tabId: 3 });
     const foreign = await ask(
       other.listeners.message,
       { type: "quickcal-voice", action: "stop", sessionId: owned.sessionId },
       contentSender(8)
     );
-    assert.equal(foreign.ignored, true);
-    assert.equal(other.fetches.some((call) => call.url.endsWith("/transcribe")), false);
-    other.listeners.activated({ tabId: 3 });
-    assert.equal(other.fetches.some((call) => call.url.endsWith("/transcribe")), false);
+    assert.equal(foreign.text, "Lunch tomorrow at noon");
+    assert.equal(other.fetches.filter((call) => call.url.endsWith("/transcribe")).length, 1);
+    const second = await ask(
+      other.listeners.message,
+      { type: "quickcal-voice", action: "stop", sessionId: owned.sessionId },
+      contentSender(4)
+    );
+    assert.equal(second.ignored, true);
+    assert.equal(other.fetches.filter((call) => call.url.endsWith("/transcribe")).length, 1);
   });
 });

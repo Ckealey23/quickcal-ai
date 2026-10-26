@@ -25,6 +25,7 @@ const page = `<!DOCTYPE html>
 <script src="${fileUrl(path.join(root, "shared/preview.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/startup.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/selection.js"))}"></script>
+<script src="${fileUrl(path.join(root, "shared/layout.js"))}"></script>
 <script>
   globalThis.quickcalListeners = [];
   const calls = [];
@@ -129,7 +130,7 @@ const page = `<!DOCTYPE html>
     check("voice error is simulated", shadow.querySelector(".status").textContent.includes("could not find a microphone"));
     field.value = "";
     check("icons", !!shadow.querySelector("img[src*='calendar.svg']") && !!shadow.querySelector("img[src*='clock.svg']") && !!shadow.querySelector("img[src*='check.svg']"));
-    check("chevron", shadow.querySelector(".dismiss").getAttribute("aria-label") === "Hide QuickCalAI" && !!shadow.querySelector(".dismiss img[src*='chevron.svg']"));
+    check("close", shadow.querySelector(".dismiss").getAttribute("aria-label") === "Close QuickCal" && !!shadow.querySelector(".dismiss svg"));
     check("no external close", shadow.querySelector(".close") === null);
     check("no panel", shellStyle.backgroundColor === "rgba(0, 0, 0, 0)" && (shellStyle.borderTopWidth === "0px" || shellStyle.borderTopStyle === "none"));
     check("focus glow", glow.indexOf("138, 164, 214") !== -1);
@@ -310,11 +311,42 @@ const page = `<!DOCTYPE html>
     check("time question", shadow.textContent.includes("What time?") && shadow.textContent.includes("Coffee with Alex") && shadow.textContent.includes("Oct 20"));
     check("time placeholder", field.value === "" && field.placeholder === "8 PM");
     check("still no create", creates().length === 2);
+    check("dismiss stays visible", shadow.querySelector(".dismiss").hidden === false);
     const parsesBeforeClose = parses().length;
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    globalThis.__quickcalAi.toggle();
-    await settle();
-    check("reopen keeps draft", document.getElementById("quickcal-ai-host").dataset.mode === "clarifying" && shadow.textContent.includes("What time?") && parses().length === parsesBeforeClose && field.value === "");
+    const resize = shadow.querySelector(".resize-nw");
+    check("resize control", !!resize && resize.getAttribute("aria-label") === "Resize QuickCalAI");
+    function curveAligned(label) {
+      const card = shadow.querySelector(".card");
+      const cardRadius = parseFloat(getComputedStyle(card).borderTopLeftRadius) || 0;
+      const target = cardRadius > 0 ? card : shadow.querySelector(".bar");
+      const box = target.getBoundingClientRect();
+      const zoom = parseFloat(shadow.querySelector(".shell").style.zoom) || 1;
+      const radius = (cardRadius > 0 ? cardRadius : parseFloat(getComputedStyle(target).borderTopLeftRadius)) * zoom;
+      const handle = shadow.querySelector(".resize-nw").getBoundingClientRect();
+      const arrowX = handle.left + handle.width / 2 - 3 * zoom;
+      const arrowY = handle.top + handle.height / 2 - 3 * zoom;
+      const distance = Math.hypot(arrowX - (box.left + radius), arrowY - (box.top + radius));
+      check(label, Math.abs(distance - radius) < 4 && handle.left < box.left && handle.top < box.top);
+    }
+    curveAligned("resize on pill curve");
+    const hostBox = document.getElementById("quickcal-ai-host").getBoundingClientRect();
+    resize.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: hostBox.left + 4, clientY: hostBox.top + 4, pointerId: 1, button: 0 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: hostBox.left - 36, clientY: hostBox.top - 24, pointerId: 1, button: 0 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: hostBox.left - 36, clientY: hostBox.top - 24, pointerId: 1, button: 0 }));
+    const grown = document.getElementById("quickcal-ai-host").getBoundingClientRect();
+    const beforeRatio = hostBox.width / hostBox.height;
+    const afterRatio = grown.width / grown.height;
+    check("resize keeps ratio", grown.width > hostBox.width + 8 && Math.abs(beforeRatio - afterRatio) < 0.12);
+    curveAligned("resize stays on curve");
+    field.value = "Tue";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    const drag = shadow.querySelector(".drag-handle");
+    const moving = document.getElementById("quickcal-ai-host").getBoundingClientRect();
+    drag.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: moving.left + 40, clientY: moving.top + 8, pointerId: 2, button: 0 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: moving.left + 20, clientY: moving.top - 12, pointerId: 2, button: 0 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: moving.left + 20, clientY: moving.top - 12, pointerId: 2, button: 0 }));
+    check("drag keeps typed text", field.value === "Tue" && parses().length === parsesBeforeClose);
+    field.value = "";
 
     deliverSelection("Lunch Monday at noon", "op-clarify");
     await settle();
@@ -446,7 +478,7 @@ const page = `<!DOCTYPE html>
     await settle();
     check("closed during parse", document.getElementById("quickcal-ai-host").dataset.open === "false" && creates().length === 3);
     globalThis.__quickcalAi.toggle();
-    check("reopen input", document.getElementById("quickcal-ai-host").dataset.mode === "input");
+    check("reopen input", document.getElementById("quickcal-ai-host").dataset.mode === "input" && field.value === "");
     check("still one host", document.querySelectorAll("#quickcal-ai-host").length === 1);
 
     field.value = "Make a date every Friday with John at 6pm";
@@ -549,32 +581,13 @@ const page = `<!DOCTYPE html>
     check("connect action", visibleAction("Connect Google Calendar") !== null);
     check("draft kept", field.value === "Hosted backend test tomorrow at 10 AM for 30 minutes");
     globalThis.__quickcalAi.toggle();
+    check("dismiss hides", document.getElementById("quickcal-ai-host").dataset.open === "false");
     globalThis.__quickcalAi.toggle();
     await settle();
-    check("reopen clears stale connect error", shadow.querySelector(".save-error").hidden === true);
-    check("retry after reconnect", visibleAction("Try again") !== null);
+    check("reopen is fresh", document.getElementById("quickcal-ai-host").dataset.mode === "input" && field.value === "" && shadow.querySelector(".save-error").hidden === true && visibleAction("Try again") === null);
     check("reopen does not create", creates().length === createsBeforeReconnect + 1 && parses().length === parsesBeforeReconnect + 1);
     field.focus();
     check("focus does not create", creates().length === createsBeforeReconnect + 1 && parses().length === parsesBeforeReconnect + 1);
-    nextResult = {
-      ok: true,
-      summary: "Hosted backend test",
-      title: "Hosted backend test",
-      date: "2026-10-20",
-      endDate: "2026-10-20",
-      startTime: "10:00",
-      endTime: "10:30",
-      dateText: "Oct 20, 2026",
-      timeText: "10:00–10:30 AM",
-      timeZone: "America/Los_Angeles",
-      htmlLink: "https://calendar.google.com/calendar/event?eid=hosted",
-    };
-    visibleAction("Try again").click();
-    check("retry does not reparse", parses().length === parsesBeforeReconnect + 1 && creates().length === createsBeforeReconnect + 2);
-    check("retry reuses draft", creates()[creates().length - 1].event.title === "Hosted backend test" && creates()[creates().length - 1].event.startTime === "10:00" && creates()[creates().length - 1].event.endTime === "10:30");
-    release();
-    await settle();
-    check("retried save succeeds", shadow.textContent.includes("Event successfully created"));
     function deliverSelection(text, operationId) {
       const message = { type: "quickcal-selection", text: text, operationId: operationId };
       globalThis.quickcalListeners.forEach((listener) => listener(message, { id: "preview" }, () => {}));

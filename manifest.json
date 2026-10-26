@@ -16,9 +16,25 @@
   },
   "permissions": ["activeTab", "scripting", "identity", "storage", "offscreen", "contextMenus"],
   "host_permissions": [
+    "http://*/*",
+    "https://*/*",
     "https://www.googleapis.com/calendar/*",
     "https://oauth2.googleapis.com/*",
     "https://quickcal-ai.onrender.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": [
+        "shared/schedule.js",
+        "shared/preview.js",
+        "shared/startup.js",
+        "shared/selection.js",
+        "shared/layout.js",
+        "content/widget.js"
+      ],
+      "run_at": "document_idle"
+    }
   ],
   "oauth2": {
     "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",

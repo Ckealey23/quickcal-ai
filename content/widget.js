@@ -7,13 +7,20 @@
 
   function paintHost(host, visible, expanded) {
     host.dataset.open = visible ? "true" : "false";
-    const width = expanded ? "min(440px, calc(100% - 32px))" : "min(456px, calc(100% - 32px))";
+    const layoutApi = globalThis.QuickCalLayout;
+    const natural = layoutApi ? layoutApi.naturalWidth(expanded) : (expanded ? 440 : 456);
+    const scale = widgetScale > 0 ? widgetScale : 1;
+    const width = Math.round(natural * scale);
+    const placed = typeof widgetLeft === "number" && typeof widgetTop === "number";
     host.style.cssText = [
       "position:fixed",
-      "right:16px",
-      "bottom:16px",
+      placed ? "left:" + widgetLeft + "px" : "right:16px",
+      placed ? "top:" + widgetTop + "px" : "bottom:16px",
+      placed ? "right:auto" : "left:auto",
+      placed ? "bottom:auto" : "top:auto",
       "z-index:2147483647",
-      "width:" + width,
+      "width:" + width + "px",
+      "height:auto",
       "margin:0",
       "padding:0",
       "border:0",
@@ -24,6 +31,10 @@
       "pointer-events:none",
       "display:" + (visible ? "block" : "none"),
     ].join(" !important;") + " !important;";
+    if (shell) {
+      shell.style.zoom = String(scale);
+      shell.style.width = natural + "px";
+    }
   }
 
   function safeCalendarLink(value) {
@@ -42,10 +53,7 @@
 
   const current = globalThis[STATE_KEY];
   const existing = document.getElementById(HOST_ID);
-  if (current && existing) {
-    current.toggle();
-    return;
-  }
+  if (current && existing) return;
   if (current) current.destroy();
   if (existing) existing.remove();
   if (!document.documentElement) return;
@@ -57,18 +65,63 @@
   const shell = document.createElement("div");
   shell.className = "shell";
 
+  const dragHandle = document.createElement("div");
+  dragHandle.className = "drag-handle";
+  dragHandle.setAttribute("aria-hidden", "true");
+
+  function resizeControl(corner) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "resize resize-" + corner;
+    button.dataset.corner = corner;
+    button.setAttribute("aria-label", "Resize QuickCalAI");
+    button.title = "Resize QuickCalAI";
+    if (corner === "nw") {
+      const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      mark.setAttribute("viewBox", "0 0 12 12");
+      mark.setAttribute("width", "12");
+      mark.setAttribute("height", "12");
+      mark.setAttribute("aria-hidden", "true");
+      const shaft = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      shaft.setAttribute("d", "M8.5 8.5 L3.5 3.5");
+      const head = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      head.setAttribute("d", "M3.5 6.7 V3.5 H6.7");
+      [shaft, head].forEach((part) => {
+        part.setAttribute("fill", "none");
+        part.setAttribute("stroke", "#8aa4d6");
+        part.setAttribute("stroke-width", "1.5");
+        part.setAttribute("stroke-linecap", "round");
+        part.setAttribute("stroke-linejoin", "round");
+        mark.appendChild(part);
+      });
+      button.appendChild(mark);
+    }
+    return button;
+  }
+
+  const resizeNw = resizeControl("nw");
+  const resizeNe = resizeControl("ne");
+  const resizeSw = resizeControl("sw");
+  const resizeSe = resizeControl("se");
+
   const dismissButton = document.createElement("button");
   dismissButton.type = "button";
   dismissButton.className = "dismiss";
-  dismissButton.setAttribute("aria-label", "Hide QuickCalAI");
-  dismissButton.title = "Hide QuickCalAI";
-  const chevron = document.createElement("img");
-  chevron.src = chrome.runtime.getURL("assets/chevron.svg");
-  chevron.alt = "";
-  chevron.width = 12;
-  chevron.height = 12;
-  chevron.draggable = false;
-  dismissButton.appendChild(chevron);
+  dismissButton.setAttribute("aria-label", "Close QuickCal");
+  dismissButton.title = "Close QuickCal";
+  const closeMark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  closeMark.setAttribute("viewBox", "0 0 12 12");
+  closeMark.setAttribute("width", "12");
+  closeMark.setAttribute("height", "12");
+  closeMark.setAttribute("aria-hidden", "true");
+  const closePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  closePath.setAttribute("d", "M3 3 L9 9 M9 3 L3 9");
+  closePath.setAttribute("fill", "none");
+  closePath.setAttribute("stroke", "currentColor");
+  closePath.setAttribute("stroke-width", "1.5");
+  closePath.setAttribute("stroke-linecap", "round");
+  closeMark.appendChild(closePath);
+  dismissButton.appendChild(closeMark);
 
   const card = document.createElement("section");
   card.className = "card";
@@ -259,14 +312,31 @@
   keepDraft.className = "keep-draft";
   keepDraft.textContent = "Keep draft";
   selectionChoice.append(useSelection, keepDraft);
-  shell.append(card, status, selectionChoice, connectRoute, healthRetry);
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.append(resizeNw, resizeNe, resizeSw, resizeSe, card);
+  shell.append(dragHandle, panel, status, selectionChoice, connectRoute, healthRetry);
 
   const stylesheet = document.createElement("link");
   stylesheet.rel = "stylesheet";
   stylesheet.href = chrome.runtime.getURL("content/widget.css");
   shadow.append(stylesheet, shell);
 
-  let open = true;
+  const shared = !!(chrome.storage && chrome.storage.session);
+  const incognito = !!(chrome.extension && chrome.extension.inIncognitoContext);
+  let open = !shared;
+  let widgetScale = 1;
+  let widgetLeft = null;
+  let widgetTop = null;
+  let sharedSessionId = "";
+  let sharedClaim = 0;
+  let sharedInputSeq = 0;
+  let applyingRemote = false;
+  let inputDirty = false;
+  let inputFlight = false;
+  let queuedRemote = null;
+  let allowFocus = !shared;
+  let dragging = null;
   let styled = false;
   let alive = true;
   let pending = false;
@@ -376,7 +446,7 @@
     const view = previewApi.previewModel(event);
     card.classList.add("expanded");
     body.hidden = false;
-    dismissButton.hidden = true;
+    dismissButton.hidden = false;
     fillDetails(view);
     fillList(questionList, view.questions);
     host.dataset.mode = mode;
@@ -436,7 +506,7 @@
     input.placeholder = prompt.placeholder;
     input.setAttribute("aria-label", "Answer");
     host.dataset.mode = "clarifying";
-    input.focus();
+    if (allowFocus) input.focus();
   }
 
   function showCreating(event) {
@@ -469,8 +539,10 @@
     cancelButton.hidden = true;
     rule.hidden = false;
     actions.hidden = false;
-    if (disconnected) connectButton.focus();
-    else retryButton.focus();
+    if (allowFocus) {
+      if (disconnected) connectButton.focus();
+      else retryButton.focus();
+    }
   }
 
   function showSaved(result) {
@@ -481,7 +553,7 @@
     draftEvent = null;
     card.classList.add("expanded");
     body.hidden = false;
-    dismissButton.hidden = true;
+    dismissButton.hidden = false;
     creatingLine.hidden = true;
     successRow.hidden = false;
     fillDetails({
@@ -508,7 +580,7 @@
     input.setAttribute("aria-label", "Event description");
     cancelButton.hidden = true;
     host.dataset.mode = "saved";
-    input.focus();
+    if (allowFocus) input.focus();
   }
 
   function showEditQuestion(event) {
@@ -534,30 +606,73 @@
 
   function render() {
     paintHost(host, styled && open, mode !== "input");
-    if (styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
+    if (allowFocus && styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
+  }
+
+  function resetConversation() {
+    requestGeneration += 1;
+    saveGeneration += 1;
+    pending = false;
+    saving = false;
+    clarification = null;
+    savedRecord = null;
+    draftEvent = null;
+    draftText = "";
+    input.value = "";
+    showInputMode();
+    clearStatus();
+    hideActions();
+    pendingSelection = "";
+    selectionChoice.hidden = true;
+    connectRoute.hidden = true;
+    healthRetry.hidden = true;
+    showSaveError("");
+    creatingLine.hidden = true;
+    successRow.hidden = true;
   }
 
   function setOpen(next) {
-    if (!next) {
-      requestGeneration += 1;
-      pending = false;
-      clearStatus();
-      pendingSelection = "";
-      selectionChoice.hidden = true;
-      session.noteClosed();
-      connectRoute.hidden = true;
-      healthRetry.hidden = true;
-      if (voicePhase !== "idle") cancelVoice();
-    } else {
-      if (session.phase() !== "ready") {
-        const step = session.begin(Date.now());
-        if (step.status) showStatus(step.status, false);
-        pumpHealth();
-      }
-      checkConnection();
+    if (shared) {
+      if (!next && voicePhase !== "idle") cancelVoice();
+      return chrome.runtime.sendMessage({ type: "quickcal-widget", action: next ? "show" : "dismiss" }).then((result) => {
+        if (!alive) return result;
+        if (result && result.session) {
+          applyRemote(result.session, !!next && !!result.session.visible);
+          if (result.session.visible) prepareOpenTab();
+        } else {
+          showStatus("QuickCalAI could not update the shared session.", true);
+          render();
+        }
+        return result;
+      }).catch(() => {
+        if (!alive) return null;
+        showStatus("QuickCalAI could not update the shared session.", true);
+        render();
+        return null;
+      });
     }
-    open = next;
+    if (!next) {
+      if (voicePhase !== "idle") cancelVoice();
+      resetConversation();
+      session.noteClosed();
+      open = false;
+      render();
+      return Promise.resolve();
+    }
+    allowFocus = true;
+    open = true;
+    prepareOpenTab();
     render();
+    return Promise.resolve();
+  }
+
+  function prepareOpenTab() {
+    if (session.phase() !== "ready") {
+      const step = session.begin(Date.now());
+      if (step.status && !input.value.trim() && mode === "input" && !selectionHold) showStatus(step.status, false);
+      pumpHealth();
+    }
+    checkConnection();
   }
 
   function onEscape(event) {
@@ -703,6 +818,12 @@
       render();
       return;
     }
+    if (shared) {
+      const fresh = submitFresh;
+      submitFresh = false;
+      submitShared(text, fresh);
+      return;
+    }
     const generation = requestGeneration + 1;
     requestGeneration = generation;
     const editing = mode === "saved" && savedRecord;
@@ -828,6 +949,7 @@
     savedRecord = null;
     input.value = "";
     chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" }).catch(() => {});
+    if (shared) chrome.runtime.sendMessage({ type: "quickcal-widget", action: "reset" }).catch(() => {});
     showInputMode();
     clearStatus();
     render();
@@ -840,6 +962,7 @@
     savedRecord = null;
     showInputMode();
     input.value = text;
+    submitFresh = true;
     try {
       await chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" });
     } catch (error) {
@@ -861,22 +984,377 @@
     });
     if (plan.action === "ignore") return { ok: true, ignored: true };
     rememberSelection(plan.operationId);
-    if (!open) setOpen(true);
-    if (plan.action === "tooLong" || plan.action === "busy") {
-      showSelectionStatus(plan.message);
-      return { ok: true, action: plan.action };
+    const start = () => {
+      if (!alive || (shared && !open)) return;
+      if (plan.action === "tooLong" || plan.action === "busy") {
+        showSelectionStatus(plan.message);
+        return;
+      }
+      if (plan.action === "confirm") {
+        pendingSelection = plan.text;
+        selectionChoice.hidden = false;
+        showStatus(plan.message, false);
+        return;
+      }
+      beginNewEvent(plan.text);
+    };
+    if (!open) {
+      const opening = setOpen(true);
+      if (open) start();
+      else Promise.resolve(opening).then(() => start());
+    } else {
+      start();
     }
-    if (plan.action === "confirm") {
-      pendingSelection = plan.text;
-      selectionChoice.hidden = false;
-      showStatus(plan.message, false);
-      return { ok: true, action: "confirm" };
+    return { ok: true, action: plan.action === "submit" ? "submit" : plan.action };
+  }
+
+  let submitFresh = false;
+
+  function sessionStorageKey() {
+    return incognito ? "quickcalWidgetSessionIncognito" : "quickcalWidgetSession";
+  }
+
+  function claimLeader() {
+    if (!shared || !open) return Promise.resolve(null);
+    return chrome.runtime.sendMessage({ type: "quickcal-widget", action: "claim" }).then((result) => {
+      if (!result || !result.session || !alive) return result || null;
+      sharedClaim = result.session.claim || 0;
+      sharedSessionId = result.session.sessionId || sharedSessionId;
+      if (typeof result.session.inputSeq === "number" && result.session.inputSeq > sharedInputSeq) {
+        sharedInputSeq = result.session.inputSeq;
+      }
+      return result;
+    }).catch(() => {
+      console.info("QuickCalAI: could not update the shared session.");
+      return null;
+    });
+  }
+
+  function publishInput(attempt) {
+    if (!shared || applyingRemote) return;
+    inputDirty = true;
+    if (document.visibilityState !== "visible") return;
+    if (!sharedSessionId || inputFlight) return;
+    const tries = attempt || 0;
+    inputFlight = true;
+    inputDirty = false;
+    const text = input.value;
+    const seq = sharedInputSeq + 1;
+    const claim = sharedClaim;
+    const sessionId = sharedSessionId;
+    chrome.runtime.sendMessage({
+      type: "quickcal-widget",
+      action: "patch",
+      sessionId: sessionId,
+      claim: claim,
+      seq: seq,
+      input: text,
+    }).then((result) => {
+      inputFlight = false;
+      if (!alive) return;
+      if (!result || !result.session) {
+        showStatus("QuickCalAI could not update the shared session.", true);
+        render();
+        return;
+      }
+      sharedSessionId = result.session.sessionId || sharedSessionId;
+      sharedClaim = result.session.claim || 0;
+      if (typeof result.session.inputSeq === "number") sharedInputSeq = result.session.inputSeq;
+      const focused = shadow.activeElement === input || document.visibilityState === "visible";
+      if (result.accepted) {
+        if (input.value !== text || inputDirty) publishInput(0);
+        return;
+      }
+      if (!result.session.visible || result.session.sessionId !== sessionId) {
+        inputDirty = false;
+        applyRemote(result.session, false);
+        return;
+      }
+      if (focused && input.value !== (result.session.input || "") && tries < 1) {
+        claimLeader().then(() => {
+          inputDirty = true;
+          publishInput(tries + 1);
+        });
+        return;
+      }
+      inputDirty = false;
+      applyRemote(result.session, false);
+    }).catch(() => {
+      inputFlight = false;
+      if (!alive) return;
+      showStatus("QuickCalAI could not update the shared session.", true);
+      render();
+    });
+  }
+
+  function publishLayout() {
+    if (!shared) return;
+    chrome.runtime.sendMessage({
+      type: "quickcal-widget",
+      action: "layout",
+      layout: { scale: widgetScale, left: widgetLeft, top: widgetTop },
+    }).catch(() => {
+      console.info("QuickCalAI: could not save the shared panel position.");
+    });
+  }
+
+  function viewportSize() {
+    return { width: window.innerWidth, height: window.innerHeight };
+  }
+
+  function applyLayout(layout, force) {
+    if (!layout || (dragging && !force)) return;
+    const api = globalThis.QuickCalLayout;
+    if (layout.scale > 0) widgetScale = layout.scale;
+    widgetLeft = typeof layout.left === "number" ? layout.left : null;
+    widgetTop = typeof layout.top === "number" ? layout.top : null;
+    if (!api || widgetLeft == null || widgetTop == null) return;
+    const rect = host.getBoundingClientRect();
+    const clamped = api.clampPosition(widgetLeft, widgetTop, rect.width || 1, rect.height || 1, viewportSize());
+    widgetLeft = clamped.left;
+    widgetTop = clamped.top;
+  }
+
+  function applyRemote(state, focus) {
+    if (!state || !!state.incognito !== !!incognito) return;
+    applyingRemote = true;
+    allowFocus = !!focus;
+    try {
+      sharedSessionId = state.sessionId || sharedSessionId;
+      sharedClaim = state.claim || 0;
+      if (typeof state.inputSeq === "number" && state.inputSeq >= sharedInputSeq) sharedInputSeq = state.inputSeq;
+      if (state.layout) applyLayout(state.layout, true);
+      const remoteSeq = typeof state.inputSeq === "number" ? state.inputSeq : 0;
+      if (remoteSeq > sharedInputSeq) sharedInputSeq = remoteSeq;
+      if (state.voice && state.voice.phase && state.voice.phase !== "idle") {
+        voiceSession = state.voice.sessionId || voiceSession;
+        voicePhase = state.voice.phase;
+        if (state.voice.startedAt) voiceStartedAt = state.voice.startedAt;
+        paintVoice();
+        if (voicePhase === "recording") startVoiceClock(true);
+        else stopVoiceTimer();
+      } else if (voicePhase !== "idle") {
+        resetVoiceUi(false);
+      }
+      if (!state.visible) {
+        open = false;
+        inputDirty = false;
+        clarification = null;
+        savedRecord = null;
+        draftEvent = null;
+        draftText = "";
+        input.value = "";
+        showInputMode();
+        clearStatus();
+        hideActions();
+        render();
+        return;
+      }
+      open = true;
+      const focused = shadow.activeElement === input;
+      const keepTyped = focused && inputDirty && input.value !== (state.input || "");
+      if (state.mode === "clarifying" && state.event) {
+        clarification = state.clarification;
+        showClarifying(state.event, state.clarification && state.clarification.originalText);
+        if (!keepTyped) input.value = state.input || "";
+        if (state.statusText) showStatus(state.statusText, !!state.statusError);
+      } else if (state.mode === "failed") {
+        draftEvent = state.draftEvent || state.event;
+        showFailed(state.statusText || "QuickCalAI could not save this event.", false);
+        if (!keepTyped) input.value = state.input || "";
+      } else if (state.mode === "creating" && state.event) {
+        showCreating(state.event);
+        if (!keepTyped) input.value = state.input || "";
+      } else if (state.mode === "saved" && state.savedRecord) {
+        showSaved(state.savedRecord);
+        if (state.event && state.event.needsClarification) showEditQuestion(state.event);
+        if (!keepTyped) input.value = state.input || "";
+        if (state.statusText) showSaveError(state.statusText);
+      } else {
+        showInputMode();
+        if (!keepTyped) input.value = state.input || "";
+        if (state.statusText) showStatus(state.statusText, !!state.statusError);
+      }
+      if (!keepTyped) inputDirty = false;
+      render();
+    } finally {
+      applyingRemote = false;
+      allowFocus = false;
+      const pending = queuedRemote;
+      queuedRemote = null;
+      if (pending && pending.revision !== state.revision) applyRemote(pending, false);
+      else if (inputDirty && shadow.activeElement === input) publishInput();
     }
-    beginNewEvent(plan.text);
-    return { ok: true, action: "submit" };
+  }
+
+  async function hydrateShared() {
+    if (!shared) return;
+    let result = null;
+    try {
+      result = await chrome.runtime.sendMessage({ type: "quickcal-widget", action: "snapshot" });
+    } catch (error) {
+      console.info("QuickCalAI: could not read the shared session. " + (error && error.message ? error.message : "The shared session did not respond."));
+      return;
+    }
+    if (!alive) return;
+    if (!result || !result.session) {
+      console.info("QuickCalAI: the shared session did not respond, so this page will not start a separate conversation.");
+      return;
+    }
+    applyRemote(result.session, false);
+    if (!open) return;
+    prepareOpenTab();
+  }
+
+  function submitShared(text, fresh) {
+    const operationId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "op-" + Date.now();
+    pending = true;
+    showStatus(mode === "saved" ? "Updating event\u2026" : "Reading your event\u2026", false);
+    render();
+    chrome.runtime.sendMessage({
+      type: "quickcal-widget",
+      action: "submit",
+      text: text,
+      fresh: !!fresh,
+      sessionId: sharedSessionId,
+      operationId: operationId,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    }).then((result) => {
+      pending = false;
+      if (!alive) return;
+      if (result && result.ignored) {
+        clearStatus();
+        render();
+        return;
+      }
+      if (result && result.session) applyRemote(result.session, true);
+      else {
+        showStatus(result && result.error ? result.error : "QuickCalAI could not read that event.", true);
+        render();
+      }
+    }).catch(() => {
+      pending = false;
+      if (!alive) return;
+      showStatus("QuickCalAI could not reach QuickCal. Try again.", true);
+      render();
+    });
+  }
+
+  function onPointerDown(event) {
+    if (event.button != null && event.button !== 0) return;
+    const corner = event.currentTarget && event.currentTarget.dataset ? event.currentTarget.dataset.corner : "";
+    const rect = host.getBoundingClientRect();
+    if (corner) {
+      dragging = {
+        kind: "resize",
+        corner: corner,
+        pointerId: event.pointerId,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        scale: widgetScale || 1,
+      };
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch (error) {
+        // A synthetic pointer can still resize without capture.
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.target.closest && event.target.closest("button, input, a, textarea")) return;
+    dragging = {
+      kind: "move",
+      pointerId: event.pointerId,
+      dx: event.clientX - rect.left,
+      dy: event.clientY - rect.top,
+    };
+    try {
+      dragHandle.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // A synthetic pointer can still move the panel without capture.
+    }
+    event.preventDefault();
+  }
+
+  function onPointerMove(event) {
+    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    const api = globalThis.QuickCalLayout;
+    if (!api) return;
+    if (dragging.kind === "move") {
+      const rect = host.getBoundingClientRect();
+      const next = api.clampPosition(event.clientX - dragging.dx, event.clientY - dragging.dy, rect.width, rect.height, viewportSize());
+      widgetLeft = next.left;
+      widgetTop = next.top;
+      allowFocus = false;
+      render();
+      return;
+    }
+    const scaled = api.scaleFromCorner(dragging, { x: event.clientX, y: event.clientY }, dragging.corner, viewportSize());
+    widgetScale = scaled.scale;
+    widgetLeft = scaled.left;
+    widgetTop = scaled.top;
+    allowFocus = false;
+    render();
+  }
+
+  function onPointerUp(event) {
+    if (!dragging || event.pointerId !== dragging.pointerId) return;
+    dragging = null;
+    publishLayout();
+  }
+
+  function onResizeKey(event) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown" && event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const api = globalThis.QuickCalLayout;
+    if (!api) return;
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" || event.key === "ArrowRight" ? 0.08 : -0.08;
+    const rect = host.getBoundingClientRect();
+    const baseWidth = rect.width / (widgetScale || 1);
+    const baseHeight = Math.max(1, rect.height / (widgetScale || 1));
+    widgetScale = api.clampScale((widgetScale || 1) + delta, baseWidth, baseHeight, viewportSize());
+    const origin = api.defaultOrigin(baseWidth * widgetScale, baseHeight * widgetScale, viewportSize());
+    if (widgetLeft == null || widgetTop == null) {
+      widgetLeft = origin.left;
+      widgetTop = origin.top;
+    }
+    allowFocus = false;
+    render();
+    publishLayout();
   }
 
   function onRuntimeMessage(message, sender, sendResponse) {
+    if (message && message.type === "quickcal-widget") {
+      if (message.action === "ping") {
+        sendResponse({ ok: true, open: open });
+        return false;
+      }
+      if (message.action === "toggle") {
+        const opening = !open;
+        Promise.resolve(setOpen(opening)).then((result) => {
+          sendResponse({ ok: !!(result && result.session) || !shared, session: result && result.session });
+        });
+        return true;
+      }
+      if (message.action === "focus") {
+        allowFocus = true;
+        if (open) focusInput();
+        allowFocus = false;
+        sendResponse({ ok: true });
+        return false;
+      }
+      if (message.action === "render" && message.session) {
+        applyRemote(message.session, false);
+        sendResponse({ ok: true });
+        return false;
+      }
+      if (message.session) applyRemote(message.session, false);
+      sendResponse({ ok: true });
+      return false;
+    }
     if (message && message.type === "quickcal-selection") {
       try {
         sendResponse(acceptSelection(message));
@@ -976,9 +1454,9 @@
     chrome.runtime.sendMessage({ type: "quickcal-voice", action: "cancel", sessionId: sessionId }).catch(() => {});
   }
 
-  function startVoiceClock() {
+  function startVoiceClock(keepStart) {
     stopVoiceTimer();
-    voiceStartedAt = Date.now();
+    if (!keepStart) voiceStartedAt = Date.now();
     elapsed.textContent = "0:00";
     voiceTimer = setInterval(() => {
       if (voicePhase !== "recording") return;
@@ -1057,26 +1535,19 @@
   function onVoiceMessage(message) {
     if (!message || message.type !== "quickcal-voice") return;
     if (message.sessionId && voiceSession && message.sessionId !== voiceSession) return;
-    if (!alive || !open) {
-      if (message.phase === "recording" || message.phase === "review") {
-        chrome.runtime.sendMessage({
-          type: "quickcal-voice",
-          action: "cancel",
-          sessionId: message.sessionId,
-        }).catch(() => {});
-      }
-      return;
-    }
+    if (!alive || !open) return;
     if (message.cancelled || (message.phase === "idle" && message.ok === true && !message.text)) {
+      if (voicePhase === "idle") return;
       resetVoiceUi(true);
       return;
     }
     if (message.phase === "recording") {
       voiceSession = message.sessionId || voiceSession;
       voicePhase = "recording";
+      if (message.startedAt) voiceStartedAt = message.startedAt;
       clearStatus();
       paintVoice();
-      startVoiceClock();
+      startVoiceClock(!!message.startedAt);
       return;
     }
     if (message.phase === "review") {
@@ -1099,11 +1570,14 @@
 
   function onVisible() {
     if (!alive || !open) return;
-    if (document.visibilityState === "hidden" && (voicePhase === "recording" || voicePhase === "review")) {
-      cancelVoice();
-      return;
+    if (document.visibilityState === "visible") {
+      checkConnection();
+      if (shared) {
+        claimLeader().then(() => {
+          if (inputDirty) publishInput(0);
+        });
+      }
     }
-    if (document.visibilityState === "visible") checkConnection();
   }
 
   function destroy() {
@@ -1114,7 +1588,7 @@
     document.removeEventListener("keydown", onEscape, true);
     document.removeEventListener("visibilitychange", onVisible);
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
-    if (voicePhase !== "idle") {
+    if (!shared && voicePhase !== "idle") {
       chrome.runtime.sendMessage({ type: "quickcal-voice", action: "cancel", sessionId: voiceSession }).catch(() => {});
       stopVoiceTimer();
     }
@@ -1200,7 +1674,48 @@
       clearStatus();
     }
     if (!status.hidden && status.className.indexOf("error") !== -1) clearStatus();
+    inputDirty = true;
+    publishInput();
   });
+  input.addEventListener("focus", claimLeader);
+  window.addEventListener("focus", claimLeader);
+  dragHandle.addEventListener("pointerdown", onPointerDown);
+  [resizeNw, resizeNe, resizeSw, resizeSe].forEach((button) => {
+    button.addEventListener("pointerdown", onPointerDown);
+    button.addEventListener("keydown", onResizeKey);
+  });
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("resize", () => {
+    const api = globalThis.QuickCalLayout;
+    if (!api || !styled) return;
+    const rect = host.getBoundingClientRect();
+    const baseWidth = rect.width / (widgetScale || 1);
+    const baseHeight = Math.max(1, rect.height / (widgetScale || 1));
+    widgetScale = api.clampScale(widgetScale || 1, baseWidth, baseHeight, viewportSize());
+    const width = baseWidth * widgetScale;
+    const height = baseHeight * widgetScale;
+    const origin = widgetLeft == null || widgetTop == null
+      ? api.defaultOrigin(width, height, viewportSize())
+      : api.clampPosition(widgetLeft, widgetTop, width, height, viewportSize());
+    widgetLeft = origin.left;
+    widgetTop = origin.top;
+    allowFocus = false;
+    render();
+    if (document.visibilityState === "visible") publishLayout();
+  });
+  if (shared && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "session") return;
+      const change = changes[sessionStorageKey()];
+      if (!change || !change.newValue) return;
+      if (applyingRemote) {
+        queuedRemote = change.newValue;
+        return;
+      }
+      applyRemote(change.newValue, false);
+    });
+  }
 
   async function restoreActive() {
     let result;
@@ -1279,6 +1794,10 @@
   stylesheet.addEventListener("load", () => {
     styled = true;
     render();
+    if (shared) {
+      hydrateShared();
+      return;
+    }
     restoreActive();
     const step = session.begin(Date.now());
     if (step.status && !selectionHold) showStatus(step.status, false);
