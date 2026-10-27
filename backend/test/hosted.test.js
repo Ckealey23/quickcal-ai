@@ -88,7 +88,20 @@ function loadBackground(hooks) {
           });
         }
         if (hooks.healthDown) throw new TypeError("Failed to fetch");
-        return { ok: true, status: 200, async json() { return { ok: true, apiKeyConfigured: true }; } };
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            if (hooks.healthBody) return hooks.healthBody;
+            return {
+              ok: true,
+              apiKeyConfigured: true,
+              quickcalApiVersion: 2,
+              quickcalRelease: "test-revision",
+              capabilities: ["event-notifications"],
+            };
+          },
+        };
       }
       if (String(url).endsWith("/access")) {
         const status = hooks.accessStatus || 200;
@@ -101,12 +114,15 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return {
+              quickcalApiVersion: 2,
+              quickcalRelease: "test-revision",
               title: "Coffee with Alex",
               date: "2026-10-20",
               startTime: "10:00",
               endTime: "11:00",
               timeZone: "America/Los_Angeles",
               location: null,
+              reminders: { useDefault: true, overrides: [] },
               needsClarification: false,
               clarificationQuestions: [],
             };
@@ -257,6 +273,18 @@ describe("hosted extension access", () => {
     assert.equal(loaded.stored.some((value) => value.includes(TOKEN)), false);
     assert.equal(loaded.logs.some((line) => line.includes(TOKEN)), false);
     assert.equal(loaded.tokenCalls.includes(true), false);
+  });
+
+  it("reports an incompatible hosted parser immediately", async () => {
+    const loaded = loadBackground({ healthBody: { ok: true, apiKeyConfigured: true } });
+    const health = await ask(
+      loaded.listeners.message,
+      { type: "quickcal-backend", action: "health" },
+      contentSender(),
+    );
+    assert.equal(health.ok, false);
+    assert.equal(health.incompatible, true);
+    assert.match(health.error, /hosted parser is out of date/i);
   });
 
   it("reconnects interactively for the email scope and reports an unapproved account", async () => {

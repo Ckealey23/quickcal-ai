@@ -151,6 +151,7 @@ const page = `<!DOCTYPE html>
         endTime: "11:00",
         timeZone: "America/Los_Angeles",
         location: "Avila",
+        reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
         needsClarification: false,
         durationDefaulted: true,
         clarificationQuestions: [],
@@ -168,6 +169,8 @@ const page = `<!DOCTYPE html>
       timeText: "10:00–11:00 AM",
       timeZone: "America/Los_Angeles",
       location: "Avila",
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
+      remindersText: "Popup 1 hour before",
       htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
     };
     nextResult = preview;
@@ -199,8 +202,17 @@ const page = `<!DOCTYPE html>
     release();
     await settle();
     const expanded = shadow.querySelector(".card").getBoundingClientRect();
+    const expandedBar = shadow.querySelector(".bar").getBoundingClientRect();
+    const micBox = shadow.querySelector(".mic").getBoundingClientRect();
+    const expandedStyle = getComputedStyle(shadow.querySelector(".card"));
+    field.focus({ focusVisible: true });
+    const expandedFocus = getComputedStyle(shadow.querySelector(".bar")).boxShadow;
     check("created", shadow.querySelector(".success").hidden === false && shadow.textContent.includes("Event successfully created"));
     check("saved title", shadow.querySelector(".event-title").textContent === "Coffee with Alex <script>");
+    check("saved notification", shadow.textContent.includes("Popup 1 hour before"));
+    check("expanded corners do not clip", expandedStyle.overflow === "visible" && expandedBar.left > expanded.left && expandedBar.right < expanded.right);
+    check("expanded focus visible", expandedFocus.indexOf("138, 164, 214") !== -1);
+    check("mic inside input area", micBox.left >= expandedBar.left && micBox.right <= expandedBar.right && micBox.top >= expandedBar.top && micBox.bottom <= expandedBar.bottom);
     check("saved when", shadow.textContent.includes("Oct 17, 2026") && shadow.textContent.includes("10:00–11:00 AM"));
     check("view link", shadow.querySelector("a.action").href.indexOf("https://calendar.google.com/calendar/event?eid=abc") === 0);
     check("follow-up", field.value === "" && field.placeholder === "Tell me what to change…");

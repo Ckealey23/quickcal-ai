@@ -1,10 +1,142 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { referenceClock } from "../src/clock.js";
-import { applyClarification, applyEdit, applySchedule, prepareForSave, resolveEventZone } from "../src/schedule.js";
+import {
+  applyClarification,
+  applyEdit,
+  applySchedule,
+  normalizeReminderChange,
+  normalizeReminderSettings,
+  prepareForSave,
+  reminderSettingsText,
+  resolveEventZone,
+  sameReminderSettings,
+} from "../src/schedule.js";
 import { validateExtraction } from "../src/validate.js";
 
 const zone = "America/Los_Angeles";
+const plain = (value) => JSON.parse(JSON.stringify(value));
+
+describe("event notifications", () => {
+  const current = {
+    title: "Coffee with Alex",
+    date: "2026-10-17",
+    endDate: "2026-10-17",
+    startTime: "10:00",
+    endTime: "11:00",
+    timeZone: zone,
+    location: "Avila",
+    recurrence: null,
+    reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
+  };
+
+  function notificationEdit(action, overrides = []) {
+    return {
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: action,
+      notificationOverrides: overrides,
+      needsClarification: false,
+      clarificationQuestions: [],
+    };
+  }
+
+  it("uses Calendar defaults when a new event has no notification instruction", () => {
+    const result = applySchedule({
+      title: "Meeting",
+      date: "2026-10-27",
+      startTime: "15:00",
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: "preserve",
+      notificationOverrides: [],
+      clarificationQuestions: [],
+    }, "Meeting tomorrow at 3 PM", referenceClock(new Date("2026-10-26T12:00:00-07:00"), zone));
+    assert.deepEqual(plain(result.reminders), { useDefault: true, overrides: [] });
+    assert.equal(reminderSettingsText(undefined), "Notification settings not loaded");
+  });
+
+  it("treats Google reminder override order as insignificant", () => {
+    const first = {
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 10 }, { method: "email", minutes: 30 }],
+    };
+    const reversed = {
+      useDefault: false,
+      overrides: [{ method: "email", minutes: 30 }, { method: "popup", minutes: 10 }],
+    };
+    assert.equal(sameReminderSettings(first, reversed), true);
+  });
+
+  it("adds without duplicates and preserves every unrelated event field", () => {
+    const added = applyEdit(
+      notificationEdit("add", [
+        { method: "popup", minutes: 60 },
+        { method: "popup", minutes: 10 },
+      ]),
+      current,
+      "Also notify me 10 minutes before",
+    );
+    assert.equal(added.title, current.title);
+    assert.equal(added.date, current.date);
+    assert.equal(added.startTime, current.startTime);
+    assert.equal(added.endTime, current.endTime);
+    assert.equal(added.location, current.location);
+    assert.deepEqual(plain(added.reminders), {
+      useDefault: false,
+      overrides: [
+        { method: "popup", minutes: 60 },
+        { method: "popup", minutes: 10 },
+      ],
+    });
+  });
+
+  it("replaces, removes, restores defaults, and formats resulting settings", () => {
+    const replaced = applyEdit(
+      notificationEdit("replace", [{ method: "email", minutes: 30 }]),
+      current,
+      "Change the notification to email 30 minutes before",
+    );
+    assert.deepEqual(plain(replaced.reminders), {
+      useDefault: false,
+      overrides: [{ method: "email", minutes: 30 }],
+    });
+    assert.equal(reminderSettingsText(replaced.reminders), "Email 30 minutes before");
+    assert.deepEqual(plain(applyEdit(notificationEdit("remove"), current, "Remove notifications").reminders), {
+      useDefault: false,
+      overrides: [],
+    });
+    assert.deepEqual(plain(applyEdit(notificationEdit("default"), current, "Use my calendar defaults").reminders), {
+      useDefault: true,
+      overrides: [],
+    });
+  });
+
+  it("preserves notifications when another event field changes", () => {
+    const renamed = notificationEdit("preserve");
+    renamed.title = "Planning with Alex";
+    const result = applyEdit(renamed, current, "Rename it to Planning with Alex");
+    assert.equal(result.title, "Planning with Alex");
+    assert.deepEqual(plain(result.reminders), current.reminders);
+  });
+
+  it("enforces Google reminder methods, lead times, and the five-reminder maximum", () => {
+    assert.equal(normalizeReminderChange("replace", [{ method: "sms", minutes: 10 }]).ok, false);
+    assert.equal(normalizeReminderChange("replace", [{ method: "popup", minutes: 40321 }]).ok, false);
+    assert.equal(normalizeReminderSettings({
+      useDefault: false,
+      overrides: [0, 1, 2, 3, 4, 5].map((minutes) => ({ method: "popup", minutes })),
+    }).ok, false);
+    assert.equal(normalizeReminderSettings({ useDefault: true, overrides: [{ method: "popup", minutes: 10 }] }).ok, false);
+  });
+});
 
 function event(overrides = {}) {
   return {

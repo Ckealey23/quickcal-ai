@@ -1,4 +1,124 @@
 (function (root) {
+  const MAX_REMINDERS = 5;
+  const MAX_REMINDER_MINUTES = 40320;
+  const REMINDER_ACTIONS = ["preserve", "replace", "add", "remove", "default"];
+
+  function noReminders() {
+    return { useDefault: false, overrides: [] };
+  }
+
+  function normalizeReminderOverrides(value) {
+    if (!Array.isArray(value) || value.length > MAX_REMINDERS) return { ok: false };
+    const overrides = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const reminder = value[index];
+      if (!reminder || typeof reminder !== "object" || Array.isArray(reminder)) return { ok: false };
+      const keys = Object.keys(reminder);
+      if (keys.length !== 2 || keys.indexOf("method") === -1 || keys.indexOf("minutes") === -1) {
+        return { ok: false };
+      }
+      if (reminder.method !== "popup" && reminder.method !== "email") return { ok: false };
+      if (!Number.isInteger(reminder.minutes) || reminder.minutes < 0 || reminder.minutes > MAX_REMINDER_MINUTES) {
+        return { ok: false };
+      }
+      const duplicate = overrides.some((item) => {
+        return item.method === reminder.method && item.minutes === reminder.minutes;
+      });
+      if (!duplicate) overrides.push({ method: reminder.method, minutes: reminder.minutes });
+    }
+    return { ok: true, overrides: overrides };
+  }
+
+  function normalizeReminderSettings(value) {
+    if (value == null) return { ok: true, reminders: noReminders() };
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
+    const keys = Object.keys(value);
+    if (keys.some((key) => key !== "useDefault" && key !== "overrides")) return { ok: false };
+    if (typeof value.useDefault !== "boolean") return { ok: false };
+    if (value.useDefault) {
+      if (value.overrides != null && (!Array.isArray(value.overrides) || value.overrides.length > 0)) return { ok: false };
+      return { ok: true, reminders: { useDefault: true, overrides: [] } };
+    }
+    const normalized = normalizeReminderOverrides(value.overrides == null ? [] : value.overrides);
+    if (!normalized.ok) return normalized;
+    return { ok: true, reminders: { useDefault: false, overrides: normalized.overrides } };
+  }
+
+  function sameReminderSettings(leftValue, rightValue) {
+    const left = normalizeReminderSettings(leftValue);
+    const right = normalizeReminderSettings(rightValue);
+    if (!left.ok || !right.ok || left.reminders.useDefault !== right.reminders.useDefault) return false;
+    if (left.reminders.overrides.length !== right.reminders.overrides.length) return false;
+    return left.reminders.overrides.every((leftReminder) => {
+      return right.reminders.overrides.some((rightReminder) => {
+        return leftReminder.method === rightReminder.method && leftReminder.minutes === rightReminder.minutes;
+      });
+    });
+  }
+
+  function normalizeReminderChange(action, overrides) {
+    const name = action == null ? "preserve" : action;
+    if (REMINDER_ACTIONS.indexOf(name) === -1) return { ok: false };
+    const normalized = normalizeReminderOverrides(overrides == null ? [] : overrides);
+    if (!normalized.ok) return normalized;
+    if ((name === "preserve" || name === "remove" || name === "default") && normalized.overrides.length) {
+      return { ok: false };
+    }
+    if ((name === "replace" || name === "add") && normalized.overrides.length === 0) return { ok: false };
+    return { ok: true, action: name, overrides: normalized.overrides };
+  }
+
+  function applyReminderChange(currentValue, action, overrides) {
+    const current = normalizeReminderSettings(currentValue);
+    const change = normalizeReminderChange(action, overrides);
+    if (!current.ok || !change.ok) return null;
+    if (change.action === "preserve") return current.reminders;
+    if (change.action === "default") return { useDefault: true, overrides: [] };
+    if (change.action === "remove") return noReminders();
+    if (change.action === "replace") return { useDefault: false, overrides: change.overrides };
+    if (current.reminders.useDefault) return null;
+    const combined = [];
+    current.reminders.overrides.concat(change.overrides).forEach((reminder) => {
+      const duplicate = combined.some((item) => {
+        return item.method === reminder.method && item.minutes === reminder.minutes;
+      });
+      if (!duplicate) combined.push(reminder);
+    });
+    const normalized = normalizeReminderOverrides(combined);
+    if (!normalized.ok) return null;
+    return { useDefault: false, overrides: normalized.overrides };
+  }
+
+  function reminderLeadText(minutes) {
+    if (minutes === 0) return "at start time";
+    if (minutes % 10080 === 0) {
+      const weeks = minutes / 10080;
+      return weeks + (weeks === 1 ? " week before" : " weeks before");
+    }
+    if (minutes % 1440 === 0) {
+      const days = minutes / 1440;
+      return days + (days === 1 ? " day before" : " days before");
+    }
+    if (minutes % 60 === 0) {
+      const hours = minutes / 60;
+      return hours + (hours === 1 ? " hour before" : " hours before");
+    }
+    return minutes + (minutes === 1 ? " minute before" : " minutes before");
+  }
+
+  function reminderSettingsText(value) {
+    if (value == null) return "Notification settings not loaded";
+    const normalized = normalizeReminderSettings(value);
+    if (!normalized.ok) return "";
+    const reminders = normalized.reminders;
+    if (reminders.useDefault) return "Calendar default notifications";
+    if (!reminders.overrides.length) return "Notifications off";
+    return reminders.overrides.map((reminder) => {
+      const method = reminder.method === "email" ? "Email" : "Popup";
+      return method + " " + reminderLeadText(reminder.minutes);
+    }).join(" · ");
+  }
+
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;
     const name = timeZone.trim();
@@ -528,6 +648,14 @@
   }
 
   function blankSchedule(event) {
+    const startingReminders = Object.hasOwn(event, "reminders")
+      ? event.reminders
+      : { useDefault: true, overrides: [] };
+    const reminders = applyReminderChange(
+      startingReminders,
+      event.notificationAction,
+      event.notificationOverrides
+    );
     return {
       title: event.title,
       date: event.date,
@@ -536,6 +664,7 @@
       endDate: event.date,
       timeZone: event.timeZone,
       location: event.location,
+      reminders: reminders || startingReminders,
       needsClarification: false,
       clarificationQuestions: dedupe(event.clarificationQuestions),
       durationDefaulted: false,
@@ -549,6 +678,13 @@
 
   function applySchedule(event, sourceText, clock) {
     const next = blankSchedule(event);
+    const notificationOnly = event.notificationAction && event.notificationAction !== "preserve" &&
+      !event.title && !event.date && !event.startTime && !event.endTime && !event.location && !event.recurrence;
+    if (notificationOnly) {
+      next.clarificationQuestions = ["Which event do you mean?"];
+      next.needsClarification = true;
+      return attachSeries(next, null);
+    }
     const kind = textRecurrenceKind(sourceText);
     if (kind === "unsupported") {
       return ask(
@@ -683,7 +819,8 @@
       return { ok: false, error: "Clarification draft is not valid." };
     }
     const series = normalizeRecurrence(value.recurrence === undefined ? null : value.recurrence);
-    if (!series.ok) return { ok: false, error: "Clarification draft is not valid." };
+    const reminders = normalizeReminderSettings(value.reminders);
+    if (!series.ok || !reminders.ok) return { ok: false, error: "Clarification draft is not valid." };
     return {
       ok: true,
       event: {
@@ -694,6 +831,7 @@
         timeZone: timeZone,
         location: location,
         recurrence: series.recurrence,
+        reminders: reminders.reminders,
       },
     };
   }
@@ -705,6 +843,11 @@
     const startTime = extracted.startTime || current.startTime || null;
     const location = extracted.location == null ? current.location || null : extracted.location;
     const recurrence = extracted.recurrence || current.recurrence || null;
+    const reminders = applyReminderChange(
+      current.reminders,
+      extracted.notificationAction,
+      extracted.notificationOverrides
+    ) || normalizeReminderSettings(current.reminders).reminders;
     const answerSetsEnd = mentionsScheduleChange(answerText);
     const endTime = answerSetsEnd ? extracted.endTime : current.endTime || null;
     const source = [originalText, answerText].filter(Boolean).join("\n");
@@ -717,6 +860,9 @@
         timeZone: current.timeZone || extracted.timeZone,
         location: location,
         recurrence: recurrence,
+        reminders: reminders,
+        notificationAction: "preserve",
+        notificationOverrides: [],
         needsClarification: false,
         clarificationQuestions: extracted.clarificationQuestions || [],
       },
@@ -738,7 +884,8 @@
     const start = resolveLocal(value.date, value.startTime, timeZone);
     const end = resolveLocal(endDate, value.endTime, timeZone);
     const series = normalizeRecurrence(value.recurrence === undefined ? null : value.recurrence);
-    if (value.timeZone !== timeZone || !start.ok || !end.ok || end.epoch <= start.epoch || !series.ok) {
+    const reminders = normalizeReminderSettings(value.reminders);
+    if (value.timeZone !== timeZone || !start.ok || !end.ok || end.epoch <= start.epoch || !series.ok || !reminders.ok) {
       return { ok: false, error: "Current event is not valid." };
     }
     return {
@@ -752,6 +899,7 @@
         timeZone: timeZone,
         location: location || null,
         recurrence: series.recurrence,
+        reminders: reminders.reminders,
       },
     };
   }
@@ -763,7 +911,32 @@
   }
 
   function applyEdit(extracted, current, sourceText, clock) {
-    if (current && current.recurrence && seriesScope(sourceText) !== "series") {
+    const notificationChanged = extracted.notificationAction && extracted.notificationAction !== "preserve";
+    const notificationOnly = notificationChanged && !extracted.title && !extracted.date && !extracted.startTime &&
+      !extracted.endTime && !extracted.location && !extracted.recurrence;
+    const reminders = applyReminderChange(
+      current.reminders,
+      extracted.notificationAction,
+      extracted.notificationOverrides
+    );
+    if (!reminders) {
+      return attachSeries({
+        title: current.title,
+        date: current.date,
+        startTime: current.startTime,
+        endTime: current.endTime,
+        endDate: current.endDate || current.date,
+        timeZone: current.timeZone,
+        location: current.location || null,
+        reminders: normalizeReminderSettings(current.reminders).reminders,
+        needsClarification: true,
+        clarificationQuestions: current.reminders && current.reminders.useDefault
+          ? ["Google Calendar cannot combine calendar defaults with an event-specific notification. What custom notifications should replace the defaults?"]
+          : ["An event can have at most five notifications. Which notifications should this event use?"],
+        durationDefaulted: false,
+      }, current.recurrence);
+    }
+    if (current && current.recurrence && !notificationOnly && seriesScope(sourceText) !== "series") {
       const question = seriesScope(sourceText) === "instance"
         ? "QuickCal will not change the whole series for one occurrence. Say that the entire weekly series should change, or start a new event."
         : "Should this change the entire weekly series? QuickCal will not change the series unless you say so.";
@@ -775,6 +948,7 @@
         endDate: current.endDate || current.date,
         timeZone: current.timeZone,
         location: current.location || null,
+        reminders: reminders,
         needsClarification: true,
         clarificationQuestions: [question],
         durationDefaulted: false,
@@ -803,8 +977,25 @@
         endDate: current.endDate || current.date,
         timeZone: current.timeZone,
         location: location,
+        reminders: reminders,
         needsClarification: true,
         clarificationQuestions: questions,
+        durationDefaulted: false,
+      }, series);
+    }
+
+    if (notificationOnly) {
+      return attachSeries({
+        title: current.title,
+        date: current.date,
+        startTime: current.startTime,
+        endTime: current.endTime,
+        endDate: current.endDate || current.date,
+        timeZone: current.timeZone,
+        location: current.location || null,
+        reminders: reminders,
+        needsClarification: false,
+        clarificationQuestions: [],
         durationDefaulted: false,
       }, series);
     }
@@ -819,6 +1010,9 @@
           timeZone: current.timeZone,
           location: location,
           recurrence: series,
+          reminders: reminders,
+          notificationAction: "preserve",
+          notificationOverrides: [],
           needsClarification: false,
           clarificationQuestions: [],
         },
@@ -840,6 +1034,7 @@
         endDate: date,
         timeZone: current.timeZone,
         location: location,
+        reminders: reminders,
         needsClarification: true,
         clarificationQuestions: [
           reason === "ambiguous"
@@ -859,6 +1054,7 @@
         endDate: current.endDate || current.date,
         timeZone: current.timeZone,
         location: location,
+        reminders: reminders,
         needsClarification: true,
         clarificationQuestions: [problem],
         durationDefaulted: false,
@@ -874,6 +1070,7 @@
       endDate: end.date,
       timeZone: current.timeZone,
       location: location,
+      reminders: reminders,
       needsClarification: false,
       clarificationQuestions: [],
       durationDefaulted: false,
@@ -888,7 +1085,8 @@
       return null;
     }
     const series = normalizeRecurrence(event.recurrence === undefined ? null : event.recurrence);
-    if (!series.ok) return null;
+    const reminders = normalizeReminderSettings(event.reminders);
+    if (!series.ok || !reminders.ok) return null;
     const recurrence = series.recurrence;
     const endDate = event.endDate || event.date;
     const start = resolveLocal(event.date, event.startTime, event.timeZone);
@@ -910,6 +1108,7 @@
         timeZone: event.timeZone,
         location: location,
         recurrence: recurrence,
+        reminders: reminders.reminders,
       }),
       summary: title,
       description: "Created by QuickCalAI.",
@@ -927,6 +1126,8 @@
       recurrenceRule: recurrenceRule,
       recurrenceText: recurrence ? recurrenceScheduleText(recurrence) : "",
       seriesEndText: recurrence ? seriesEndText(recurrence) : "",
+      reminders: reminders.reminders,
+      remindersText: reminderSettingsText(reminders.reminders),
     };
   }
 
@@ -940,6 +1141,11 @@
     formatCompactDate: formatCompactDate,
     normalizeCurrentEvent: normalizeCurrentEvent,
     normalizeRecurrence: normalizeRecurrence,
+    normalizeReminderSettings: normalizeReminderSettings,
+    sameReminderSettings: sameReminderSettings,
+    normalizeReminderChange: normalizeReminderChange,
+    applyReminderChange: applyReminderChange,
+    reminderSettingsText: reminderSettingsText,
     resolveEventZone: resolveEventZone,
     recurrenceScheduleText: recurrenceScheduleText,
     seriesEndText: seriesEndText,

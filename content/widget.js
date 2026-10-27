@@ -236,6 +236,8 @@
   seriesLine.className = "meta";
   const locationLine = document.createElement("p");
   locationLine.className = "meta";
+  const remindersLine = document.createElement("p");
+  remindersLine.className = "meta";
   const noteLine = document.createElement("p");
   noteLine.className = "note";
   const questionList = document.createElement("ul");
@@ -281,7 +283,7 @@
   cancelButton.hidden = true;
 
   actions.append(retryButton, connectButton, viewLink, newButton, cancelButton);
-  body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, noteLine, questionList, saveError, rule, actions);
+  body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, saveError, rule, actions);
   bar.append(input, listening, dismissButton, micButton);
   card.append(bar, body);
   card.setAttribute("aria-labelledby", "quickcal-event-title");
@@ -415,6 +417,8 @@
     seriesLine.hidden = !view.seriesEndText;
     locationLine.textContent = view.location || "";
     locationLine.hidden = !view.location;
+    remindersLine.textContent = view.remindersText || "";
+    remindersLine.hidden = !view.remindersText;
     noteLine.textContent = view.durationDefaulted ? "1-hour default" : "";
     noteLine.hidden = !view.durationDefaulted;
   }
@@ -462,6 +466,7 @@
       timeZone: event.timeZone,
       location: event.location || null,
       recurrence: event.recurrence || null,
+      reminders: event.reminders || null,
     };
   }
 
@@ -565,6 +570,7 @@
       durationDefaulted: false,
       recurrenceText: result.recurrenceText || "",
       seriesEndText: result.seriesEndText || "",
+      remindersText: result.remindersText || "",
     });
     fillList(questionList, []);
     showSaveError("");
@@ -597,6 +603,7 @@
         durationDefaulted: false,
         recurrenceText: savedRecord.recurrenceText || "",
         seriesEndText: savedRecord.seriesEndText || "",
+        remindersText: savedRecord.remindersText || "",
       });
     }
     fillList(questionList, event.clarificationQuestions || []);
@@ -693,6 +700,7 @@
       timeZone: savedRecord.timeZone,
       location: savedRecord.location || null,
       recurrence: savedRecord.recurrence || null,
+      reminders: savedRecord.reminders || null,
     };
   }
 
@@ -735,6 +743,8 @@
         recurrence: result.recurrence || null,
         recurrenceText: result.recurrenceText || "",
         seriesEndText: result.seriesEndText || "",
+        reminders: result.reminders || null,
+        remindersText: result.remindersText || "",
       });
       render();
       return;
@@ -789,6 +799,8 @@
         recurrence: result.recurrence || null,
         recurrenceText: result.recurrenceText || "",
         seriesEndText: result.seriesEndText || "",
+        reminders: result.reminders || null,
+        remindersText: result.remindersText || "",
       });
       render();
       return;
@@ -1766,6 +1778,12 @@
           result = { ok: false };
         }
         if (!alive || !open || session.phase() !== "waking") return;
+        if (result && result.incompatible) {
+          session.noteClosed();
+          showStatus(result.error || "QuickCalAI's hosted parser is out of date. Deploy the current backend, then reload the extension.", true);
+          healthRetry.hidden = true;
+          return;
+        }
         const step = session.healthResult(!!(result && result.ok), Date.now());
         if (step.status) {
           if (!selectionHold) showStatus(step.status, !!step.retry);

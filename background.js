@@ -724,7 +724,7 @@ function eventPatchUrl(id) {
     CALENDAR_EVENTS_URL +
     "/" +
     encodeURIComponent(id) +
-    "?sendUpdates=none&fields=id,summary,htmlLink,status"
+    "?sendUpdates=none&fields=id,summary,htmlLink,status,reminders"
   );
 }
 
@@ -733,12 +733,12 @@ function eventReadUrl(id) {
     CALENDAR_EVENTS_URL +
     "/" +
     encodeURIComponent(id) +
-    "?fields=id,summary,htmlLink,status"
+    "?fields=id,summary,htmlLink,status,reminders"
   );
 }
 
 function eventInsertUrl() {
-  return CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=id,summary,htmlLink,status";
+  return CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=id,summary,htmlLink,status,reminders";
 }
 
 function insertBody(record) {
@@ -771,6 +771,12 @@ function confirmedRecord(record, body) {
   if (body.status === "cancelled") return null;
   const link = safeCalendarLink(body.htmlLink);
   if (!link) return null;
+  if (record.reminders) {
+    if (!Object.hasOwn(body, "reminders")) return null;
+    if (!self.QuickCalSchedule.sameReminderSettings(record.reminders, body.reminders)) {
+      return null;
+    }
+  }
   return {
     id: record.id,
     phase: "created",
@@ -782,6 +788,8 @@ function confirmedRecord(record, body) {
     dateText: record.dateText,
     timeText: record.timeText,
     htmlLink: link,
+    reminders: record.reminders || { useDefault: false, overrides: [] },
+    remindersText: record.remindersText || self.QuickCalSchedule.reminderSettingsText(record.reminders),
   };
 }
 
@@ -1042,6 +1050,8 @@ function scheduleFields(source) {
     recurrenceRule: source.recurrenceRule || "",
     recurrenceText: source.recurrenceText || "",
     seriesEndText: source.seriesEndText || "",
+    reminders: source.reminders || { useDefault: false, overrides: [] },
+    remindersText: source.remindersText || self.QuickCalSchedule.reminderSettingsText(source.reminders),
   };
 }
 
@@ -1071,6 +1081,8 @@ function publicSavedEvent(record) {
     recurrence: record.recurrence || null,
     recurrenceText: record.recurrenceText || "",
     seriesEndText: record.seriesEndText || "",
+    reminders: record.reminders || { useDefault: false, overrides: [] },
+    remindersText: record.remindersText || self.QuickCalSchedule.reminderSettingsText(record.reminders),
   };
 }
 
@@ -1081,7 +1093,7 @@ function widgetInsertBody(record) {
     description: record.description,
     start: { dateTime: record.startDateTime, timeZone: record.timeZone },
     end: { dateTime: record.endDateTime, timeZone: record.timeZone },
-    reminders: { useDefault: false },
+    reminders: record.reminders || { useDefault: false, overrides: [] },
   };
   if (record.location) body.location = record.location;
   if (record.recurrenceRule) body.recurrence = [record.recurrenceRule];
@@ -1100,6 +1112,17 @@ async function loadDraftEvent() {
   if (typeof record.summary !== "string" || typeof record.dateText !== "string" || typeof record.timeText !== "string") {
     return null;
   }
+  if (!Object.hasOwn(record, "reminders")) {
+    if (record.phase !== "created") return null;
+    const persisted = await lookupEvent(record);
+    if (!persisted.ok || !persisted.body || !Object.hasOwn(persisted.body, "reminders")) return null;
+    record.reminders = persisted.body.reminders;
+  }
+  const reminders = self.QuickCalSchedule.normalizeReminderSettings(record.reminders);
+  if (!reminders.ok) return null;
+  record.reminders = reminders.reminders;
+  record.remindersText = self.QuickCalSchedule.reminderSettingsText(reminders.reminders);
+  await saveDraftEvent(record).catch(() => {});
   return record;
 }
 
@@ -1382,7 +1405,28 @@ async function checkHealth() {
       });
       if (!response.ok) return { ok: false };
       const body = await readJson(response);
-      return { ok: !!(body && body.ok === true) };
+      const compatible = !!(
+        body &&
+        body.ok === true &&
+        body.quickcalApiVersion === self.QuickCalLocalParse.API_VERSION &&
+        Array.isArray(body.capabilities) &&
+        body.capabilities.includes("event-notifications")
+      );
+      if (body && body.ok === true && !compatible) {
+        const release = typeof body.quickcalRelease === "string" ? " (running " + body.quickcalRelease + ")" : "";
+        return {
+          ok: false,
+          incompatible: true,
+          error: "QuickCalAI's hosted parser is out of date" + release + ". Deploy the current backend, then reload the extension.",
+          quickcalApiVersion: body.quickcalApiVersion,
+          quickcalRelease: body.quickcalRelease,
+        };
+      }
+      return {
+        ok: compatible,
+        quickcalApiVersion: body && body.quickcalApiVersion,
+        quickcalRelease: body && body.quickcalRelease,
+      };
     } catch (error) {
       return { ok: false };
     }
@@ -1927,6 +1971,7 @@ function savedPayload(record) {
     timeZone: record.timeZone,
     location: record.location || null,
     recurrence: record.recurrence || null,
+    reminders: record.reminders || { useDefault: false, overrides: [] },
   };
 }
 
@@ -2148,7 +2193,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === BACKEND_MESSAGE && message.action === "health") {
     if (!isParseSender(sender)) return false;
     checkHealth()
-      .then((result) => sendResponse({ ok: !!(result && result.ok) }))
+      .then((result) => sendResponse(result && typeof result === "object" ? result : { ok: false }))
       .catch(() => sendResponse({ ok: false }));
     return true;
   }

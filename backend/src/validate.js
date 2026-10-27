@@ -1,5 +1,5 @@
 import { MAX_TEXT_LENGTH } from "./config.js";
-import { normalizeCurrentEvent, normalizeDraft, normalizeRecurrence } from "./schedule.js";
+import { normalizeCurrentEvent, normalizeDraft, normalizeRecurrence, normalizeReminderChange } from "./schedule.js";
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -11,6 +11,8 @@ const EVENT_FIELDS = [
   "timeZone",
   "location",
   "recurrence",
+  "notificationAction",
+  "notificationOverrides",
   "needsClarification",
   "clarificationQuestions",
 ];
@@ -127,7 +129,8 @@ export function validateExtraction(raw, requestedTimeZone) {
   const failure = { ok: false, error: "The model returned an event that failed validation." };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
   const keys = Object.keys(raw);
-  if (EVENT_FIELDS.some((field) => !Object.hasOwn(raw, field))) return failure;
+  const requiredFields = EVENT_FIELDS.filter((field) => field !== "notificationAction" && field !== "notificationOverrides");
+  if (requiredFields.some((field) => !Object.hasOwn(raw, field))) return failure;
   if (keys.some((key) => !EVENT_FIELDS.includes(key))) return failure;
 
   const title = optionalText(raw.title, 200);
@@ -136,7 +139,8 @@ export function validateExtraction(raw, requestedTimeZone) {
   const endTime = optionalTime(raw.endTime);
   const location = optionalText(raw.location, 200);
   const recurrence = normalizeRecurrence(raw.recurrence);
-  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok) {
+  const notification = normalizeReminderChange(raw.notificationAction, raw.notificationOverrides);
+  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok) {
     return failure;
   }
   if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
@@ -186,6 +190,8 @@ export function validateExtraction(raw, requestedTimeZone) {
       timeZone: raw.timeZone,
       location: location.value,
       recurrence: recurrence.recurrence,
+      notificationAction: notification.action,
+      notificationOverrides: notification.overrides,
       needsClarification,
       clarificationQuestions: questions,
     },

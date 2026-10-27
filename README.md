@@ -76,7 +76,7 @@ Leave that window open. In a second PowerShell window, check that the server is 
 Invoke-RestMethod -Uri http://127.0.0.1:3000/health
 ```
 
-The response includes `ok: true` and `apiKeyConfigured`. `apiKeyConfigured` is true only when `backend/.env` has a non-empty `OPENAI_API_KEY`. Put the key on that same line, as `OPENAI_API_KEY=...`. A key pasted on the following line by itself is also accepted. Restart the server after changing `.env`. Then send one of the examples below. Each one is a paid model call. Use your own IANA time zone if it is not `America/Los_Angeles`.
+The response includes `ok: true`, `apiKeyConfigured`, `quickcalApiVersion`, `quickcalRelease`, and a capability list. `quickcalRelease` is `local` outside Render, or Render's public deployment revision when deployed. These non-secret fields make it possible to confirm that the extension and hosted parser are running compatible revisions. `apiKeyConfigured` is true only when `backend/.env` has a non-empty `OPENAI_API_KEY`. Put the key on that same line, as `OPENAI_API_KEY=...`. A key pasted on the following line by itself is also accepted. Restart the server after changing `.env`. Then send one of the examples below. Each one is a paid model call. Use your own IANA time zone if it is not `America/Los_Angeles`.
 
 ```powershell
 function Send-ParseEvent($Text) {
@@ -117,7 +117,7 @@ Create a Render Web Service:
 | Start command | `npm start --prefix backend` |
 | Health check path | `/health` |
 
-`GET /health` returns `{ "ok": true, "apiKeyConfigured": true or false }` and does not call OpenAI. `apiKeyConfigured` is true only when `OPENAI_API_KEY` is set. The response never includes the key, the allowlist, or a Google token. Use one instance. The per-user rate limit is stored in process memory, so it is not shared by more than one instance and it resets whenever the service restarts, redeploys, or spins down.
+`GET /health` returns health, parser API version, public deployment revision, and supported capabilities without calling OpenAI. `apiKeyConfigured` is true only when `OPENAI_API_KEY` is set. The response never includes the key, the allowlist, or a Google token. Use one instance. The per-user rate limit is stored in process memory, so it is not shared by more than one instance and it resets whenever the service restarts, redeploys, or spins down.
 
 Render sets `PORT` and `RENDER=true`. With `RENDER=true`, the server binds `0.0.0.0` and that port. Local `npm start` binds `127.0.0.1:3000` when `PORT` is unset, and it stays on `127.0.0.1` if `PORT` is set. `NODE_ENV=production` or `RENDER=true` turns authentication on, and a value of `QUICKCAL_REQUIRE_AUTH=false` does not turn it off. If `GOOGLE_CLIENT_ID` or `ALLOWED_EMAILS` is missing, the process exits before it listens.
 

@@ -27,6 +27,23 @@ export const EVENT_SCHEMA = {
         },
       ],
     },
+    notificationAction: {
+      type: "string",
+      enum: ["preserve", "replace", "add", "remove", "default"],
+    },
+    notificationOverrides: {
+      type: "array",
+      maxItems: 5,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          method: { type: "string", enum: ["popup", "email"] },
+          minutes: { type: "integer", minimum: 0, maximum: 40320 },
+        },
+        required: ["method", "minutes"],
+      },
+    },
     needsClarification: { type: "boolean" },
     clarificationQuestions: {
       type: "array",
@@ -41,6 +58,8 @@ export const EVENT_SCHEMA = {
     "timeZone",
     "location",
     "recurrence",
+    "notificationAction",
+    "notificationOverrides",
     "needsClarification",
     "clarificationQuestions",
   ],

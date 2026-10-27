@@ -157,6 +157,7 @@
       timeZone: event.timeZone,
       location: event.location || null,
       recurrence: event.recurrence || null,
+      reminders: event.reminders || null,
     };
   }
 

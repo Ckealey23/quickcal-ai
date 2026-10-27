@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "../..");
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function loadBackground(hooks) {
   const store = hooks.store || {};
@@ -57,6 +58,10 @@ function loadBackground(hooks) {
     fetch: async (url, options) => {
       fetches.push({ url: String(url), options: options || {} });
       if (String(url).includes("127.0.0.1")) throw new Error("parser called");
+      if (String(url).includes("/parse-event")) {
+        const body = hooks.parseBody || {};
+        return { ok: true, status: 200, async json() { return body; } };
+      }
       if (String(url).includes("/access")) {
         const status = hooks.accessStatus == null ? 200 : hooks.accessStatus;
         const body = hooks.accessBody || { ok: true, approved: true };
@@ -90,6 +95,7 @@ function loadBackground(hooks) {
               summary: body.summary,
               htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
               status: "confirmed",
+              reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
             };
           },
         };
@@ -125,6 +131,7 @@ function loadBackground(hooks) {
               summary: body.summary,
               htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
               status: "confirmed",
+              reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
             };
           },
         };
@@ -283,6 +290,118 @@ describe("weekly calendar series", () => {
 });
 
 describe("widget calendar save", () => {
+  it("carries a parsed 60-minute popup through to the Calendar request", async () => {
+    const hooks = {
+      posts: 0,
+      ids: [],
+      bodies: [],
+      parseBody: {
+        quickcalApiVersion: 2,
+        quickcalRelease: "test-revision",
+        title: "Meeting",
+        date: "2026-10-27",
+        endDate: "2026-10-27",
+        startTime: "15:00",
+        endTime: "16:00",
+        timeZone: "America/Los_Angeles",
+        location: null,
+        recurrence: null,
+        reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
+        needsClarification: false,
+        clarificationQuestions: [],
+        durationDefaulted: true,
+      },
+    };
+    const loaded = loadBackground(hooks);
+    const parsed = await ask(
+      loaded.listener,
+      {
+        type: "quickcal-parse",
+        text: "Meeting tomorrow at 3 PM. Notify me 1 hour before it starts.",
+        timeZone: "America/Los_Angeles",
+      },
+      sender(),
+    );
+    assert.equal(parsed.ok, true);
+    const saved = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "create", event: parsed.event },
+      sender(),
+    );
+    assert.equal(saved.ok, true);
+    assert.equal(hooks.posts, 1);
+    assert.deepEqual(plain(hooks.bodies[0].reminders), {
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 60 }],
+    });
+    assert.equal(saved.remindersText, "Popup 1 hour before");
+  });
+
+  it("does not show success when Google confirms different notification settings", async () => {
+    const hooks = { posts: 0, ids: [], bodies: [], patches: [], mismatchReminders: true };
+    const loaded = loadBackground(hooks);
+    const initial = draft();
+    initial.reminders = { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] };
+    const result = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "create", event: initial },
+      sender(),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.error, /did not confirm/);
+  });
+
+  it("writes and confirms replacement, addition, removal, and default notifications", async () => {
+    const hooks = { posts: 0, ids: [], bodies: [], patches: [], patchBodies: [] };
+    const loaded = loadBackground(hooks);
+    const initial = draft();
+    initial.reminders = { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] };
+    const created = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "create", event: initial },
+      sender(),
+    );
+    assert.equal(created.ok, true);
+    assert.deepEqual(plain(hooks.bodies[0].reminders), initial.reminders);
+    assert.deepEqual(plain(created.reminders), initial.reminders);
+    assert.equal(created.remindersText, "Popup 1 hour before");
+
+    const added = { ...draft(), reminders: {
+      useDefault: false,
+      overrides: [
+        { method: "popup", minutes: 60 },
+        { method: "popup", minutes: 10 },
+      ],
+    } };
+    const addedResult = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "update", event: added },
+      sender(),
+    );
+    assert.equal(addedResult.ok, true);
+    assert.deepEqual(plain(hooks.patchBodies[0].reminders), added.reminders);
+    assert.equal(hooks.patchBodies[0].summary, initial.title);
+    assert.equal(hooks.patchBodies[0].location, initial.location);
+
+    const removed = { ...draft(), reminders: { useDefault: false, overrides: [] } };
+    const removedResult = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "update", event: removed },
+      sender(),
+    );
+    assert.equal(removedResult.remindersText, "Notifications off");
+    assert.deepEqual(plain(hooks.patchBodies[1].reminders), removed.reminders);
+
+    const defaults = { ...draft(), reminders: { useDefault: true, overrides: [] } };
+    const defaultResult = await ask(
+      loaded.listener,
+      { type: "quickcal-calendar", action: "update", event: defaults },
+      sender(),
+    );
+    assert.equal(defaultResult.remindersText, "Calendar default notifications");
+    assert.deepEqual(plain(hooks.patchBodies[2].reminders), defaults.reminders);
+  });
+
   it("saves the live draft once and shows success only from Google's confirmation", async () => {
     const hooks = { posts: 0, ids: [], bodies: [], patches: [], holdPost: true };
     const loaded = loadBackground(hooks);

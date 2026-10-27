@@ -74,10 +74,11 @@
 
 .bar {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   box-sizing: border-box;
   width: 100%;
   height: 60px;
+  padding: 4px;
   overflow: visible;
   border: 1px solid rgba(220, 232, 247, 0.95);
   border-radius: 30px;
@@ -105,7 +106,7 @@
   min-width: 0;
   height: 100%;
   margin: 0;
-  padding: 0 20px;
+  padding: 0 16px;
   border: 0;
   outline: none;
   background: transparent;
@@ -137,7 +138,7 @@
   box-sizing: border-box;
   width: 28px;
   height: 28px;
-  margin: 0 4px 0 0;
+  margin: 0 2px 0 0;
   padding: 0;
   border: 0;
   border-radius: 8px;
@@ -159,16 +160,16 @@
 
 .mic {
   display: flex;
-  flex: 0 0 56px;
+  flex: 0 0 50px;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 56px;
+  width: 50px;
   height: 100%;
   margin: 0;
   padding: 0;
   border: 1px solid #e6eef8;
-  border-radius: 30px;
+  border-radius: 26px;
   background: #ffffff;
   color: #35322d;
   font: inherit;
@@ -328,7 +329,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: hidden;
+  overflow: visible;
+  padding-top: 12px;
   border: 1px solid #dce8f7;
   border-radius: 30px 30px 20px 20px;
   background: #f7faff;
@@ -339,19 +341,28 @@
 }
 
 .card.expanded .bar {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
+  width: calc(100% - 24px);
+  height: 52px;
+  margin: 0 12px;
+  border: 1px solid #dce8f7;
+  border-radius: 18px;
+  background: #ffffff;
   box-shadow: none;
 }
 
 .card.expanded .bar:has(.input:focus-visible) {
-  box-shadow: inset 0 0 0 2px rgba(138, 164, 214, 0.55);
+  box-shadow:
+    0 0 0 2px rgba(138, 164, 214, 0.55),
+    0 0 0 5px rgba(138, 164, 214, 0.14);
 }
 
 .card.clarifying .body {
   order: -1;
-  padding-top: 16px;
+  padding-top: 4px;
+}
+
+.card.clarifying .bar {
+  margin-bottom: 12px;
 }
 
 .body {
@@ -414,6 +425,7 @@
 
 .schedule {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   align-items: center;
 }
@@ -427,6 +439,14 @@
   font-size: 13px;
   font-weight: 500;
   line-height: normal;
+  min-width: 0;
+}
+
+.detail > span:last-child,
+.meta,
+.note,
+.save-error {
+  overflow-wrap: anywhere;
 }
 
 .chip {

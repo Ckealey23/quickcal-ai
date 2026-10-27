@@ -47,6 +47,7 @@ export async function main() {
       requireAuth: auth.requireAuth,
       authenticate,
       rateLimit,
+      release: process.env.RENDER_GIT_COMMIT || process.env.QUICKCAL_RELEASE || "local",
     });
   } catch (error) {
     if (error && error.code === "EADDRINUSE") {

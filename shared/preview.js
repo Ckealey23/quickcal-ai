@@ -71,6 +71,9 @@
       durationDefaulted: event.durationDefaulted === true,
       recurrenceText: recurring ? event.recurrenceText || (schedule ? schedule.recurrenceScheduleText(event.recurrence) : "") : "",
       seriesEndText: recurring ? event.seriesEndText || (schedule ? schedule.seriesEndText(event.recurrence) : "") : "",
+      remindersText: event.remindersText || (schedule && schedule.reminderSettingsText
+        ? schedule.reminderSettingsText(event.reminders)
+        : ""),
       questions: questions,
       saveable: saveable,
     };

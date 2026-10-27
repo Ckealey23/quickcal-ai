@@ -99,7 +99,18 @@ function loadBackground(hooks) {
       fetches.push({ url: String(url), options: options || {} });
       if (String(url).endsWith("/health")) {
         if (hooks.healthDown) return { ok: false, status: 503, async json() { return { ok: false }; } };
-        return { ok: true, status: 200, async json() { return { ok: true }; } };
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              ok: true,
+              quickcalApiVersion: 2,
+              quickcalRelease: "test-revision",
+              capabilities: ["event-notifications"],
+            };
+          },
+        };
       }
       if (String(url).endsWith("/transcribe")) {
         hooks.transcriptions = (hooks.transcriptions || 0) + 1;

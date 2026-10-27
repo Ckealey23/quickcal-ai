@@ -51,7 +51,13 @@ describe("local server", { concurrency: false }, () => {
     const beforeCount = calls.length;
     const response = await request(base, "/health");
     assert.equal(response.status, 200);
-    assert.deepEqual(response.body, { ok: true, apiKeyConfigured: false });
+    assert.deepEqual(response.body, {
+      ok: true,
+      apiKeyConfigured: false,
+      quickcalApiVersion: 2,
+      quickcalRelease: "local",
+      capabilities: ["event-notifications"],
+    });
     assert.equal(response.headers.get("access-control-allow-origin"), null);
     assert.equal(calls.length, beforeCount);
   });
@@ -92,6 +98,8 @@ describe("local server", { concurrency: false }, () => {
     const wrongMethod = await request(base, "/health", { method: "POST" });
     assert.equal(response.status, 200);
     assert.equal(response.body.title, "Coffee with Alex");
+    assert.equal(response.body.quickcalApiVersion, 2);
+    assert.equal(response.body.quickcalRelease, "local");
     assert.equal(calls.length, 1);
     assert.equal(missing.status, 404);
     assert.equal(wrongMethod.status, 405);

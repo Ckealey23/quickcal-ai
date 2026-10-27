@@ -5,6 +5,7 @@ import { prepareForSave } from "../src/schedule.js";
 
 const zone = "America/Los_Angeles";
 const secret = "sk-testsecretvalue123";
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function modelEvent() {
   return {
@@ -251,6 +252,81 @@ describe("weekly defaults", () => {
     assert.equal(event.endTime, "21:00");
     assert.equal(event.durationDefaulted, true);
     assert.equal(event.needsClarification, false);
+  });
+});
+
+describe("notification parsing", () => {
+  function notificationModel(action, overrides) {
+    return {
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: action,
+      notificationOverrides: overrides,
+      needsClarification: false,
+      clarificationQuestions: [],
+    };
+  }
+
+  it("updates the current event for a notification-only follow-up", async () => {
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify(notificationModel("replace", [{ method: "popup", minutes: 30 }])),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-10-16T15:00:00.000Z"),
+    });
+    const currentEvent = {
+      title: "Coffee with Alex",
+      date: "2026-10-17",
+      endDate: "2026-10-17",
+      startTime: "10:00",
+      endTime: "11:00",
+      timeZone: zone,
+      location: "Avila",
+      recurrence: null,
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
+    };
+    const result = await parseEvent({
+      text: "Change the notification to 30 minutes before",
+      timeZone: zone,
+      currentEvent,
+    });
+    assert.equal(result.title, currentEvent.title);
+    assert.equal(result.startTime, currentEvent.startTime);
+    assert.equal(result.endTime, currentEvent.endTime);
+    assert.deepEqual(plain(result.reminders), {
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 30 }],
+    });
+    assert.match(client.calls[0].body.instructions, /Current notifications: Popup 1 hour before/);
+    assert.match(client.calls[0].body.instructions, /Default an unspecified notification method to popup/);
+  });
+
+  it("asks which event when no current conversation identifies one", async () => {
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify(notificationModel("remove", [])),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-10-16T15:00:00.000Z"),
+    });
+    const result = await parseEvent({ text: "Remove notifications", timeZone: zone });
+    assert.equal(result.needsClarification, true);
+    assert.deepEqual(plain(result.clarificationQuestions), ["Which event do you mean?"]);
+    assert.equal(prepareForSave(result), null);
   });
 });
 

@@ -12,6 +12,12 @@ import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.
 import { validateRequest } from "./validate.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+export const QUICKCAL_API_VERSION = 2;
+
+function publicRelease(value) {
+  const release = typeof value === "string" ? value.trim() : "";
+  return /^[A-Za-z0-9._-]{1,64}$/.test(release) ? release : "local";
+}
 
 function writeJson(response, status, body, extraHeaders) {
   const payload = JSON.stringify(body);
@@ -116,7 +122,9 @@ export function createHandler({
   authenticate = null,
   rateLimit = null,
   parseTimeoutMs = PARSE_TIMEOUT_MS,
+  release = "local",
 }) {
+  const quickcalRelease = publicRelease(release);
   return async function handle(request, response) {
     async function identify(request) {
       if (!requireAuth) return { ok: true, userId: "" };
@@ -160,7 +168,13 @@ export function createHandler({
       return;
     }
     if (url.pathname === "/health" && request.method === "GET") {
-      sendJson(request, response, 200, { ok: true, apiKeyConfigured: Boolean(apiKeyConfigured) });
+      sendJson(request, response, 200, {
+        ok: true,
+        apiKeyConfigured: Boolean(apiKeyConfigured),
+        quickcalApiVersion: QUICKCAL_API_VERSION,
+        quickcalRelease: quickcalRelease,
+        capabilities: ["event-notifications"],
+      });
       return;
     }
     if (url.pathname === "/health") {
@@ -351,7 +365,10 @@ export function createHandler({
         currentEvent: input.currentEvent,
         clarification: input.clarification,
       }), parseTimeoutMs);
-      sendJson(request, response, 200, event);
+      sendJson(request, response, 200, Object.assign({}, event, {
+        quickcalApiVersion: QUICKCAL_API_VERSION,
+        quickcalRelease: quickcalRelease,
+      }));
     } catch (error) {
       if (error instanceof ParseError) {
         sendJson(request, response, error.status, { error: error.message });
@@ -372,6 +389,7 @@ export function startServer({
   authenticate = null,
   rateLimit = null,
   parseTimeoutMs = PARSE_TIMEOUT_MS,
+  release = "local",
 }) {
   const server = createServer({ maxHeaderSize: MAX_BODY_BYTES }, (request, response) => {
     createHandler({
@@ -382,6 +400,7 @@ export function startServer({
       authenticate,
       rateLimit,
       parseTimeoutMs,
+      release,
     })(request, response).catch(() => {
       if (!response.headersSent) {
         writeJson(response, 500, { error: "QuickCalAI could not complete that request." });

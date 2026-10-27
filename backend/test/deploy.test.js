@@ -226,6 +226,7 @@ describe("production parse access", { concurrency: false }, () => {
       authenticate: verify,
       rateLimit: createRateLimiter({ limit: 1, windowMs: 60_000 }),
       apiKeyConfigured: true,
+      release: "test-revision",
       parseEvent: async (input) => {
         parserCalls.push(input);
         return {
@@ -264,7 +265,13 @@ describe("production parse access", { concurrency: false }, () => {
     const health = await request(base, "/health");
     const access = await request(base, "/access");
     assert.equal(health.status, 200);
-    assert.deepEqual(health.body, { ok: true, apiKeyConfigured: true });
+    assert.deepEqual(health.body, {
+      ok: true,
+      apiKeyConfigured: true,
+      quickcalApiVersion: 2,
+      quickcalRelease: "test-revision",
+      capabilities: ["event-notifications"],
+    });
     assert.equal(health.text.includes(SECRET), false);
 
     const missing = await post();

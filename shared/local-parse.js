@@ -4,6 +4,7 @@
   const ACCESS_URL = "https://quickcal-ai.onrender.com/access";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
+  const API_VERSION = 2;
 
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;
@@ -105,6 +106,11 @@
       if (!parsed.ok) return null;
       recurrence = parsed.recurrence;
     }
+    const schedule = root.QuickCalSchedule;
+    if (!schedule || !schedule.normalizeReminderSettings) return null;
+    if (!Object.hasOwn(body, "reminders")) return null;
+    const reminderResult = schedule.normalizeReminderSettings(body.reminders);
+    if (!reminderResult.ok) return null;
     let endDate = null;
     if (date) {
       endDate = body.endDate == null ? date : optionalDate(body.endDate);
@@ -129,6 +135,8 @@
       timeZone: body.timeZone.trim(),
       location: location,
       recurrence: recurrence,
+      reminders: reminderResult.reminders,
+      remindersText: schedule.reminderSettingsText(reminderResult.reminders),
       recurrenceText: recurrence && typeof body.recurrenceText === "string" ? body.recurrenceText.trim().slice(0, 120) : "",
       seriesEndText: recurrence && typeof body.seriesEndText === "string" ? body.seriesEndText.trim().slice(0, 120) : "",
       needsClarification: body.needsClarification,
@@ -199,6 +207,15 @@
       if (response.status === 403) return { ok: false, state: "unapproved", error: error };
       return { ok: false, error: error };
     }
+    if (!payload || payload.quickcalApiVersion !== API_VERSION) {
+      const release = payload && typeof payload.quickcalRelease === "string"
+        ? " (running " + payload.quickcalRelease + ")"
+        : "";
+      return {
+        ok: false,
+        error: "QuickCalAI's hosted parser is out of date" + release + ". Deploy the current backend, then reload the extension.",
+      };
+    }
     const event = sanitizeEvent(payload);
     if (!event) return { ok: false, error: "The event parser returned an unreadable response." };
     return { ok: true, event: event };
@@ -208,6 +225,7 @@
     PARSE_URL: PARSE_URL,
     HEALTH_URL: HEALTH_URL,
     ACCESS_URL: ACCESS_URL,
+    API_VERSION: API_VERSION,
     MAX_TEXT_LENGTH: MAX_TEXT_LENGTH,
     validateParseRequest: validateParseRequest,
     sanitizeEvent: sanitizeEvent,

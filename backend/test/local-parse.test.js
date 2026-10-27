@@ -74,12 +74,15 @@ function listen(fetchImpl) {
 }
 
 const sampleEvent = {
+  quickcalApiVersion: 2,
+  quickcalRelease: "test-revision",
   title: "Coffee with Alex",
   date: "2026-10-17",
   startTime: "10:00",
   endTime: "10:30",
   timeZone: "America/Los_Angeles",
   location: "Avila",
+  reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
   needsClarification: false,
   clarificationQuestions: [],
 };
@@ -116,8 +119,29 @@ describe("parser messages", () => {
     assert.equal(calls[0].options.body.includes("ya29.extension-test-token"), false);
     assert.equal(reply.ok, true);
     assert.equal(reply.event.location, "Avila");
+    assert.equal(reply.event.remindersText, "Popup 1 hour before");
     assert.equal(reply.token, undefined);
     assert.equal(JSON.stringify(reply).includes("ya29.extension-test-token"), false);
+  });
+
+  it("rejects a stale parser instead of treating missing notifications as off", async () => {
+    const staleEvent = { ...sampleEvent };
+    delete staleEvent.quickcalApiVersion;
+    delete staleEvent.reminders;
+    const listener = listen(async () => ({
+      ok: true,
+      async json() { return staleEvent; },
+    }));
+    const reply = await new Promise((resolve) => {
+      listener(
+        { type: "quickcal-parse", text: "Meeting tomorrow at 3 PM. Notify me 1 hour before it starts.", timeZone: "America/Los_Angeles" },
+        contentSender(),
+        resolve,
+      );
+    });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error, /hosted parser is out of date/i);
+    assert.doesNotMatch(reply.error, /notifications off/i);
   });
 
   it("sends clarification context without a saved event", async () => {
@@ -258,6 +282,7 @@ describe("preview text", () => {
       endTime: "10:30",
       timeZone: "America/Los_Angeles",
       location: "Avila",
+      reminders: { useDefault: false, overrides: [{ method: "popup", minutes: 60 }] },
       needsClarification: false,
       durationDefaulted: false,
       clarificationQuestions: [],
@@ -265,6 +290,7 @@ describe("preview text", () => {
     assert.equal(view.date, "Oct 17, 2026");
     assert.equal(view.time, "10:00\u201310:30 AM");
     assert.equal(view.location, "Avila");
+    assert.equal(view.remindersText, "Popup 1 hour before");
     assert.equal(view.saveable, true);
     assert.equal(view.recurrenceText, "");
     assert.deepEqual(Array.from(view.questions), []);

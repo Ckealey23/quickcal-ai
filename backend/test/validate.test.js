@@ -8,6 +8,7 @@ import { applyEnvFile, decodeEnvBytes, envFilePath, parseEnvFile } from "../src/
 import { isRealDate, isRealTime, validateExtraction, validateRequest } from "../src/validate.js";
 
 const zone = "America/Los_Angeles";
+const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function event(overrides = {}) {
   return {
@@ -191,6 +192,27 @@ describe("calendar values", () => {
     assert.equal(validateExtraction(event({ timeZone: "UTC" }), zone).event.timeZone, "UTC");
     assert.equal(validateExtraction(event({ recurrence: { frequency: "daily" } }), zone).ok, false);
     assert.equal(validateExtraction(event({ extra: true }), zone).ok, false);
+  });
+
+  it("validates notification actions against Google Calendar limits", () => {
+    const valid = validateExtraction(event({
+      notificationAction: "replace",
+      notificationOverrides: [{ method: "popup", minutes: 40320 }],
+    }), zone);
+    assert.equal(valid.ok, true);
+    assert.deepEqual(plain(valid.event.notificationOverrides), [{ method: "popup", minutes: 40320 }]);
+    assert.equal(validateExtraction(event({
+      notificationAction: "replace",
+      notificationOverrides: [{ method: "sms", minutes: 10 }],
+    }), zone).ok, false);
+    assert.equal(validateExtraction(event({
+      notificationAction: "replace",
+      notificationOverrides: [{ method: "popup", minutes: 40321 }],
+    }), zone).ok, false);
+    assert.equal(validateExtraction(event({
+      notificationAction: "replace",
+      notificationOverrides: [0, 1, 2, 3, 4, 5].map((minutes) => ({ method: "popup", minutes })),
+    }), zone).ok, false);
   });
 });
 

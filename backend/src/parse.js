@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from "./config.js";
 import { referenceClock } from "./clock.js";
 import { EVENT_SCHEMA } from "./schema.js";
-import { applyClarification, applyEdit, applySchedule, resolveEventZone } from "./schedule.js";
+import { applyClarification, applyEdit, applySchedule, reminderSettingsText, resolveEventZone } from "./schedule.js";
 import { validateExtraction } from "./validate.js";
 
 export class ParseError extends Error {
@@ -96,6 +96,7 @@ export function clarificationInput(answer, clarification) {
     "Known startTime: " + (draft.startTime || "none"),
     "Known endTime: " + (draft.endTime || "none"),
     "Known location: " + (draft.location || "none"),
+    "Known notifications: " + reminderSettingsText(draft.reminders),
     "Answer: " + answer,
   ].join("\n");
 }
@@ -111,7 +112,16 @@ export function instructionsFor(clock, currentEvent, clarification) {
     "Time zone: " + clock.timeZone,
     "Resolve relative dates such as today or tomorrow from the local date and time above, not from the UTC timestamp alone.",
     "Return only supported fields. Infer a concise title. A request for a date with John is titled Date with John. A person's name is part of the title.",
-    "Do not add attendees, guests, invitations, reminders, or conferencing.",
+    "Do not add attendees, guests, invitations, or conferencing.",
+    "notificationAction describes event reminder changes: preserve, replace, add, remove, or default.",
+    "Use preserve when the text does not mention event notifications or reminders.",
+    "Use replace when the user says notify, remind, change, or set without saying also/add/another. Use add only for also, add, or another.",
+    "Use remove for no notifications, remove notifications, or turn reminders off. Use default when the user asks for calendar default notifications.",
+    "notificationOverrides contains only the reminders named by this request. Each item has method popup or email and integer minutes from 0 through 40320. Return at most five.",
+    "Default an unspecified notification method to popup. Use email only when explicitly requested. Convert hours, days, and weeks to minutes.",
+    "For preserve, remove, and default, return an empty notificationOverrides array. Prevent duplicate method-and-minute pairs.",
+    "Event notifications are settings on this calendar event; they are not Google Tasks and they do not guarantee delivery independently of Google Calendar and device settings.",
+    "If the request only changes a notification and there is no current event, leave event fields null, set needsClarification true, and ask: Which event do you mean?",
     "date is YYYY-MM-DD or null. startTime and endTime are 24-hour HH:mm or null.",
     "timeZone is " + clock.timeZone + " unless the text names a different time zone. If it does, return that zone's IANA name.",
     "Do not invent an end time, a duration, a location, or a date that the text does not support.",
@@ -141,6 +151,7 @@ export function instructionsFor(clock, currentEvent, clarification) {
       "Known startTime: " + (draft.startTime || "none"),
       "Known endTime: " + (draft.endTime || "none"),
       "Known location: " + (draft.location || "none"),
+      "Known notifications: " + reminderSettingsText(draft.reminders),
       "The user text is only the answer. Leave a field null when the answer does not change it.",
       "Do not drop a known field, and do not ask again for a detail that is already known.",
       "Ask only for a missing date or start time. Do not ask for an end time only because it is missing."
@@ -155,6 +166,8 @@ export function instructionsFor(clock, currentEvent, clarification) {
       "Current startTime: " + currentEvent.startTime,
       "Current endTime: " + currentEvent.endTime,
       "Current location: " + (currentEvent.location || "none"),
+      "Current notifications: " + reminderSettingsText(currentEvent.reminders),
+      "Preserve the current notifications unless notificationAction changes them.",
       "If the text only moves the event, leave endTime null.",
       "If the change is ambiguous, set needsClarification to true and ask one question."
     );
