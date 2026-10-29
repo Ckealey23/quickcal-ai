@@ -27,6 +27,7 @@
       statusError: false,
       operation: null,
       voice: null,
+      lookup: null,
     };
   }
 
@@ -43,6 +44,7 @@
       statusError: false,
       operation: null,
       voice: null,
+      lookup: null,
     };
   }
 
@@ -161,6 +163,18 @@
     };
   }
 
+  function noteLookup(state, lookup) {
+    const kind = lookup && lookup.kind === "confirm" ? "confirming" : "choosing";
+    return Object.assign({}, state, {
+      mode: kind,
+      lookup: lookup,
+      input: "",
+      statusText: "",
+      statusError: false,
+      operation: null,
+    });
+  }
+
   function noteClarification(state, event, sourceText) {
     const original = state.clarification && state.clarification.originalText
       ? state.clarification.originalText
@@ -171,6 +185,7 @@
       clarification: { originalText: original, draft: draftFromEvent(event) },
       savedRecord: null,
       draftEvent: null,
+      lookup: null,
       input: "",
       statusText: "",
       statusError: false,
@@ -194,5 +209,6 @@
     finishOperation: finishOperation,
     noteClarification: noteClarification,
     draftFromEvent: draftFromEvent,
+    noteLookup: noteLookup,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

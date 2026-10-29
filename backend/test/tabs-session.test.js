@@ -397,8 +397,12 @@ describe("real Chrome tabs", () => {
         return list.filter((item) => item.type === "page" && item.url && item.url.startsWith(origin));
       }, (list) => list.length >= 2, "two pages");
       const opened = await workerEval(`(async () => {
-        const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
-        const tab = tabs.find((item) => item.url.endsWith("/a"));
+        let tab = null;
+        for (let attempt = 0; attempt < 40 && !tab; attempt += 1) {
+          const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
+          tab = tabs.find((item) => (item.url || "").endsWith("/a"));
+          if (!tab) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
         await quickcalToggleWidget(tab);
         const stored = await chrome.storage.session.get("quickcalWidgetSession");
         return stored.quickcalWidgetSession;
@@ -415,8 +419,12 @@ describe("real Chrome tabs", () => {
       }
       async function typeOn(suffix, text) {
         return workerEval(`(async () => {
-          const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
-          const tab = tabs.find((item) => item.url.endsWith(${JSON.stringify(suffix)}));
+          let tab = null;
+          for (let attempt = 0; attempt < 40 && !tab; attempt += 1) {
+            const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
+            tab = tabs.find((item) => (item.url || "").endsWith(${JSON.stringify(suffix)}));
+            if (!tab) await new Promise((resolve) => setTimeout(resolve, 50));
+          }
           if (chrome.windows && tab.windowId != null) await chrome.windows.update(tab.windowId, { focused: true });
           await chrome.tabs.update(tab.id, { active: true });
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -515,8 +523,13 @@ describe("real Chrome tabs", () => {
         "dismiss did not hide every tab"
       );
       await workerEval(`(async () => {
-        const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
-        await quickcalToggleWidget(tabs.find((item) => item.url.endsWith("/a")));
+        let tab = null;
+        for (let attempt = 0; attempt < 40 && !tab; attempt += 1) {
+          const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
+          tab = tabs.find((item) => (item.url || "").endsWith("/a"));
+          if (!tab) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await quickcalToggleWidget(tab);
         return true;
       })()`);
       await waitFor(
@@ -533,8 +546,13 @@ describe("real Chrome tabs", () => {
       await browser.send("Extensions.loadUnpacked", { path: root });
       client = await attachWorker(previousWorker && previousWorker.webSocketDebuggerUrl);
       await workerEval(`(async () => {
-        const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
-        await quickcalToggleWidget(tabs.find((item) => item.url.endsWith("/a")));
+        let tab = null;
+        for (let attempt = 0; attempt < 40 && !tab; attempt += 1) {
+          const tabs = await chrome.tabs.query({ url: ${JSON.stringify(origin + "/*")} });
+          tab = tabs.find((item) => (item.url || "").endsWith("/a"));
+          if (!tab) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        await quickcalToggleWidget(tab);
         return true;
       })()`);
       await typeOn("/a", "After reload");

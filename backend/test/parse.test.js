@@ -18,6 +18,21 @@ function modelEvent() {
     recurrence: null,
     needsClarification: false,
     clarificationQuestions: [],
+    intent: "create",
+    operation: blankOperation(),
+  };
+}
+
+function blankOperation() {
+  return {
+    target: null,
+    searchDate: null,
+    searchTime: null,
+    destinationDate: null,
+    destinationTime: null,
+    destinationEndTime: null,
+    scope: "occurrence",
+    selection: [],
   };
 }
 
@@ -139,6 +154,8 @@ describe("weekly defaults", () => {
       recurrence: { frequency: "weekly", weekdays: ["FR"], until: null, count: null },
       needsClarification: true,
       clarificationQuestions: ["When should this weekly series end?", "What time does this event end?"],
+      intent: "create",
+      operation: blankOperation(),
       ...overrides,
     };
   }
@@ -195,6 +212,8 @@ describe("weekly defaults", () => {
       recurrence: null,
       needsClarification: false,
       clarificationQuestions: [],
+      intent: "create",
+      operation: blankOperation(),
     });
     assert.equal(coffee.event.needsClarification, true);
     assert.match(coffee.event.clarificationQuestions.join(" "), /date/);
@@ -216,6 +235,8 @@ describe("weekly defaults", () => {
         recurrence: null,
         needsClarification: false,
         clarificationQuestions: [],
+        intent: "create",
+        operation: blankOperation(),
       }),
       output: [],
     });
@@ -269,6 +290,17 @@ describe("notification parsing", () => {
       notificationOverrides: overrides,
       needsClarification: false,
       clarificationQuestions: [],
+      intent: "edit",
+      operation: {
+        target: null,
+        searchDate: null,
+        searchTime: null,
+        destinationDate: null,
+        destinationTime: null,
+        destinationEndTime: null,
+        scope: "occurrence",
+        selection: [],
+      },
     };
   }
 

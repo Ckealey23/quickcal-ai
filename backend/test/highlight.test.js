@@ -142,6 +142,7 @@ describe("highlighted text delivery", () => {
       "shared/startup.js",
       "shared/selection.js",
       "shared/layout.js",
+      "shared/lookup.js",
       "content/widget.js",
     ].join());
     assert.equal(background.delivered.length, 1);

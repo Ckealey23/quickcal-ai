@@ -296,7 +296,8 @@ describe("widget calendar save", () => {
       ids: [],
       bodies: [],
       parseBody: {
-        quickcalApiVersion: 2,
+        quickcalApiVersion: 3,
+        intent: "create",
         quickcalRelease: "test-revision",
         title: "Meeting",
         date: "2026-10-27",

@@ -12,7 +12,7 @@ import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.
 import { validateRequest } from "./validate.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
-export const QUICKCAL_API_VERSION = 2;
+export const QUICKCAL_API_VERSION = 3;
 
 function publicRelease(value) {
   const release = typeof value === "string" ? value.trim() : "";
@@ -173,7 +173,7 @@ export function createHandler({
         apiKeyConfigured: Boolean(apiKeyConfigured),
         quickcalApiVersion: QUICKCAL_API_VERSION,
         quickcalRelease: quickcalRelease,
-        capabilities: ["event-notifications"],
+        capabilities: ["event-notifications", "calendar-operations"],
       });
       return;
     }
@@ -364,6 +364,7 @@ export function createHandler({
         timeZone: input.timeZone,
         currentEvent: input.currentEvent,
         clarification: input.clarification,
+        operation: input.operation,
       }), parseTimeoutMs);
       sendJson(request, response, 200, Object.assign({}, event, {
         quickcalApiVersion: QUICKCAL_API_VERSION,

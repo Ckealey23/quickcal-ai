@@ -21,6 +21,17 @@ function event(overrides = {}) {
     recurrence: null,
     needsClarification: false,
     clarificationQuestions: [],
+    intent: "create",
+    operation: {
+      target: null,
+      searchDate: null,
+      searchTime: null,
+      destinationDate: null,
+      destinationTime: null,
+      destinationEndTime: null,
+      scope: "occurrence",
+      selection: [],
+    },
     ...overrides,
   };
 }

@@ -15,7 +15,23 @@ const EVENT_FIELDS = [
   "notificationOverrides",
   "needsClarification",
   "clarificationQuestions",
+  "intent",
+  "operation",
 ];
+const INTENTS = ["create", "edit", "move", "delete", "find", "clarify"];
+const CALENDAR_INTENTS = ["move", "delete", "find", "clarify"];
+const SCOPES = ["occurrence", "series", "unsupported"];
+const OPERATION_FIELDS = [
+  "target",
+  "searchDate",
+  "searchTime",
+  "destinationDate",
+  "destinationTime",
+  "destinationEndTime",
+  "scope",
+  "selection",
+];
+const CONTEXT_FIELDS = OPERATION_FIELDS.concat(["intent", "missing", "prompt", "candidates"]);
 
 export function isValidTimeZone(timeZone) {
   if (typeof timeZone !== "string") return false;
@@ -57,10 +73,119 @@ export function validateRequest(body) {
   if (!current.ok) return current;
   const clarification = normalizeClarification(body.clarification, timeZone);
   if (!clarification.ok) return clarification;
+  const operation = normalizeOperationContext(body.operation);
+  if (!operation.ok) return operation;
   if (current.event && clarification.clarification) {
     return { ok: false, error: "A clarification answer cannot edit a saved event." };
   }
-  return { ok: true, text, timeZone, currentEvent: current.event, clarification: clarification.clarification };
+  if (operation.operation && (current.event || clarification.clarification)) {
+    return { ok: false, error: "A calendar follow-up cannot also edit another event." };
+  }
+  return {
+    ok: true,
+    text,
+    timeZone,
+    currentEvent: current.event,
+    clarification: clarification.clarification,
+    operation: operation.operation,
+  };
+}
+
+function nullableText(value, maxLength) {
+  if (value == null) return { ok: true, value: null };
+  return optionalText(value, maxLength);
+}
+
+function normalizeModelOperation(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
+  const keys = Object.keys(raw);
+  if (OPERATION_FIELDS.some((field) => !Object.hasOwn(raw, field))) return { ok: false };
+  if (keys.some((key) => !OPERATION_FIELDS.includes(key))) return { ok: false };
+  const target = nullableText(raw.target, 200);
+  const searchDate = optionalDate(raw.searchDate);
+  const searchTime = optionalTime(raw.searchTime);
+  const destinationDate = optionalDate(raw.destinationDate);
+  const destinationTime = optionalTime(raw.destinationTime);
+  const destinationEndTime = optionalTime(raw.destinationEndTime);
+  if (!target.ok || !searchDate.ok || !searchTime.ok || !destinationDate.ok || !destinationTime.ok || !destinationEndTime.ok) {
+    return { ok: false };
+  }
+  if (!SCOPES.includes(raw.scope)) return { ok: false };
+  if (!Array.isArray(raw.selection) || raw.selection.length > 8) return { ok: false };
+  const selection = [];
+  for (const item of raw.selection) {
+    if (typeof item !== "string" || !/^(?:all|c[1-8])$/.test(item)) return { ok: false };
+    if (!selection.includes(item)) selection.push(item);
+  }
+  if (selection.includes("all") && selection.length > 1) return { ok: false };
+  return {
+    ok: true,
+    operation: {
+      target: target.value,
+      searchDate: searchDate.value,
+      searchTime: searchTime.value,
+      destinationDate: destinationDate.value,
+      destinationTime: destinationTime.value,
+      destinationEndTime: destinationEndTime.value,
+      scope: raw.scope,
+      selection: selection,
+    },
+  };
+}
+
+export function normalizeOperationContext(value) {
+  if (value == null) return { ok: true, operation: null };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "Operation context is not valid." };
+  }
+  const keys = Object.keys(value);
+  if (keys.some((key) => !CONTEXT_FIELDS.includes(key))) {
+    return { ok: false, error: "Operation context is not valid." };
+  }
+  if (!CALENDAR_INTENTS.includes(value.intent)) {
+    return { ok: false, error: "Operation context is not valid." };
+  }
+  const model = normalizeModelOperation({
+    target: Object.hasOwn(value, "target") ? value.target : null,
+    searchDate: Object.hasOwn(value, "searchDate") ? value.searchDate : null,
+    searchTime: Object.hasOwn(value, "searchTime") ? value.searchTime : null,
+    destinationDate: Object.hasOwn(value, "destinationDate") ? value.destinationDate : null,
+    destinationTime: Object.hasOwn(value, "destinationTime") ? value.destinationTime : null,
+    destinationEndTime: Object.hasOwn(value, "destinationEndTime") ? value.destinationEndTime : null,
+    scope: value.scope || "occurrence",
+    selection: Array.isArray(value.selection) ? value.selection : [],
+  });
+  if (!model.ok) return { ok: false, error: "Operation context is not valid." };
+  const missing = nullableText(Object.hasOwn(value, "missing") ? value.missing : null, 40);
+  const prompt = nullableText(Object.hasOwn(value, "prompt") ? value.prompt : null, 240);
+  if (!missing.ok || !prompt.ok) return { ok: false, error: "Operation context is not valid." };
+  if (value.candidates != null && (!Array.isArray(value.candidates) || value.candidates.length > 8)) {
+    return { ok: false, error: "Operation context is not valid." };
+  }
+  const candidates = [];
+  for (const candidate of value.candidates || []) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return { ok: false, error: "Operation context is not valid." };
+    }
+    if (Object.keys(candidate).some((key) => key !== "ref" && key !== "label")) {
+      return { ok: false, error: "Operation context is not valid." };
+    }
+    if (typeof candidate.ref !== "string" || !/^c[1-8]$/.test(candidate.ref)) {
+      return { ok: false, error: "Operation context is not valid." };
+    }
+    const label = nullableText(candidate.label, 180);
+    if (!label.ok || !label.value) return { ok: false, error: "Operation context is not valid." };
+    candidates.push({ ref: candidate.ref, label: label.value });
+  }
+  return {
+    ok: true,
+    operation: Object.assign({}, model.operation, {
+      intent: value.intent,
+      missing: missing.value,
+      prompt: prompt.value,
+      candidates: candidates,
+    }),
+  };
 }
 
 function normalizeClarification(value, timeZone) {
@@ -140,9 +265,12 @@ export function validateExtraction(raw, requestedTimeZone) {
   const location = optionalText(raw.location, 200);
   const recurrence = normalizeRecurrence(raw.recurrence);
   const notification = normalizeReminderChange(raw.notificationAction, raw.notificationOverrides);
-  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok) {
+  const operation = normalizeModelOperation(raw.operation);
+  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok || !operation.ok) {
     return failure;
   }
+  if (!INTENTS.includes(raw.intent)) return failure;
+  const calendarIntent = CALENDAR_INTENTS.includes(raw.intent);
   if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
   if (typeof raw.timeZone !== "string" || !isValidTimeZone(raw.timeZone)) return failure;
   if (typeof raw.needsClarification !== "boolean") return failure;
@@ -161,13 +289,17 @@ export function validateExtraction(raw, requestedTimeZone) {
 
   let needsClarification = raw.needsClarification;
   const weekly = recurrence.recurrence && recurrence.recurrence.weekdays.length > 0;
-  if (!date.value && !weekly) {
+  if (!calendarIntent && !date.value && !weekly) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");
   }
-  if (!startTime.value) {
+  if (!calendarIntent && !startTime.value) {
     needsClarification = true;
     addQuestion(questions, "What time does this event start?");
+  }
+  if (raw.intent === "clarify") {
+    needsClarification = true;
+    if (questions.length === 0) addQuestion(questions, "What should I change?");
   }
   if (startTime.value && endTime.value && endTime.value <= startTime.value) {
     needsClarification = true;
@@ -194,6 +326,8 @@ export function validateExtraction(raw, requestedTimeZone) {
       notificationOverrides: notification.overrides,
       needsClarification,
       clarificationQuestions: questions,
+      intent: raw.intent,
+      operation: operation.operation,
     },
   };
 }

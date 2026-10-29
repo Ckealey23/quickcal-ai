@@ -265,10 +265,29 @@
 
   const viewLink = document.createElement("a");
   viewLink.className = "action";
-  viewLink.textContent = "View in Google Calendar";
+  viewLink.textContent = "Edit in Google Calendar";
   viewLink.target = "_blank";
   viewLink.rel = "noopener noreferrer";
   viewLink.hidden = true;
+
+  function presentCalendarLink(htmlLink) {
+    const edit = previewApi && previewApi.calendarEditLink ? previewApi.calendarEditLink(htmlLink) : "";
+    if (edit) {
+      viewLink.href = edit;
+      viewLink.textContent = "Edit in Google Calendar";
+      viewLink.hidden = false;
+      return;
+    }
+    const details = previewApi && previewApi.calendarViewLink ? previewApi.calendarViewLink(htmlLink) : safeCalendarLink(htmlLink);
+    if (details) {
+      viewLink.href = details;
+      viewLink.textContent = "View in Google Calendar";
+      viewLink.hidden = false;
+      return;
+    }
+    viewLink.removeAttribute("href");
+    viewLink.hidden = true;
+  }
 
   const newButton = document.createElement("button");
   newButton.type = "button";
@@ -282,7 +301,13 @@
   cancelButton.textContent = "Cancel";
   cancelButton.hidden = true;
 
-  actions.append(retryButton, connectButton, viewLink, newButton, cancelButton);
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "action";
+  deleteButton.textContent = "Delete event";
+  deleteButton.hidden = true;
+
+  actions.append(retryButton, connectButton, viewLink, newButton, deleteButton, cancelButton);
   body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, saveError, rule, actions);
   bar.append(input, listening, dismissButton, micButton);
   card.append(bar, body);
@@ -362,6 +387,9 @@
   let typedDraft = "";
   let pendingSelection = "";
   let selectionHold = false;
+  let enterDown = false;
+  let deleteArmed = false;
+  let activeLookup = null;
   const seenSelections = new Set();
 
   function focusInput() {
@@ -419,8 +447,8 @@
     locationLine.hidden = !view.location;
     remindersLine.textContent = view.remindersText || "";
     remindersLine.hidden = !view.remindersText;
-    noteLine.textContent = view.durationDefaulted ? "1-hour default" : "";
-    noteLine.hidden = !view.durationDefaulted;
+    noteLine.textContent = view.changeText || (view.durationDefaulted ? "1-hour default" : "");
+    noteLine.hidden = !noteLine.textContent;
   }
 
   function hideActions() {
@@ -428,6 +456,7 @@
     connectButton.hidden = true;
     viewLink.hidden = true;
     newButton.hidden = true;
+    deleteButton.hidden = true;
     cancelButton.hidden = true;
     viewLink.removeAttribute("href");
     rule.hidden = true;
@@ -436,6 +465,8 @@
 
   function showInputMode() {
     mode = "input";
+    activeLookup = null;
+    deleteArmed = false;
     draftEvent = null;
     body.hidden = true;
     card.classList.remove("expanded");
@@ -514,6 +545,42 @@
     if (allowFocus) input.focus();
   }
 
+  function showLookup(lookup) {
+    activeLookup = lookup;
+    mode = lookup.kind === "confirm" ? "confirming" : "choosing";
+    deleteArmed = mode === "confirming" && !enterDown;
+    card.classList.add("expanded");
+    card.classList.add("clarifying");
+    body.hidden = false;
+    dismissButton.hidden = false;
+    successRow.hidden = true;
+    creatingLine.hidden = true;
+    showSaveError("");
+    eventTitle.textContent = lookup.prompt || "";
+    eventTitle.hidden = !lookup.prompt;
+    schedule.hidden = true;
+    zoneLine.hidden = true;
+    recurrenceLine.hidden = true;
+    seriesLine.hidden = true;
+    locationLine.hidden = true;
+    remindersLine.hidden = true;
+    fillList(questionList, lookup.lines || []);
+    noteLine.textContent = lookup.hint || "";
+    noteLine.hidden = !lookup.hint;
+    hideActions();
+    cancelButton.hidden = false;
+    const seriesChange = lookup.action === "move" && lookup.kind === "confirm";
+    deleteButton.hidden = lookup.kind !== "confirm" || (lookup.action !== "delete" && !seriesChange);
+    deleteButton.textContent = lookup.action === "delete" ? "Delete event" : "Change series";
+    rule.hidden = false;
+    actions.hidden = false;
+    input.value = "";
+    input.placeholder = lookup.kind === "confirm" && lookup.action === "delete" ? "Press Enter to delete" : "Your answer";
+    input.setAttribute("aria-label", lookup.kind === "confirm" ? "Confirm or correct" : "Answer");
+    host.dataset.mode = mode;
+    if (allowFocus) input.focus();
+  }
+
   function showCreating(event) {
     mode = "creating";
     clarification = null;
@@ -551,6 +618,8 @@
   }
 
   function showSaved(result) {
+    activeLookup = null;
+    deleteArmed = false;
     mode = "saved";
     clarification = null;
     card.classList.remove("clarifying");
@@ -571,13 +640,13 @@
       recurrenceText: result.recurrenceText || "",
       seriesEndText: result.seriesEndText || "",
       remindersText: result.remindersText || "",
+      changeText: result.changeText || "",
     });
     fillList(questionList, []);
     showSaveError("");
     retryButton.hidden = true;
     connectButton.hidden = true;
-    viewLink.hidden = false;
-    viewLink.href = result.htmlLink;
+    presentCalendarLink(result.htmlLink);
     newButton.hidden = false;
     rule.hidden = false;
     actions.hidden = false;
@@ -1155,6 +1224,8 @@
         savedRecord = null;
         draftEvent = null;
         draftText = "";
+        activeLookup = null;
+        deleteArmed = false;
         input.value = "";
         showInputMode();
         clearStatus();
@@ -1164,11 +1235,17 @@
       }
       open = true;
       const focused = shadow.activeElement === input;
-      const keepTyped = focused && inputDirty && input.value !== (state.input || "");
-      if (state.mode === "clarifying" && state.event) {
+      const typedValue = input.value;
+      const keepTyped = focused && inputDirty && typedValue !== (state.input || "");
+      if ((state.mode === "choosing" || state.mode === "confirming") && state.lookup) {
+        clarification = null;
+        showLookup(state.lookup);
+        input.value = keepTyped ? typedValue : (state.input || "");
+        if (state.statusText) showStatus(state.statusText, !!state.statusError);
+      } else if (state.mode === "clarifying" && state.event) {
         clarification = state.clarification;
         showClarifying(state.event, state.clarification && state.clarification.originalText);
-        if (!keepTyped) input.value = state.input || "";
+        input.value = keepTyped ? typedValue : (state.input || "");
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
       } else if (state.mode === "failed") {
         draftEvent = state.draftEvent || state.event;
@@ -1181,7 +1258,8 @@
         showSaved(state.savedRecord);
         if (state.event && state.event.needsClarification) showEditQuestion(state.event);
         if (!keepTyped) input.value = state.input || "";
-        if (state.statusText) showSaveError(state.statusText);
+        if (state.statusError) showSaveError(state.statusText);
+        else if (state.statusText) showStatus(state.statusText, false);
       } else {
         showInputMode();
         if (!keepTyped) input.value = state.input || "";
@@ -1378,16 +1456,67 @@
     onVoiceMessage(message);
   }
 
+  function confirmLookup() {
+    if (pending || saving || !activeLookup || activeLookup.kind !== "confirm") return;
+    if (shared) {
+      const operationId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "confirm-" + Date.now();
+      pending = true;
+      showStatus(activeLookup.action === "delete" ? "Deleting event\u2026" : "Updating event\u2026", false);
+      render();
+      chrome.runtime.sendMessage({
+        type: "quickcal-widget",
+        action: "confirm",
+        sessionId: sharedSessionId,
+        operationId: operationId,
+      }).then((result) => {
+        pending = false;
+        if (!alive) return;
+        if (result && result.session) applyRemote(result.session, false);
+        else render();
+      }).catch(() => {
+        pending = false;
+        showStatus("QuickCalAI could not update the shared session.", true);
+        render();
+      });
+      return;
+    }
+  }
+
   function onInputKeyDown(event) {
+    if (event.key === "Enter") enterDown = true;
     if (event.key !== "Enter") return;
-    if (event.isComposing || event.keyCode === 229) return;
+    const lookupApi = globalThis.QuickCalLookup;
+    const action = lookupApi ? lookupApi.enterAction({
+      repeat: event.repeat,
+      composing: event.isComposing || event.keyCode === 229,
+      armed: deleteArmed,
+      text: input.value,
+      mode: mode,
+    }) : (event.repeat || event.isComposing ? "ignore" : (input.value.trim() ? "submit" : "ignore"));
+    if (action === "ignore") {
+      if (mode === "confirming") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     if (pending || saving || voicePhase === "recording" || voicePhase === "review" || voicePhase === "transcribing" || voicePhase === "permission") return;
     if (voicePhase === "held") cancelVoice();
-    const text = input.value.trim();
-    if (!text) return;
-    submit(text);
+    if (action === "confirm") {
+      deleteArmed = false;
+      confirmLookup();
+      return;
+    }
+    deleteArmed = false;
+    submit(input.value.trim());
+  }
+
+  function onInputKeyUp(event) {
+    if (event.key !== "Enter") return;
+    enterDown = false;
+    if (mode === "confirming") deleteArmed = true;
   }
 
   function formatElapsed(ms) {
@@ -1628,7 +1757,26 @@
   cancelButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (activeLookup) {
+      activeLookup = null;
+      deleteArmed = false;
+      if (shared) {
+        chrome.runtime.sendMessage({ type: "quickcal-widget", action: "cancel-lookup", sessionId: sharedSessionId }).then((result) => {
+          if (result && result.session) applyRemote(result.session, false);
+        }).catch(() => {});
+        return;
+      }
+      showInputMode();
+      render();
+      return;
+    }
     discardClarification();
+  });
+  deleteButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteArmed = false;
+    confirmLookup();
   });
   connectButton.addEventListener("click", (event) => {
     event.preventDefault();
@@ -1675,6 +1823,7 @@
     if (status.textContent === "Replace your current text with the selection?") clearStatus();
   });
   input.addEventListener("keydown", onInputKeyDown);
+  input.addEventListener("keyup", onInputKeyUp);
   input.addEventListener("input", () => {
     if (!selectionChoice.hidden) {
       dismissSelectionChoice();

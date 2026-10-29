@@ -26,6 +26,7 @@ const page = `<!DOCTYPE html>
 <script src="${fileUrl(path.join(root, "shared/startup.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/selection.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/layout.js"))}"></script>
+<script src="${fileUrl(path.join(root, "shared/lookup.js"))}"></script>
 <script>
   globalThis.quickcalListeners = [];
   const calls = [];
@@ -214,7 +215,8 @@ const page = `<!DOCTYPE html>
     check("expanded focus visible", expandedFocus.indexOf("138, 164, 214") !== -1);
     check("mic inside input area", micBox.left >= expandedBar.left && micBox.right <= expandedBar.right && micBox.top >= expandedBar.top && micBox.bottom <= expandedBar.bottom);
     check("saved when", shadow.textContent.includes("Oct 17, 2026") && shadow.textContent.includes("10:00–11:00 AM"));
-    check("view link", shadow.querySelector("a.action").href.indexOf("https://calendar.google.com/calendar/event?eid=abc") === 0);
+    const createdLink = shadow.querySelector("a.action");
+    check("edit link", createdLink.textContent === "Edit in Google Calendar" && createdLink.target === "_blank" && createdLink.href === "https://calendar.google.com/calendar/r/eventedit/abc" && createdLink.href.indexOf("action=TEMPLATE") === -1);
     check("follow-up", field.value === "" && field.placeholder === "Tell me what to change…");
     check("new event", visibleAction("New event") !== null);
     check("card inset", expanded.left >= 8 && expanded.right <= window.innerWidth - 8 && expanded.bottom <= window.innerHeight - 8);
@@ -263,10 +265,16 @@ const page = `<!DOCTYPE html>
     check("one update", updates().length === 1 && updates()[0].event.startTime === "11:00" && updates()[0].event.endTime === "11:30" && !updates()[0].event.id);
     check("same creates", creates().length === 2);
     check("updating", shadow.textContent.includes("Updating event…") && shadow.textContent.includes("10:00–11:00 AM"));
-    nextResult = Object.assign({}, saved, { startTime: "11:00", endTime: "11:30", timeText: "11:00–11:30 AM" });
+    nextResult = Object.assign({}, saved, {
+      startTime: "11:00",
+      endTime: "11:30",
+      timeText: "11:00–11:30 AM",
+      htmlLink: "https://www.google.com/calendar/event?eid=updatedevent",
+    });
     release();
     await settle();
     check("updated time", shadow.textContent.includes("11:00–11:30 AM") && !shadow.querySelector(".schedule").textContent.includes("10:00–11:00 AM"));
+    check("updated edit link", shadow.querySelector("a.action").textContent === "Edit in Google Calendar" && shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/updatedevent");
 
     visibleAction("New event").click();
     await settle();
@@ -536,6 +544,7 @@ const page = `<!DOCTYPE html>
     release();
     await settle();
     check("weekly saved", shadow.textContent.includes("Event successfully created") && shadow.textContent.includes("Every Friday") && shadow.textContent.includes("No end date") && shadow.textContent.includes("America/Los_Angeles"));
+    check("weekly edit link", shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/weekly");
     const updatesBeforeSeries = updates().length;
     field.value = "Move it to 7 PM";
     nextResult = {
@@ -648,7 +657,7 @@ const page = `<!DOCTYPE html>
     };
     release();
     await settle();
-    check("selection created", shadow.textContent.includes("Dentist") && shadow.querySelector(".success").hidden === false);
+    check("selection created", shadow.textContent.includes("Dentist") && shadow.querySelector(".success").hidden === false && shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/dentist");
     field.value = "move it to 5";
     enter(field);
     await settle();

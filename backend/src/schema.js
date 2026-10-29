@@ -49,6 +49,37 @@ export const EVENT_SCHEMA = {
       type: "array",
       items: { type: "string" },
     },
+    intent: {
+      type: "string",
+      enum: ["create", "edit", "move", "delete", "find", "clarify"],
+    },
+    operation: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        target: { type: ["string", "null"] },
+        searchDate: { type: ["string", "null"] },
+        searchTime: { type: ["string", "null"] },
+        destinationDate: { type: ["string", "null"] },
+        destinationTime: { type: ["string", "null"] },
+        destinationEndTime: { type: ["string", "null"] },
+        scope: { type: "string", enum: ["occurrence", "series", "unsupported"] },
+        selection: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+      required: [
+        "target",
+        "searchDate",
+        "searchTime",
+        "destinationDate",
+        "destinationTime",
+        "destinationEndTime",
+        "scope",
+        "selection",
+      ],
+    },
   },
   required: [
     "title",
@@ -62,5 +93,7 @@ export const EVENT_SCHEMA = {
     "notificationOverrides",
     "needsClarification",
     "clarificationQuestions",
+    "intent",
+    "operation",
   ],
 };

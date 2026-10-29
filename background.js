@@ -7,7 +7,8 @@ importScripts(
   "shared/transcribe.js",
   "shared/selection.js",
   "shared/layout.js",
-  "shared/session.js"
+  "shared/session.js",
+  "shared/lookup.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -41,6 +42,7 @@ const WIDGET_FILES = [
   "shared/startup.js",
   "shared/selection.js",
   "shared/layout.js",
+  "shared/lookup.js",
   "content/widget.js",
 ];
 const WIDGET_MESSAGE = "quickcal-widget";
@@ -1410,7 +1412,8 @@ async function checkHealth() {
         body.ok === true &&
         body.quickcalApiVersion === self.QuickCalLocalParse.API_VERSION &&
         Array.isArray(body.capabilities) &&
-        body.capabilities.includes("event-notifications")
+        body.capabilities.includes("event-notifications") &&
+        body.capabilities.includes("calendar-operations")
       );
       if (body && body.ok === true && !compatible) {
         const release = typeof body.quickcalRelease === "string" ? " (running " + body.quickcalRelease + ")" : "";
@@ -1975,11 +1978,537 @@ function savedPayload(record) {
   };
 }
 
-async function runWidgetSubmit(incognito, text, timeZone, operation, editing, clarification, savedRecord, originalText) {
+const LOOKUP_LIST_FIELDS = "items(id,summary,status,htmlLink,recurringEventId,start,end,attendees(email,displayName)),nextPageToken";
+const LOOKUP_ITEM_FIELDS = "id,summary,status,htmlLink,recurringEventId,start,end,attendees(email,displayName)";
+
+function lookupListUrl(window, pageToken) {
+  const params = new URLSearchParams({
+    singleEvents: "true",
+    orderBy: "startTime",
+    timeMin: window.timeMin,
+    timeMax: window.timeMax,
+    maxResults: "20",
+    eventTypes: "default",
+    fields: LOOKUP_LIST_FIELDS,
+  });
+  if (pageToken) params.set("pageToken", pageToken);
+  return CALENDAR_EVENTS_URL + "?" + params.toString();
+}
+
+function lookupItemUrl(id, method) {
+  const fields = method === "DELETE" ? "" : LOOKUP_ITEM_FIELDS;
+  const suffix = method === "PATCH" ? "?sendUpdates=none&fields=" + fields : method === "GET" ? "?fields=" + fields : "?sendUpdates=none";
+  return CALENDAR_EVENTS_URL + "/" + encodeURIComponent(id) + suffix;
+}
+
+async function listLookupEvents(date, timeZone) {
+  const window = self.QuickCalLookup.dayWindow(date, timeZone);
+  if (!window) return { ok: false, error: "QuickCal could not determine that date." };
+  const items = [];
+  let pageToken = "";
+  for (let page = 0; page < 2; page += 1) {
+    const listed = await calendarCall(lookupListUrl(window, pageToken), { method: "GET" });
+    if (listed.authError) return { ok: false, state: "disconnected", error: "Connect Google Calendar before searching." };
+    if (listed.network) return { ok: false, error: "QuickCalAI could not reach Google Calendar. Check your connection and try again." };
+    if (!listed.ok) return { ok: false, error: "Google Calendar could not be searched (" + (listed.status || "unknown") + ")." };
+    const batch = listed.body && Array.isArray(listed.body.items) ? listed.body.items : [];
+    batch.forEach((item) => items.push(item));
+    pageToken = listed.body && listed.body.nextPageToken || "";
+    if (!pageToken) break;
+  }
+  return { ok: true, items: items };
+}
+
+function lookupState(action, kind, query, timeZone, candidates, prompt, extra) {
+  const listed = (candidates || []).map((item, index) => Object.assign({}, item, {
+    ref: item.ref || ("c" + (index + 1)),
+  }));
+  return Object.assign({
+    kind: kind,
+    action: action,
+    scope: query.scope || "occurrence",
+    query: query,
+    timeZone: timeZone,
+    candidates: listed,
+    prompt: prompt,
+    lines: listed.map((item, index) => (index + 1) + ". " + item.summary + ", " + item.dateText + ", " + item.timeText),
+    awaiting: "",
+  }, extra || {});
+}
+
+function operationContext(lookup) {
+  if (!lookup || !lookup.query) return null;
+  const query = lookup.query;
+  return {
+    intent: lookup.action || "find",
+    target: query.target || query.person || null,
+    searchDate: query.explicitDate ? query.date || null : null,
+    searchTime: query.explicitTime ? query.startTime || null : null,
+    destinationDate: query.newDate || null,
+    destinationTime: query.newStartTime || null,
+    destinationEndTime: query.newEndTime || null,
+    scope: query.scope || "occurrence",
+    selection: [],
+    missing: lookup.awaiting || null,
+    prompt: lookup.prompt || null,
+    candidates: (lookup.candidates || []).map((item) => ({
+      ref: item.ref,
+      label: item.summary + ", " + item.dateText + ", " + item.timeText,
+    })),
+  };
+}
+
+function bindSelection(selection, candidates) {
+  if (!selection || !selection.length) return { selected: null };
+  if (!candidates || !candidates.length) return { invalid: true };
+  if (selection.length === 1 && selection[0] === "all") return { selected: candidates.slice() };
+  const selected = [];
+  for (let index = 0; index < selection.length; index += 1) {
+    let found = null;
+    for (let item = 0; item < candidates.length; item += 1) {
+      if (candidates[item].ref === selection[index]) found = candidates[item];
+    }
+    if (!found) return { invalid: true };
+    selected.push(found);
+  }
+  return { selected: selected };
+}
+
+function movedRecord(candidate, plan, body) {
+  const link = safeCalendarLink(body && body.htmlLink) || safeCalendarLink(candidate.htmlLink);
+  const previous = candidate.timeText;
+  const next = self.QuickCalSchedule.formatTimeRange(plan.startTime, plan.endTime);
+  return {
+    ok: true,
+    summary: candidate.summary,
+    dateText: self.QuickCalSchedule.formatCompactDate(plan.date),
+    timeText: next,
+    timeZone: candidate.timeZone || "",
+    htmlLink: link,
+    id: candidate.id,
+    title: candidate.summary,
+    date: plan.date,
+    endDate: plan.endDate,
+    startTime: plan.startTime,
+    endTime: plan.endTime,
+    location: null,
+    changeText: "Moved from " + previous + " to " + next,
+    recurrence: null,
+    recurrenceText: candidate.recurringEventId ? "One occurrence" : "",
+    seriesEndText: "",
+    remindersText: "",
+  };
+}
+
+async function readLookupItem(id) {
+  return calendarCall(lookupItemUrl(id, "GET"), { method: "GET" });
+}
+
+async function applyMove(candidate, query, timeZone, scope) {
+  const target = self.QuickCalLookup.targetId(candidate, scope);
+  const current = await readLookupItem(target);
+  if (current.network) return { network: true, candidate: candidate };
+  if (current.notFound || (current.ok && current.body && current.body.status === "cancelled")) {
+    return { missing: true, candidate: candidate };
+  }
+  if (!current.ok || !self.QuickCalLookup.sameFingerprint(candidate, current.body, timeZone)) {
+    return { changed: true, candidate: candidate, item: current.ok ? current.body : null };
+  }
+  const plan = self.QuickCalLookup.planMove(candidate, query, timeZone);
+  if (plan.ask || plan.unsupported) return plan;
+  const patched = await calendarCall(lookupItemUrl(target, "PATCH"), {
+    method: "PATCH",
+    body: JSON.stringify({
+      start: { dateTime: plan.startDateTime, timeZone: timeZone },
+      end: { dateTime: plan.endDateTime, timeZone: timeZone },
+    }),
+  });
+  if (patched.network) {
+    const again = await readLookupItem(target);
+    if (again.ok && again.body) {
+      const seen = self.QuickCalLookup.candidateFrom(again.body, timeZone);
+      if (seen.startTime === plan.startTime && seen.date === plan.date) return { ok: true, candidate: candidate, plan: plan, body: again.body };
+    }
+    return { network: true, candidate: candidate };
+  }
+  if (!patched.ok || !patched.body) return { failed: true, candidate: candidate };
+  const saved = self.QuickCalLookup.candidateFrom(patched.body, timeZone);
+  if (saved.startTime !== plan.startTime) return { failed: true, candidate: candidate };
+  return { ok: true, candidate: candidate, plan: plan, body: patched.body };
+}
+
+async function applyDelete(candidate, timeZone, scope) {
+  const target = self.QuickCalLookup.targetId(candidate, scope);
+  const current = await readLookupItem(target);
+  if (current.network) return { network: true, candidate: candidate };
+  if (current.notFound || (current.ok && current.body && current.body.status === "cancelled")) {
+    return { ok: true, candidate: candidate, already: true };
+  }
+  if (!current.ok || !self.QuickCalLookup.sameFingerprint(candidate, current.body, timeZone)) {
+    return { changed: true, candidate: candidate, item: current.ok ? current.body : null };
+  }
+  const removed = await calendarCall(lookupItemUrl(target, "DELETE"), { method: "DELETE" });
+  if (removed.network) {
+    const again = await readLookupItem(target);
+    if (again.notFound || (again.ok && again.body && again.body.status === "cancelled")) {
+      return { ok: true, candidate: candidate };
+    }
+    return { network: true, candidate: candidate };
+  }
+  if (!removed.ok && removed.status !== 204 && removed.status !== 200) return { failed: true, candidate: candidate };
+  return { ok: true, candidate: candidate };
+}
+
+async function settleLookup(incognito, operation, producer) {
+  const produced = await producer();
+  return mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    const finished = self.QuickCalSession.finishOperation(latest, operation, produced);
+    return finished.accepted ? finished.state : latest;
+  });
+}
+
+async function runLookup(incognito, text, timeZone, operation, decision) {
+  const query = decision.query;
+  const zone = timeZone || "UTC";
+  if (decision.intent === "unsupported") {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      input: text,
+      statusText: decision.message,
+      statusError: false,
+    }));
+  }
+  if (decision.intent === "move" && query.ambiguousTime) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup(
+      { lookup: null },
+      lookupState("move", "ask", query, zone, [], "Which time should it move to?", { awaiting: "destinationTime" })
+    ));
+  }
+  const listed = await listLookupEvents(query.date, zone);
+  if (!self.QuickCalSession) return null;
+  if (!listed.ok) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      input: text,
+      statusText: listed.error,
+      statusError: true,
+    }));
+  }
+  let matches = self.QuickCalLookup.matchEvents(listed.items, query, zone);
+  if (query.scope === "series" && matches.length === 1 && matches[0].recurringEventId) {
+    const master = await readLookupItem(matches[0].recurringEventId);
+    if (master.ok && master.body && master.body.status !== "cancelled") {
+      matches = [self.QuickCalLookup.candidateFrom(master.body, zone)];
+    }
+  }
+  const presented = presentMatches(decision.intent, query, zone, matches);
+  if (presented.pendingMove) return performMoves(incognito, operation, query, zone, [presented.pendingMove]);
+  return settleLookup(incognito, operation, async () => presented);
+}
+
+function presentMatches(intent, query, zone, matches) {
+  if (!matches.length) {
+    const today = !query.explicitDate;
+    return self.QuickCalSession.noteLookup({}, lookupState(
+      intent,
+      "ask",
+      query,
+      zone,
+      [],
+      today ? "I don't see a matching event today. What date should I check?" : "I don't see a matching event on that date. You can give a different date, name, or time.",
+      { awaiting: "searchDate" }
+    ));
+  }
+  if (matches.length > 1) {
+    return self.QuickCalSession.noteLookup({}, lookupState(
+      intent,
+      "choose",
+      query,
+      zone,
+      matches,
+      "Which event do you mean?"
+    ));
+  }
+  return presentSingle(intent, query, zone, matches[0]);
+}
+
+function presentSingle(intent, query, zone, candidate) {
+  if (query.scope === "series" && !candidate.recurringEventId) {
+    return {
+      mode: "input",
+      lookup: null,
+      statusText: "That event is not a repeating series. No events were changed.",
+      statusError: false,
+      input: "",
+    };
+  }
+  if (query.scope === "series" || intent === "delete" || intent === "find") {
+    const prompt = intent === "delete"
+      ? "Delete " + candidate.summary + ", " + candidate.dateText + ", " + candidate.timeText + "?"
+      : query.scope === "series"
+        ? "Change the entire series for " + candidate.summary + "?"
+        : candidate.summary + ", " + candidate.dateText + ", " + candidate.timeText;
+    return self.QuickCalSession.noteLookup({}, lookupState(
+      intent === "find" ? "find" : intent,
+      intent === "find" ? "choose" : "confirm",
+      query,
+      zone,
+      [candidate],
+      prompt,
+      { hint: intent === "delete" ? "Press Enter to delete." : query.scope === "series" ? "Press Enter to change the series." : "" }
+    ));
+  }
+  return { pendingMove: candidate };
+}
+
+async function performMoves(incognito, operation, query, zone, candidates) {
+  const moved = [];
+  const pending = [];
+  const changed = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const result = await applyMove(candidates[i], query, zone, query.scope || "occurrence");
+    if (result.ok) moved.push(result);
+    else if (result.changed) changed.push(result);
+    else pending.push(candidates[i]);
+    if (result.ask || result.unsupported) {
+      return settleLookup(incognito, operation, async () => ({
+        mode: "input",
+        lookup: null,
+        statusText: result.ask || result.unsupported,
+        statusError: false,
+        input: "",
+      }));
+    }
+  }
+  if (changed.length) {
+    const updated = changed.map((result) => self.QuickCalLookup.candidateFrom(result.item, zone));
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      "move",
+      "confirm",
+      query,
+      zone,
+      updated,
+      "That event changed. Move " + updated[0].summary + ", " + updated[0].dateText + ", " + updated[0].timeText + "?"
+    )));
+  }
+  if (!moved.length) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      input: "",
+      statusText: pending.length ? "QuickCalAI could not reach Google Calendar. Check your connection and try again." : "QuickCalAI could not move that event.",
+      statusError: true,
+    }));
+  }
+  const first = moved[0];
+  const record = movedRecord(first.candidate, first.plan, first.body);
+  record.timeZone = zone;
+  const failures = pending.map((item) => item.summary).join(", ");
+  return settleLookup(incognito, operation, async () => ({
+    mode: "saved",
+    savedRecord: record,
+    event: null,
+    draftEvent: null,
+    clarification: null,
+    lookup: pending.length ? lookupState("move", "confirm", query, zone, pending, "Still need to move: " + failures) : null,
+    input: "",
+    statusText: pending.length ? "Moved " + first.candidate.summary + ". Could not move " + failures + "." : "",
+    statusError: false,
+  }));
+}
+
+async function performDeletes(incognito, operation, query, zone, candidates) {
+  const removed = [];
+  const pending = [];
+  const changed = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const result = await applyDelete(candidates[i], zone, query.scope || "occurrence");
+    if (result.ok) removed.push(result.candidate);
+    else if (result.changed && result.item) changed.push(result);
+    else pending.push(candidates[i]);
+  }
+  if (changed.length && !removed.length) {
+    const updated = changed.map((result) => self.QuickCalLookup.candidateFrom(result.item, zone));
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      "delete",
+      "confirm",
+      query,
+      zone,
+      updated,
+      "That event changed. Delete " + updated[0].summary + ", " + updated[0].dateText + ", " + updated[0].timeText + "?",
+      { hint: "Press Enter to delete." }
+    )));
+  }
+  const stored = await loadDraftEvent();
+  const session = await readWidgetSession(incognito);
+  const removedIds = removed.map((item) => item.id);
+  const removedLinks = removed.map((item) => safeCalendarLink(item.htmlLink)).filter(Boolean);
+  const saved = session.savedRecord;
+  const clearSaved = !!(
+    (stored && removedIds.indexOf(stored.id) !== -1) ||
+    (saved && ((saved.id && removedIds.indexOf(saved.id) !== -1) || (saved.htmlLink && removedLinks.indexOf(saved.htmlLink) !== -1)))
+  );
+  if (stored && removedIds.indexOf(stored.id) !== -1) {
+    try { await clearDraftEvent(); } catch (error) { /* The calendar delete already finished. */ }
+  }
+  const names = removed.map((item) => item.summary + ", " + item.dateText + ", " + item.timeText);
+  const failedNames = pending.map((item) => item.summary);
+  let status = names.length ? "Deleted " + names.join("; ") + "." : "QuickCalAI could not delete that event.";
+  if (failedNames.length) status += " Could not delete " + failedNames.join(", ") + ".";
+  const patch = {
+    mode: !clearSaved && saved ? "saved" : "input",
+    lookup: pending.length ? lookupState("delete", "confirm", query, zone, pending, "Press Enter to retry the unfinished events.", { hint: "Press Enter to delete." }) : null,
+    draftEvent: null,
+    clarification: null,
+    input: "",
+    statusText: status,
+    statusError: !names.length,
+  };
+  if (clearSaved) patch.savedRecord = null;
+  return settleLookup(incognito, operation, async () => patch);
+}
+
+async function runLookupAnswer(incognito, text, operation, lookup) {
+  const zone = lookup.timeZone;
+  const query = Object.assign({}, lookup.query);
+  if (lookup.awaiting === "date") {
+    const date = self.QuickCalLookup.dateIn(text, self.QuickCalLookup.clockFrom(new Date(), zone));
+    if (!date) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, lookup, {
+        prompt: "What date should I check?",
+      })));
+    }
+    query.date = date;
+    query.explicitDate = true;
+    const listed = await listLookupEvents(date, zone);
+    if (!listed.ok) {
+      return settleLookup(incognito, operation, async () => ({
+        mode: "input",
+        lookup: null,
+        input: text,
+        statusText: listed.error,
+        statusError: true,
+      }));
+    }
+    const presented = presentMatches(lookup.action, query, zone, self.QuickCalLookup.matchEvents(listed.items, query, zone));
+    if (presented.pendingMove) return performMoves(incognito, operation, query, zone, [presented.pendingMove]);
+    return settleLookup(incognito, operation, async () => presented);
+  }
+  if (lookup.awaiting === "time") {
+    const time = self.QuickCalLookup.destinationTime(text);
+    if (!time) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, lookup, {
+        prompt: "What time should it move to?",
+      })));
+    }
+    query.newStartTime = time;
+    query.ambiguousTime = false;
+    if (lookup.candidates && lookup.candidates.length === 1) {
+      return performMoves(incognito, operation, query, zone, lookup.candidates);
+    }
+  }
+  const choice = self.QuickCalLookup.choose(text, lookup.candidates || []);
+  if (!choice.ids.length) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, lookup, {
+      prompt: "Which event do you mean? Reply with a number, or say both.",
+    })));
+  }
+  const selected = (lookup.candidates || []).filter((item) => choice.ids.indexOf(item.id) !== -1);
+  if (lookup.action === "delete" || query.scope === "series") {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      lookup.action,
+      "confirm",
+      query,
+      zone,
+      selected,
+      lookup.action === "delete" ? "Delete the selected event" + (selected.length > 1 ? "s" : "") + "?" : "Change the entire series?",
+      { hint: lookup.action === "delete" ? "Press Enter to delete." : "Press Enter to change the series." }
+    )));
+  }
+  return performMoves(incognito, operation, query, zone, selected);
+}
+
+async function runConfirmedLookup(incognito, operation, lookup) {
+  const selected = lookup.candidates || [];
+  if (lookup.action === "delete") return performDeletes(incognito, operation, lookup.query, lookup.timeZone, selected);
+  return performMoves(incognito, operation, lookup.query, lookup.timeZone, selected);
+}
+
+async function runInterpreted(incognito, text, timeZone, operation, pending, event) {
+  const zone = timeZone || "UTC";
+  const query = self.QuickCalLookup.mergeQuery(pending && pending.query, event.operation);
+  const action = event.intent === "clarify" ? (pending && pending.action) || "find" : event.intent;
+  if (event.intent === "clarify" || query.scope === "unsupported") {
+    const question = query.scope === "unsupported"
+      ? "Changing this and the following occurrences is not supported yet. No events were changed."
+      : ((event.clarificationQuestions && event.clarificationQuestions[0]) || "What should I change?");
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      action,
+      "ask",
+      query,
+      zone,
+      pending && pending.candidates || [],
+      question,
+      { awaiting: (pending && pending.awaiting) || "searchDate" }
+    )));
+  }
+  const bound = bindSelection(event.operation && event.operation.selection, pending && pending.candidates);
+  if (bound.invalid) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      action,
+      "choose",
+      query,
+      zone,
+      pending.candidates,
+      "Which event do you mean? Reply with a number, or say both.",
+      { awaiting: "selection" }
+    )));
+  }
+  if (bound.selected) {
+    if (action === "delete" || query.scope === "series") {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+        action,
+        "confirm",
+        query,
+        zone,
+        bound.selected,
+        action === "delete"
+          ? "Delete the selected event" + (bound.selected.length > 1 ? "s" : "") + "?"
+          : "Change the entire series?",
+        { hint: action === "delete" ? "Press Enter to delete." : "Press Enter to change the series." }
+      )));
+    }
+    if (action === "find") {
+      return settleLookup(incognito, operation, async () => presentMatches("find", query, zone, bound.selected));
+    }
+    return performMoves(incognito, operation, query, zone, bound.selected);
+  }
+  if (!query.date) {
+    if (pending && pending.awaiting === "searchDate") {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+        action,
+        "ask",
+        query,
+        zone,
+        [],
+        "What date should I check?",
+        { awaiting: "searchDate" }
+      )));
+    }
+    query.date = self.QuickCalLookup.clockFrom(new Date(), zone).localDate;
+    query.explicitDate = false;
+  }
+  return runLookup(incognito, text, zone, operation, { intent: action, query: query });
+}
+
+async function runWidgetSubmit(incognito, text, timeZone, operation, editing, clarification, savedRecord, originalText, parsed) {
   const message = { text: text, timeZone: timeZone || "UTC" };
   if (clarification) message.clarification = clarification;
   else if (editing) message.currentEvent = savedPayload(savedRecord);
-  const result = await parseForContent(message);
+  const result = parsed || await parseForContent(message);
   const pendingState = await mutateWidgetSession(incognito, (latest) => {
     if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
     if (!result || result.ok !== true || !result.event) {
@@ -2009,6 +2538,7 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
         clarification: noted.clarification,
         savedRecord: null,
         draftEvent: null,
+        lookup: null,
         input: "",
         statusText: "",
         statusError: false,
@@ -2020,6 +2550,7 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
       event: result.event,
       draftEvent: editing ? null : result.event,
       draftText: text,
+      lookup: null,
       statusText: editing ? "Updating event\u2026" : "Creating event\u2026",
       statusError: false,
     });
@@ -2037,6 +2568,7 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
         event: pendingState.event,
         draftEvent: null,
         clarification: null,
+        lookup: null,
         input: "",
         statusText: "",
         statusError: false,
@@ -2103,6 +2635,42 @@ function handleWidgetMessage(message, sender) {
   if (action === "layout") {
     return mutateWidgetSession(incognito, (state) => self.QuickCalSession.setLayout(state, message.layout)).then((state) => ({ ok: true, session: state }));
   }
+  if (action === "cancel-lookup") {
+    return mutateWidgetSession(incognito, (state) => {
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      return Object.assign({}, state, {
+        lookup: null,
+        mode: state.savedRecord ? "saved" : "input",
+        input: "",
+        statusText: "",
+        statusError: false,
+        revision: state.revision + 1,
+      });
+    }).then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "confirm") {
+    let operation = null;
+    let lookup = null;
+    return mutateWidgetSession(incognito, (state) => {
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      if (!state.visible || !state.lookup || state.lookup.kind !== "confirm") return state;
+      const begun = self.QuickCalSession.beginOperation(
+        state,
+        "confirm",
+        message.operationId || "confirm-" + String(state.revision + 1),
+        state.sessionId
+      );
+      if (!begun.accepted) return state;
+      operation = begun.state.operation;
+      lookup = state.lookup;
+      return Object.assign({}, begun.state, { statusText: state.lookup.action === "delete" ? "Deleting event\u2026" : "Updating event\u2026", statusError: false });
+    }).then((state) => {
+      if (!operation || !state.operation || state.operation.id !== operation.id) {
+        return { ok: false, ignored: true, session: state };
+      }
+      return runConfirmedLookup(incognito, operation, lookup).then((session) => ({ ok: true, session: session }));
+    });
+  }
   if (action === "submit") {
     const text = typeof message.text === "string" ? message.text.trim() : "";
     if (!text) return Promise.resolve({ ok: false, error: "Text is required." });
@@ -2135,16 +2703,48 @@ function handleWidgetMessage(message, sender) {
       if (!operation || !state.operation || state.operation.id !== operation.id) {
         return { ok: false, ignored: true, session: state };
       }
-      return runWidgetSubmit(
-        incognito,
-        text,
-        message.timeZone,
-        operation,
-        context.editing,
-        context.clarification,
-        context.savedRecord,
-        context.originalText
-      ).then((session) => ({ ok: true, session: session }));
+      const pendingLookup = state.lookup || null;
+      const request = { text: text, timeZone: message.timeZone || "UTC" };
+      if (pendingLookup) request.operation = operationContext(pendingLookup);
+      else if (context.clarification) request.clarification = context.clarification;
+      else if (context.editing) request.currentEvent = savedPayload(context.savedRecord);
+      return parseForContent(request).then((result) => {
+        if (!result || result.ok !== true || !result.event || !result.event.intent) {
+          return mutateWidgetSession(incognito, (latest) => {
+            if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+            const failed = self.QuickCalSession.finishOperation(latest, operation, {
+              statusText: result && result.error ? result.error : "QuickCalAI could not understand that. Nothing was changed.",
+              statusError: true,
+              input: text,
+            });
+            return failed.accepted ? failed.state : latest;
+          }).then((session) => ({ ok: true, session: session }));
+        }
+        const intent = result.event.intent;
+        if (intent === "create" || intent === "edit") {
+          const view = self.QuickCalPreview.previewModel(result.event);
+          if (pendingLookup && !view.saveable) {
+            return settleLookup(incognito, operation, async () => ({
+              statusText: (result.event.clarificationQuestions && result.event.clarificationQuestions[0]) || "I didn't catch that. Nothing was changed.",
+              statusError: false,
+              input: text,
+            })).then((session) => ({ ok: true, session: session }));
+          }
+          return runWidgetSubmit(
+            incognito,
+            text,
+            message.timeZone,
+            operation,
+            intent === "edit",
+            null,
+            intent === "edit" ? context.savedRecord : null,
+            context.originalText,
+            result
+          ).then((session) => ({ ok: true, session: session }));
+        }
+        return runInterpreted(incognito, text, message.timeZone, operation, pendingLookup, result.event)
+          .then((session) => ({ ok: true, session: session }));
+      });
     });
   }
   return Promise.resolve({ ok: false });

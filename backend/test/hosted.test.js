@@ -96,9 +96,9 @@ function loadBackground(hooks) {
             return {
               ok: true,
               apiKeyConfigured: true,
-              quickcalApiVersion: 2,
+              quickcalApiVersion: 3,
               quickcalRelease: "test-revision",
-              capabilities: ["event-notifications"],
+              capabilities: ["event-notifications", "calendar-operations"],
             };
           },
         };
@@ -114,7 +114,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return {
-              quickcalApiVersion: 2,
+              quickcalApiVersion: 3,
               quickcalRelease: "test-revision",
               title: "Coffee with Alex",
               date: "2026-10-20",
@@ -125,6 +125,7 @@ function loadBackground(hooks) {
               reminders: { useDefault: true, overrides: [] },
               needsClarification: false,
               clarificationQuestions: [],
+              intent: "create",
             };
           },
         };

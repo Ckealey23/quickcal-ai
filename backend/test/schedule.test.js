@@ -149,6 +149,17 @@ function event(overrides = {}) {
     recurrence: null,
     needsClarification: true,
     clarificationQuestions: ["What time does this event end?", "What time does this event end?"],
+    intent: "create",
+    operation: {
+      target: null,
+      searchDate: null,
+      searchTime: null,
+      destinationDate: null,
+      destinationTime: null,
+      destinationEndTime: null,
+      scope: "occurrence",
+      selection: [],
+    },
     ...overrides,
   };
 }

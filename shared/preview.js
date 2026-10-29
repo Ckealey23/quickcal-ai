@@ -79,9 +79,53 @@
     };
   }
 
+  function trustedCalendarUrl(value) {
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const url = new URL(value);
+      const calendarHost =
+        url.hostname === "calendar.google.com" ||
+        (url.hostname === "www.google.com" && url.pathname.indexOf("/calendar/") === 0);
+      if (url.protocol !== "https:" || !calendarHost) return null;
+      return url;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function browserEventKey(url) {
+    const fromQuery = url.searchParams.get("eid");
+    if (fromQuery) return fromQuery;
+    const match = /\/eventedit\/([^/]+)$/.exec(url.pathname);
+    if (!match) return "";
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function calendarEditLink(value) {
+    const url = trustedCalendarUrl(value);
+    if (!url || url.searchParams.get("action") === "TEMPLATE") return "";
+    const key = browserEventKey(url);
+    if (!key || key.length > 2048 || !/^[A-Za-z0-9+/_=-]+$/.test(key)) return "";
+    return "https://calendar.google.com/calendar/r/eventedit/" + encodeURIComponent(key);
+  }
+
+  function calendarViewLink(value) {
+    const url = trustedCalendarUrl(value);
+    if (!url || url.searchParams.get("action") === "TEMPLATE") return "";
+    if (/\/eventedit\/?$/.test(url.pathname) && !url.searchParams.get("eid")) return "";
+    if (!browserEventKey(url)) return "";
+    return url.href;
+  }
+
   root.QuickCalPreview = {
     formatFullDate: formatFullDate,
     formatTimeRange: formatTimeRange,
     previewModel: previewModel,
+    calendarEditLink: calendarEditLink,
+    calendarViewLink: calendarViewLink,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);
