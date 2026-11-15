@@ -388,24 +388,6 @@
   let deleteArmed = false;
   let activeLookup = null;
   const seenSelections = new Set();
-  const reviewUi = globalThis.QuickCalReviewUI ? globalThis.QuickCalReviewUI.create({
-    bar, card, input, shadow,
-    send: async (action, payload) => {
-      const result = await chrome.runtime.sendMessage(Object.assign({ type: "quickcal-widget", action, sessionId: sharedSessionId }, payload));
-      if (result && result.session && alive) applyRemote(result.session, false);
-      return result;
-    },
-    reset: () => discardClarification(),
-    expand: () => {
-      // Keep the input anchored while the section unfolds. At the viewport edge,
-      // make room once before opening instead of allowing controls off-screen.
-      const rect = host.getBoundingClientRect();
-      widgetLeft = rect.left;
-      widgetTop = Math.max(8, Math.min(rect.top, window.innerHeight - 560 * widgetScale));
-      render();
-      if (shared) chrome.runtime.sendMessage({ type: "quickcal-widget", action: "layout", layout: { scale: widgetScale, left: widgetLeft, top: widgetTop } }).catch(() => {});
-    },
-  }) : null;
 
   function focusInput() {
     input.focus();
@@ -696,12 +678,7 @@
   }
 
   function render() {
-    paintHost(host, styled && open, mode !== "input" && mode !== "review");
-    if (reviewUi) {
-      const expanded = reviewUi.expanded();
-      card.classList.toggle("document-active", expanded);
-      card.style.maxHeight = expanded ? Math.max(140, (window.innerHeight - (widgetTop || host.getBoundingClientRect().top) - 48 * widgetScale - 16) / widgetScale) + "px" : "";
-    }
+    paintHost(host, styled && open, mode !== "input");
     if (allowFocus && styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
   }
 
@@ -773,7 +750,6 @@
 
   function onEscape(event) {
     if (event.key !== "Escape" || host.dataset.open !== "true") return;
-    if (event.composedPath().some(element => element.classList && element.classList.contains("time-popup"))) return;
     event.preventDefault();
     event.stopPropagation();
     setOpen(false);
@@ -912,8 +888,6 @@
 
   async function submit(text, fromWarmup) {
     if (pending || saving) return;
-    if (reviewUi && reviewUi.hasAttachment()) { reviewUi.submit(text); return; }
-    if (reviewUi && reviewUi.busy()) return;
     if (!fromWarmup && session.phase() !== "ready") {
       const decision = session.requestParse(text, Date.now());
       if (decision.status) showStatus(decision.status, !!decision.retry);
@@ -1228,7 +1202,6 @@
       sharedClaim = state.claim || 0;
       if (typeof state.inputSeq === "number" && state.inputSeq >= sharedInputSeq) sharedInputSeq = state.inputSeq;
       if (state.layout) applyLayout(state.layout, true);
-      if (reviewUi) reviewUi.update(state);
       const remoteSeq = typeof state.inputSeq === "number" ? state.inputSeq : 0;
       if (remoteSeq > sharedInputSeq) sharedInputSeq = remoteSeq;
       if (state.voice && state.voice.phase && state.voice.phase !== "idle") {
@@ -1261,17 +1234,7 @@
       const focused = shadow.activeElement === input;
       const typedValue = input.value;
       const keepTyped = focused && inputDirty && typedValue !== (state.input || "");
-      if (state.mode === "review" && state.review) {
-        mode = "review";
-        body.hidden = true;
-        connectRoute.hidden = true;
-        healthRetry.hidden = true;
-        card.classList.remove("expanded", "clarifying");
-        input.placeholder = state.attachment ? "Refine what to find…" : state.savedRecord ? FOLLOW_PLACEHOLDER : "Tell me what to change…";
-        input.value = keepTyped ? typedValue : (state.input || "");
-        if (state.statusText) showStatus(state.statusText, !!state.statusError);
-        else clearStatus();
-      } else if ((state.mode === "choosing" || state.mode === "confirming") && state.lookup) {
+      if ((state.mode === "choosing" || state.mode === "confirming") && state.lookup) {
         clarification = null;
         showLookup(state.lookup);
         input.value = keepTyped ? typedValue : (state.input || "");
@@ -1542,11 +1505,6 @@
   function onInputKeyDown(event) {
     if (event.key === "Enter") enterDown = true;
     if (event.key !== "Enter") return;
-    if (reviewUi && reviewUi.hasAttachment() && !event.repeat && !event.isComposing && event.keyCode !== 229) {
-      event.preventDefault(); event.stopPropagation();
-      if (voicePhase === "idle" && !pending && !saving) reviewUi.submit(input.value.trim());
-      return;
-    }
     const lookupApi = globalThis.QuickCalLookup;
     const action = lookupApi ? lookupApi.enterAction({
       repeat: event.repeat,
@@ -1786,7 +1744,6 @@
   function destroy() {
     if (!alive) return;
     alive = false;
-    if (reviewUi) reviewUi.destroy();
     requestGeneration += 1;
     saveGeneration += 1;
     document.removeEventListener("keydown", onEscape, true);

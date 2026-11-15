@@ -74,7 +74,7 @@ function listen(fetchImpl) {
 }
 
 const sampleEvent = {
-  quickcalApiVersion: 4,
+  quickcalApiVersion: 3,
   intent: "create",
   quickcalRelease: "test-revision",
   title: "Coffee with Alex",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createContext, runInContext } from "node:vm";
@@ -271,7 +271,6 @@ describe("shared tabs through the service worker", () => {
 
 const chromePath = [
   process.env.CHROME_PATH,
-  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ].find((candidate) => candidate && existsSync(candidate));
 
@@ -289,14 +288,12 @@ function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
   let next = 1;
   const pending = new Map();
-  const events = [];
   const opened = new Promise((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("Could not connect to Chrome.")));
   });
   ws.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
-    if (!data.id) events.push(data);
     if (!data.id || !pending.has(data.id)) return;
     const waiter = pending.get(data.id);
     pending.delete(data.id);
@@ -304,7 +301,6 @@ function connect(wsUrl) {
     else waiter.resolve(data.result);
   });
   return {
-    events,
     ready: opened,
     send(method, params) {
       const id = next;
@@ -349,8 +345,6 @@ describe("real Chrome tabs", () => {
     const origin = "http://127.0.0.1:" + port;
     const profile = mkdtempSync(path.join(tmpdir(), "quickcal-tabs-"));
     const chrome = spawn(chromePath, [
-      "--headless=new",
-      "--disable-gpu",
       "--user-data-dir=" + profile,
       "--remote-debugging-port=0",
       "--enable-unsafe-extension-debugging",
@@ -358,7 +352,7 @@ describe("real Chrome tabs", () => {
       "--no-default-browser-check",
       "--disable-sync",
       "about:blank",
-    ], { stdio: "ignore", windowsHide: true });
+    ], { stdio: "ignore" });
     let client = null;
     let browser = null;
     try {
@@ -375,16 +369,11 @@ describe("real Chrome tabs", () => {
       async function attachWorker(previousUrl) {
         const worker = await waitFor(async () => {
           const list = await targets(debugPort);
-          return list.find((item) => item.type === "service_worker" && item.url === "chrome-extension://" + extensionId + "/background.js" && item.webSocketDebuggerUrl !== previousUrl) || null;
+          return list.find((item) => item.type === "service_worker" && item.url.includes("background.js") && item.webSocketDebuggerUrl !== previousUrl) || null;
         }, (item) => !!item, "extension service worker", previousUrl ? 15000 : 8000);
         const attached = connect(worker.webSocketDebuggerUrl);
         await attached.ready;
         await attached.send("Runtime.enable");
-        await attached.send("Runtime.runIfWaitingForDebugger");
-        await waitFor(async () => {
-          const value = await attached.send("Runtime.evaluate", { expression: 'JSON.stringify({ready:typeof self.quickcalToggleWidget, toggle:typeof toggleWidget, items:typeof self.QuickCalItems, review:typeof reviewRows})', returnByValue: true });
-          return { state: value.result && value.result.value, errors: attached.events.filter(event => event.method === "Runtime.exceptionThrown") };
-        }, value => value && value.state && value.state.includes('"ready":"function"'), "extension worker did not initialize");
         return attached;
       }
       client = await attachWorker();
@@ -551,65 +540,7 @@ describe("real Chrome tabs", () => {
         (value) => value[0] === "" && value[1] === "true:",
         "reopen was not one fresh shared input"
       );
-      const previousWorker = (await targets(debugPort)).find((item) => item.type === "service_worker" && item.url === "chrome-extension://" + extensionId + "/background.js");
-      // Exercise the assembled content widget and real service worker together.
-      // All paid AI and Google writes below are intercepted inside this isolated profile.
-      await workerEval(`(() => {
-        requestToken = async () => 'fixture-token';
-        self.reviewTestWrites = [];
-        self.reviewTestEvents = {};
-        self.fetch = async (url, options = {}) => {
-          const target = String(url), method = options.method || 'GET';
-          const reply = (body, status = 200) => ({ok:status < 400,status,json:async()=>body});
-          if (target.endsWith('/analyze-document')) return reply({items:[
-            {kind:'event',title:'Project review',date:'2026-11-20',startTime:'10:03',endTime:'11:03',timeZone:'America/Los_Angeles',description:'Review milestones',sourceContext:'Project review November 20',uncertainty:'',allDay:false},
-            {kind:'task',title:'Submit report',date:'2026-11-21',startTime:null,endTime:null,timeZone:'America/Los_Angeles',description:'',sourceContext:'Report due November 21',uncertainty:'',allDay:false}
-          ],warning:''});
-          if(target.includes('/calendar/v3/')) {
-            if(method==='GET') {
-              const id=target.split('/events/')[1];
-              return self.reviewTestEvents[id] ? reply(self.reviewTestEvents[id]) : reply({},404);
-            }
-            const body=JSON.parse(options.body); self.reviewTestWrites.push(body);
-            const saved={...body,status:'confirmed',htmlLink:'https://calendar.google.com/calendar/event?eid='+body.id};
-            self.reviewTestEvents[body.id]=saved; return reply(saved);
-          }
-          if(target.endsWith('/health'))return reply({ok:true,quickcalApiVersion:4});
-          if(target.endsWith('/access'))return reply({ok:true,approved:true});
-          throw new Error('Unexpected fixture request');
-        };
-        return true;
-      })()`);
-      await pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.attachment-button').click()`);
-      await waitFor(() => pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.upload-panel').classList.contains('is-open')`), value => value, "upload did not open");
-      await pageEval(pageA, `(() => {
-        const drop=document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.document-drop');
-        const data=new DataTransfer();data.items.add(new File(['Project review November 20. Report due November 21.'],'timeline.txt',{type:'text/plain'}));
-        drop.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data}));
-      })()`);
-      await waitFor(() => pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.attached-name').textContent`), value => value.includes('timeline.txt'), "file did not attach");
-      await pageEval(pageA, `(() => {const shadow=document.getElementById('quickcal-ai-host').shadowRoot;[...shadow.querySelectorAll('button')].find(button=>button.textContent==='Analyze document').click();})()`);
-      await waitFor(() => pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelectorAll('.proposal').length`), value => value === 2, "document proposals missing");
-      assert.equal(await workerEval('self.reviewTestWrites.length'), 0);
-      await pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.time-trigger').click()`);
-      await waitFor(() => pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelectorAll('.time-option').length`), value => value === 288, "time picker missing");
-      await pageEval(pageA, `(() => {const shadow=document.getElementById('quickcal-ai-host').shadowRoot;[...shadow.querySelectorAll('.time-option')].find(option=>option.textContent==='10:05 AM').click();})()`);
-      await waitFor(() => workerEval(`(async()=>{const value=await chrome.storage.session.get('quickcalWidgetSession');return value.quickcalWidgetSession.review.rows[0].item.startTime})()`), value => value === '10:05', "edited time missing from session");
-      await pageEval(pageA, `(() => {const first=document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.proposal');[...first.querySelectorAll('button')].find(button=>button.textContent==='Approve').click();})()`);
-      await waitFor(() => pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.review-create').textContent`), value => value.includes('1 approved event'), "approval count incorrect");
-      if (process.env.QUICKCAL_SCREENSHOT_PATH) {
-        const shot = await pageA.send("Page.captureScreenshot", { format: "png" });
-        writeFileSync(process.env.QUICKCAL_SCREENSHOT_PATH, Buffer.from(shot.data, "base64"));
-      }
-      const bounds = await pageEval(pageA, `(() => {const card=document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.card').getBoundingClientRect();return {top:card.top,bottom:card.bottom,height:innerHeight};})()`);
-      assert.ok(bounds.top >= 0 && bounds.bottom <= bounds.height, JSON.stringify(bounds));
-      await pageEval(pageA, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.review-create').click()`);
-      await waitFor(() => workerEval('self.reviewTestWrites.length'), value => value === 1, "approved event not saved");
-      const reviewedWrite = await workerEval('self.reviewTestWrites[0]');
-      assert.match(reviewedWrite.start.dateTime, /T10:05:00-08:00/);
-      assert.equal(reviewedWrite.summary, 'Project review');
-      await waitFor(() => pageEval(pageB, `document.getElementById('quickcal-ai-host').shadowRoot.querySelector('.proposal-status')?.textContent`), value => value === 'Created ✓', "creation result did not synchronize");
-      assert.equal(await workerEval('self.reviewTestWrites.length'), 1);
+      const previousWorker = (await targets(debugPort)).find((item) => item.type === "service_worker" && item.url.includes("background.js"));
       client.close();
       client = null;
       await browser.send("Extensions.loadUnpacked", { path: root });

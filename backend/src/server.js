@@ -3,7 +3,6 @@ import { createGoogleVerifier } from "./auth.js";
 import { applyEnvFile, envFilePath, startupConfig } from "./config.js";
 import { startServer } from "./http.js";
 import { createParser } from "./parse.js";
-import { createDocumentAnalyzer } from "./documents.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { createTranscriber, transcriptionConfig } from "./transcribe.js";
 
@@ -43,7 +42,6 @@ export async function main() {
       host: listen.host,
       port: listen.port,
       parseEvent,
-      analyzeDocument: createDocumentAnalyzer({ apiKey: model.apiKey, model: model.model, configError: model.error }),
       transcribeAudio,
       apiKeyConfigured: Boolean(model.apiKey),
       requireAuth: auth.requireAuth,

@@ -35,13 +35,13 @@ function render(result) {
   }
 
   if (ready && !busy) {
-    leadNode.textContent = "QuickCalAI can add calendar events and Google Tasks.";
+    leadNode.textContent = "QuickCalAI can add events to your calendar.";
   } else if (googleConnected && result && result.needsReconnect && !busy) {
     leadNode.textContent = "Connect again so QuickCalAI can check this Google account.";
   } else if (googleConnected && !busy) {
     leadNode.textContent = "Google Calendar is connected.";
   } else {
-    leadNode.textContent = "Connect Google Calendar to start adding events and tasks from any webpage.";
+    leadNode.textContent = "Connect Google Calendar to start adding events from any webpage.";
   }
 
   readyNode.hidden = !(ready && !busy);

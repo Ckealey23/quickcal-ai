@@ -4,7 +4,7 @@
   const ACCESS_URL = "https://quickcal-ai.onrender.com/access";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
-  const API_VERSION = 4;
+  const API_VERSION = 3;
 
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;
@@ -241,7 +241,6 @@
 
   function sanitizeEvent(body) {
     if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-    if (body.kind != null && !["event", "task"].includes(body.kind)) return null;
     if (body.intent === "move" || body.intent === "delete" || body.intent === "find" || body.intent === "clarify") {
       return sanitizeOperation(body);
     }
@@ -288,7 +287,6 @@
     }
     return {
       title: title,
-      ...(body.kind ? { kind: body.kind, description: typeof body.description === "string" ? body.description.slice(0, 4000) : "" } : {}),
       date: date,
       startTime: startTime,
       endTime: endTime,

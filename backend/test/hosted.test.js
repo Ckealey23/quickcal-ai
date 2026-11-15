@@ -96,7 +96,7 @@ function loadBackground(hooks) {
             return {
               ok: true,
               apiKeyConfigured: true,
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 3,
               quickcalRelease: "test-revision",
               capabilities: ["event-notifications", "calendar-operations"],
             };
@@ -114,7 +114,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return {
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 3,
               quickcalRelease: "test-revision",
               title: "Coffee with Alex",
               date: "2026-10-20",
@@ -197,7 +197,6 @@ describe("customer manifest", () => {
     );
     assert.deepEqual(manifest.oauth2.scopes, [
       "https://www.googleapis.com/auth/calendar.events.owned",
-      "https://www.googleapis.com/auth/tasks",
       "https://www.googleapis.com/auth/userinfo.email",
     ]);
     assert.equal(manifest.host_permissions.includes("https://quickcal-ai.onrender.com/*"), true);

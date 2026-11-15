@@ -1,7 +1,5 @@
 importScripts(
   "shared/schedule.js",
-  "shared/items.js",
-  "shared/review-service.js",
   "shared/test-event.js",
   "shared/local-parse.js",
   "shared/preview.js",
@@ -40,8 +38,6 @@ function accessFailureText(error) {
 
 const WIDGET_FILES = [
   "shared/schedule.js",
-  "shared/items.js",
-  "shared/review-ui.js",
   "shared/preview.js",
   "shared/startup.js",
   "shared/selection.js",
@@ -788,7 +784,6 @@ function confirmedRecord(record, body) {
     phase: "created",
     summary: record.summary,
     description: record.description,
-    ...(record.userDescription ? { userDescription: record.userDescription } : {}),
     startDateTime: record.startDateTime,
     endDateTime: record.endDateTime,
     timeZone: record.timeZone,
@@ -1097,7 +1092,7 @@ function widgetInsertBody(record) {
   const body = {
     id: record.id,
     summary: record.summary,
-    description: record.userDescription || record.description,
+    description: record.description,
     start: { dateTime: record.startDateTime, timeZone: record.timeZone },
     end: { dateTime: record.endDateTime, timeZone: record.timeZone },
     reminders: record.reminders || { useDefault: false, overrides: [] },
@@ -1305,7 +1300,6 @@ function rememberedEvent(record, prepared) {
     phase: "created",
     summary: prepared.summary,
     description: record.description,
-    ...(record.userDescription ? { userDescription: record.userDescription } : {}),
     startDateTime: prepared.startDateTime,
     endDateTime: prepared.endDateTime,
     timeZone: prepared.timeZone,
@@ -1812,7 +1806,7 @@ async function readWidgetSession(incognito) {
   const stored = await store.get(key);
   const value = stored ? stored[key] : null;
   if (!value || value.incognito !== !!incognito || typeof value.sessionId !== "string") return blank;
-  return recoverReviewOperation(value);
+  return value;
 }
 
 async function writeWidgetSession(state) {
@@ -2525,14 +2519,6 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
       });
       return failed.accepted ? failed.state : latest;
     }
-    if (!editing && result.event.kind) {
-      const finished = self.QuickCalSession.finishOperation(latest, operation, {
-        mode: "review", review: { source: "request", originalText: originalText || text, rows: reviewRows([result.event]), warning: "" },
-        event: result.event, clarification: null, draftEvent: null, savedRecord: null,
-        statusText: "", statusError: false, input: "",
-      });
-      return finished.state;
-    }
     const view = self.QuickCalPreview.previewModel(result.event);
     if (!view.saveable) {
       if (editing) {
@@ -2605,9 +2591,6 @@ function handleWidgetMessage(message, sender) {
   const incognito = !!(sender.tab && sender.tab.incognito);
   const tabId = sender.tab.id;
   const action = message.action;
-  if (["attachment", "upload-panel", "analyze-document", "review-item", "create-approved"].includes(action)) {
-    return handleReviewMessage(message, sender);
-  }
   if (action === "snapshot") {
     return readWidgetSession(incognito).then((state) => ({ ok: true, session: state }));
   }
@@ -2705,16 +2688,11 @@ function handleWidgetMessage(message, sender) {
       );
       if (!begun.accepted) return state;
       operation = begun.state.operation;
-      const proposalDraft = current.mode === "review" && current.review && current.review.source === "request" && current.review.rows.length === 1 && current.review.rows[0].status !== "created"
-        ? current.review.rows[0] : null;
       context = {
-        editing: (current.mode === "saved" || (current.review && current.review.source === "request" && current.review.rows.every(row => row.status === "created"))) && !!current.savedRecord,
-        clarification: current.mode === "clarifying" ? current.clarification : proposalDraft ? {
-          originalText: current.review.originalText || text,
-          draft: self.QuickCalSession.draftFromEvent(proposalDraft.item),
-        } : null,
+        editing: current.mode === "saved" && !!current.savedRecord,
+        clarification: current.mode === "clarifying" ? current.clarification : null,
         savedRecord: current.savedRecord,
-        originalText: proposalDraft ? current.review.originalText || text : current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
+        originalText: current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
       };
       return Object.assign({}, begun.state, {
         input: text,
@@ -2727,8 +2705,6 @@ function handleWidgetMessage(message, sender) {
       }
       const pendingLookup = state.lookup || null;
       const request = { text: text, timeZone: message.timeZone || "UTC" };
-      if (context.clarification) request.timeZone = context.clarification.draft.timeZone;
-      else if (context.editing && context.savedRecord) request.timeZone = context.savedRecord.timeZone;
       if (pendingLookup) request.operation = operationContext(pendingLookup);
       else if (context.clarification) request.clarification = context.clarification;
       else if (context.editing) request.currentEvent = savedPayload(context.savedRecord);

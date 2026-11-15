@@ -27,8 +27,6 @@
       "matches": ["http://*/*", "https://*/*"],
       "js": [
         "shared/schedule.js",
-        "shared/items.js",
-        "shared/review-ui.js",
         "shared/preview.js",
         "shared/startup.js",
         "shared/selection.js",
@@ -43,7 +41,6 @@
     "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/calendar.events.owned",
-      "https://www.googleapis.com/auth/tasks",
       "https://www.googleapis.com/auth/userinfo.email"
     ]
   },
