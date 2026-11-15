@@ -335,6 +335,11 @@ const page = `<!DOCTYPE html>
     const parsesBeforeClose = parses().length;
     const resize = shadow.querySelector(".resize-nw");
     check("resize control", !!resize && resize.getAttribute("aria-label") === "Resize QuickCalAI");
+    check("right resize hit areas are compact", [".resize-ne", ".resize-se"].every((selector) => {
+      const control = shadow.querySelector(selector);
+      const style = getComputedStyle(control);
+      return style.width === "16px" && style.height === "16px";
+    }));
     function curveAligned(label) {
       const card = shadow.querySelector(".card");
       const cardRadius = parseFloat(getComputedStyle(card).borderTopLeftRadius) || 0;
@@ -351,6 +356,9 @@ const page = `<!DOCTYPE html>
     curveAligned("resize on pill curve");
     const hostBox = document.getElementById("quickcal-ai-host").getBoundingClientRect();
     resize.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: hostBox.left + 4, clientY: hostBox.top + 4, pointerId: 1, button: 0 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: hostBox.left + 4, clientY: hostBox.top + 4, pointerId: 1, button: 0 }));
+    const unchanged = document.getElementById("quickcal-ai-host").getBoundingClientRect();
+    check("resize starts without snapping", Math.abs(unchanged.width - hostBox.width) < 0.1 && Math.abs(unchanged.height - hostBox.height) < 0.1);
     window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: hostBox.left - 36, clientY: hostBox.top - 24, pointerId: 1, button: 0 }));
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: hostBox.left - 36, clientY: hostBox.top - 24, pointerId: 1, button: 0 }));
     const grown = document.getElementById("quickcal-ai-host").getBoundingClientRect();

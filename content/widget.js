@@ -1341,6 +1341,8 @@
         width: rect.width,
         height: rect.height,
         scale: widgetScale || 1,
+        pointerX: event.clientX,
+        pointerY: event.clientY,
       };
       try {
         event.currentTarget.setPointerCapture(event.pointerId);

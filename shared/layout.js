@@ -47,12 +47,16 @@
   }
 
   function scaleFromCorner(start, point, corner, viewport) {
-    const widthDelta = corner === "nw" || corner === "sw"
-      ? start.left + start.width - point.x
-      : point.x - start.left;
-    const heightDelta = corner === "nw" || corner === "ne"
-      ? start.top + start.height - point.y
-      : point.y - start.top;
+    const fromLeft = corner === "nw" || corner === "sw";
+    const fromTop = corner === "nw" || corner === "ne";
+    const startX = typeof start.pointerX === "number"
+      ? start.pointerX
+      : (fromLeft ? start.left : start.left + start.width);
+    const startY = typeof start.pointerY === "number"
+      ? start.pointerY
+      : (fromTop ? start.top : start.top + start.height);
+    const widthDelta = start.width + (fromLeft ? startX - point.x : point.x - startX);
+    const heightDelta = start.height + (fromTop ? startY - point.y : point.y - startY);
     const widthScale = start.width > 0 ? widthDelta / start.width : 1;
     const heightScale = start.height > 0 ? heightDelta / start.height : 1;
     const factor = (widthScale + heightScale) / 2;
@@ -64,8 +68,8 @@
     const nextHeight = baseHeight * scale;
     const right = start.left + start.width;
     const bottom = start.top + start.height;
-    const left = corner === "nw" || corner === "sw" ? right - nextWidth : start.left;
-    const top = corner === "nw" || corner === "ne" ? bottom - nextHeight : start.top;
+    const left = fromLeft ? right - nextWidth : start.left;
+    const top = fromTop ? bottom - nextHeight : start.top;
     const position = clampPosition(left, top, nextWidth, nextHeight, viewport);
     return { scale: scale, left: position.left, top: position.top, width: nextWidth, height: nextHeight };
   }
