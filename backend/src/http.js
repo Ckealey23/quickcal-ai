@@ -10,9 +10,10 @@ import { bearerToken } from "./auth.js";
 import { ParseError } from "./parse.js";
 import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.js";
 import { validateRequest } from "./validate.js";
+import { DOCUMENT_TIMEOUT_MS, MAX_DOCUMENT_BODY, validateDocumentRequest } from "./documents.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
-export const QUICKCAL_API_VERSION = 3;
+export const QUICKCAL_API_VERSION = 4;
 
 function publicRelease(value) {
   const release = typeof value === "string" ? value.trim() : "";
@@ -110,18 +111,20 @@ function readLimited(request, maxBytes, tooLarge) {
   });
 }
 
-function readBody(request) {
-  return readLimited(request, MAX_BODY_BYTES, "Request body is too large.").then((buffer) => buffer.toString("utf8"));
+function readBody(request, limit = MAX_BODY_BYTES) {
+  return readLimited(request, limit, "Request body is too large.").then((buffer) => buffer.toString("utf8"));
 }
 
 export function createHandler({
   parseEvent,
+  analyzeDocument = null,
   transcribeAudio = null,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
   rateLimit = null,
   parseTimeoutMs = PARSE_TIMEOUT_MS,
+  documentHeartbeatMs = 10000,
   release = "local",
 }) {
   const quickcalRelease = publicRelease(release);
@@ -151,7 +154,7 @@ export function createHandler({
     }
 
     const url = new URL(request.url || "/", "http://" + HOST);
-    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/access" || url.pathname === "/parse-event" || url.pathname === "/transcribe")) {
+    if (request.method === "OPTIONS" && ["/health", "/access", "/parse-event", "/transcribe", "/analyze-document"].includes(url.pathname)) {
       if (request.headers.origin !== EXTENSION_ORIGIN) {
         sendJson(request, response, 403, { error: "Origin is not allowed." });
         return;
@@ -173,7 +176,7 @@ export function createHandler({
         apiKeyConfigured: Boolean(apiKeyConfigured),
         quickcalApiVersion: QUICKCAL_API_VERSION,
         quickcalRelease: quickcalRelease,
-        capabilities: ["event-notifications", "calendar-operations"],
+        capabilities: ["event-notifications", "calendar-operations", "tasks", "document-review"],
       });
       return;
     }
@@ -278,7 +281,8 @@ export function createHandler({
       }
       return;
     }
-    if (url.pathname !== "/parse-event") {
+    const documentRequest = url.pathname === "/analyze-document";
+    if (url.pathname !== "/parse-event" && !documentRequest) {
       sendJson(request, response, 404, { error: "Not found." });
       return;
     }
@@ -300,7 +304,8 @@ export function createHandler({
       finishUnread(request);
       return;
     }
-    if (length != null && length > MAX_BODY_BYTES) {
+    const bodyLimit = documentRequest ? MAX_DOCUMENT_BODY : MAX_BODY_BYTES;
+    if (length != null && length > bodyLimit) {
       sendJson(request, response, 413, { error: "Request body is too large." });
       request.destroy();
       return;
@@ -334,7 +339,7 @@ export function createHandler({
 
     let raw = "";
     try {
-      raw = await readBody(request);
+      raw = await readBody(request, bodyLimit);
     } catch (error) {
       if (error instanceof ParseError) {
         sendJson(request, response, error.status, { error: error.message });
@@ -352,6 +357,31 @@ export function createHandler({
       return;
     }
 
+    if (documentRequest) {
+      // Flush small JSON whitespace heartbeats on slow analysis. MV3 workers
+      // terminate fetches that wait more than 30 seconds for response headers.
+      const heartbeat = setInterval(() => {
+        if (response.destroyed || response.writableEnded) return;
+        if (!response.headersSent) response.writeHead(200, Object.assign({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }, corsHeaders(request)));
+        response.write("\n");
+      }, documentHeartbeatMs);
+      const finish = (status, body) => {
+        if (response.destroyed || response.writableEnded) return;
+        if (response.headersSent) response.end(JSON.stringify(status >= 400 ? { ...body, error: publicMessage(request, body.error), status } : body));
+        else sendJson(request, response, status, body);
+      };
+      try {
+        const input = validateDocumentRequest(body);
+        if (!analyzeDocument) throw new ParseError(503, "Deploy the current backend to enable document analysis.");
+        const result = await withDeadline(analyzeDocument(input), DOCUMENT_TIMEOUT_MS, "Document analysis timed out. Try a smaller section.");
+        finish(200, result);
+      } catch (error) {
+        finish(error instanceof ParseError ? error.status : 500, {
+          error: error instanceof ParseError ? error.message : "Document analysis could not be completed.",
+        });
+      } finally { clearInterval(heartbeat); }
+      return;
+    }
     const input = validateRequest(body);
     if (!input.ok) {
       sendJson(request, response, 400, { error: input.error });
@@ -384,23 +414,27 @@ export function startServer({
   host = HOST,
   port = 0,
   parseEvent,
+  analyzeDocument = null,
   transcribeAudio = null,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
   rateLimit = null,
   parseTimeoutMs = PARSE_TIMEOUT_MS,
+  documentHeartbeatMs = 10000,
   release = "local",
 }) {
   const server = createServer({ maxHeaderSize: MAX_BODY_BYTES }, (request, response) => {
     createHandler({
       parseEvent,
+      analyzeDocument,
       transcribeAudio,
       apiKeyConfigured,
       requireAuth,
       authenticate,
       rateLimit,
       parseTimeoutMs,
+      documentHeartbeatMs,
       release,
     })(request, response).catch(() => {
       if (!response.headersSent) {
@@ -408,7 +442,7 @@ export function startServer({
       }
     });
   });
-  server.requestTimeout = Math.max(SERVER_REQUEST_TIMEOUT_MS, TRANSCRIBE_TIMEOUT_MS + 15_000);
+  server.requestTimeout = Math.max(SERVER_REQUEST_TIMEOUT_MS, TRANSCRIBE_TIMEOUT_MS + 15_000, DOCUMENT_TIMEOUT_MS + 10000);
   server.headersTimeout = HEADER_TIMEOUT_MS;
   server.keepAliveTimeout = 5_000;
   return new Promise((resolve, reject) => {

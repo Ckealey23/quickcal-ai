@@ -28,6 +28,10 @@
       operation: null,
       voice: null,
       lookup: null,
+      attachment: null,
+      uploadOpen: false,
+      review: null,
+      createdItemKeys: [],
     };
   }
 
@@ -45,6 +49,10 @@
       operation: null,
       voice: null,
       lookup: null,
+      attachment: null,
+      uploadOpen: false,
+      review: null,
+      createdItemKeys: [],
     };
   }
 

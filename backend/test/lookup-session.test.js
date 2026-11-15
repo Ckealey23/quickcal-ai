@@ -25,6 +25,10 @@ const steveEarly = eventItem("series_20261029T000000Z", "Meeting with Steve", "2
 const steveLater = eventItem("other", "Meeting with Steve", "2026-10-29T02:00:00.000Z", "2026-10-29T03:00:00.000Z");
 
 function loadBackground(hooks) {
+  class ReferenceDate extends Date {
+    constructor(...args) { super(...(args.length ? args : ["2026-10-28T19:00:00Z"])); }
+    static now() { return new Date("2026-10-28T19:00:00Z").getTime(); }
+  }
   const sessionStore = {};
   const localStore = {};
   const listeners = {};
@@ -68,7 +72,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return interpreted || {
-              quickcalApiVersion: 3,
+              quickcalApiVersion: 4,
               intent: "clarify",
               timeZone: zone,
               needsClarification: true,
@@ -131,7 +135,7 @@ function loadBackground(hooks) {
     URL,
     URLSearchParams,
     Intl,
-    Date,
+    Date: ReferenceDate,
     JSON,
     Math,
     Number,
@@ -172,7 +176,7 @@ function operationFields(fields) {
 
 function interpreted(intent, fields) {
   return {
-    quickcalApiVersion: 3,
+    quickcalApiVersion: 4,
     quickcalRelease: "test",
     intent: intent,
     timeZone: zone,
@@ -521,7 +525,7 @@ describe("calendar lookup through the service worker", () => {
     hooks.interpret = (request) => {
       if (request.text === "make it 7 PM") {
         return {
-          quickcalApiVersion: 3,
+          quickcalApiVersion: 4,
           intent: "edit",
           title: "Meeting with Steve",
           date: "2026-10-28",

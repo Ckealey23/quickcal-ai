@@ -12,6 +12,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "openai": "7.34.0"
+    "mammoth": "1.13.0",
+    "openai": "7.34.0",
+    "pdfjs-dist": "6.5.438"
   }
 }

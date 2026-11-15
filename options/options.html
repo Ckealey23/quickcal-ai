@@ -8,16 +8,17 @@
   <body>
     <main class="card">
       <h1>QuickCalAI</h1>
-      <p id="lead" class="lead">Connect Google Calendar to start adding events from any webpage.</p>
+      <p id="lead" class="lead">Connect Google Calendar to start adding events and tasks from any webpage.</p>
       <p id="status" class="status connecting" role="status" aria-live="polite">
         Checking your QuickCal connection…
       </p>
       <p id="detail" class="detail" hidden></p>
       <button id="connect" type="button" disabled>Connect Google Calendar</button>
       <button id="disconnect" type="button" hidden disabled>Disconnect</button>
+      <p class="detail">Task access missing? Disconnect and connect again to grant Google Tasks permission.</p>
       <section id="ready" hidden>
         <h2>How to open QuickCalAI</h2>
-        <p>Click the QuickCalAI icon in the Chrome toolbar. On a normal webpage, type an event and press Enter.</p>
+        <p>Click the QuickCalAI icon in the Chrome toolbar. On a normal webpage, type an event or task and press Enter, then review and confirm it. Attach a document with the paperclip to find dates and deadlines.</p>
       </section>
     </main>
     <script src="options.js"></script>

@@ -138,6 +138,8 @@ describe("highlighted text delivery", () => {
     assert.equal(background.scripts.length, 1);
     assert.equal([].join.call(background.scripts[0]), [
       "shared/schedule.js",
+      "shared/items.js",
+      "shared/review-ui.js",
       "shared/preview.js",
       "shared/startup.js",
       "shared/selection.js",

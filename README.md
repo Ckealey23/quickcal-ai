@@ -4,6 +4,50 @@ QuickCalAI — AI-powered Google Calendar Chrome extension for IME4403
 
 Development setup complete. Building QuickCalAI in small, verified increments.
 
+## Tasks, editable times, and document review
+
+QuickCalAI now distinguishes Google Tasks from calendar events. New requests show a compact review before creation. Approve the item, adjust its start/end time if needed, and choose **Create approved items**. The initial input still has no time controls. Existing saved-event edits, calendar lookup, weekly events, and voice input use the existing pipeline.
+
+Click the paperclip at the left of the main input to expand the upload panel. Drop a PDF, DOCX, or UTF-8 TXT file, or choose **Browse Files**. Enter instructions in the same main input, such as “Find project milestones, but ignore weekly status meetings,” then press Enter or **Analyze document**. Empty instructions suggest meaningful dates for review. Analysis never creates anything. The upload panel collapses after successful analysis to leave room for the results; the attached-file indicator remains visible. Open it again to remove or replace the file.
+
+Every extracted item starts **Unreviewed**. Use **Approve**, **Skip**, or **Edit**. Only explicitly approved items enter the final Google requests. Editing resets approval. Missing event dates/times and unresolved source uncertainties block approval; check the source and correct them in **Edit**. Missing end times from documents are never filled with an invented duration. Explicit all-day activities and date ranges are supported. Normal typed requests retain the existing, visibly labeled one-hour default when no duration was specified.
+
+Click a displayed start or end time for a scrollable picker with exactly 288 choices in five-minute steps. Arrow keys, Home/End, Page Up/Down, Enter, Escape, and Tab are supported. An extracted time such as 10:03 stays unchanged until a replacement is selected. Edited dates and IANA zones are retained; invalid ranges and ambiguous/nonexistent daylight-saving times block creation. The same picker is used inside **Edit**.
+
+Modify the main input to refine the active document without uploading it again. Closing the upload panel preserves the file and review. Removing/replacing the document resets its proposals. **New request** and dismissing the whole widget end the current document workflow. The file and proposals are held in Chrome session storage, not written to disk by the backend. Uploads are sent to the authenticated QuickCalAI backend and its existing AI provider. AI response storage is disabled for document requests; provider processing policies still apply. Document contents and filenames are never logged by this feature.
+
+### Required setup
+
+1. Install backend dependencies with `npm ci --prefix backend` and deploy the updated backend. `/health` must report `quickcalApiVersion: 4` and capabilities `tasks` and `document-review`. The updated extension rejects older parser versions to prevent falling back to the old save behavior.
+2. In the **same Google Cloud project** as the existing extension OAuth client, enable **Google Tasks API**. Keep Google Calendar API enabled.
+3. Add `https://www.googleapis.com/auth/tasks` to the OAuth consent configuration. Keep the existing `calendar.events.owned` and `userinfo.email` scopes. The Tasks scope is already included in `manifest.json`; no client secret or new OAuth client is needed. For an app in Testing, keep the intended accounts listed as test users.
+4. Reload QuickCalAI at `chrome://extensions`, reload already-open webpages, then disconnect/reconnect in Extension options to grant the additional Tasks scope. A Tasks authorization/API failure is reported on the failed item and can be retried after fixing access.
+
+The backend adds `POST /analyze-document` behind the existing Google account verification and per-user rate limit. It accepts `{ file: { name, data: "BASE64" }, instructions, timeZone }` and returns validated `{ items, warning }` proposals. Slow responses send JSON whitespace heartbeats for Chrome service-worker compatibility. An error after streaming has begun is a JSON `{ error, status }` envelope; errors before streaming retain their HTTP status. Google writes stay in the extension worker and occur only after approval. Session operation IDs prevent old analysis responses from replacing new work; interrupted workers recover review progress on restart.
+
+New direct dependencies are **mammoth 1.13.0** (DOCX text) and **pdfjs-dist 6.5.438** (PDF text). They run in a backend worker with time/memory limits; TXT needs no additional library. There is no frontend dependency or build step.
+
+### Limits and retry behavior
+
+- Files: 2 MB, up to 100,000 extracted characters, PDF sections up to 200 pages, and up to 50 proposals per analysis. Over-limit documents are rejected; overly broad result sets ask for narrower instructions. Password-protected, corrupt, empty, and image-only documents show errors. OCR is not included.
+- Google Tasks stores **due dates only**. Explicit task times are preserved in notes with the selected time zone; they do not create timed tasks or alarms. Undated tasks remain undated. Tasks are created in the default task list; recurring task creation is not supported.
+- Calendar retries use a stable client-generated event ID. Tasks has no equivalent API idempotency key. QuickCalAI records dispatch before sending, then reconciles an interrupted response using a request marker in task notes. It never blindly reposts an uncertain task. If Google still cannot confirm it, check Google Tasks manually before starting another request. Definite failures can be retried; successful items are excluded.
+- Successful items stay marked as created while reviewing/refining the same workflow. Matching repeated proposals are suppressed using their normalized title, kind, date, and time. AI interpretations and source quotes still need human review, especially for conflicting dates or complex document layouts.
+- At the bottom edge of the viewport, the widget moves upward once before opening the upload panel so its controls remain reachable. With sufficient room, the input stays fixed while the panel unfolds downward. Review results scroll internally; reduced-motion preferences disable the expansion animation.
+
+### Verification checklist
+
+Run `npm test --prefix backend` (Node 24 and Chrome are required for all browser checks; set `CHROME_PATH` if Chrome is installed elsewhere). Automated tests use fixture AI/Google responses and real local document parsing, including actual PDF/DOCX files. They never create real Google items or make paid AI calls. Tests cover typed-event preview, date-only Tasks, five-minute editing, DST checks, file validation, authenticated/rate-limited analysis, explicit approvals, skipped items, partial failures, lost responses, worker recovery, voice regressions, and the assembled extension across Chrome tabs.
+
+After deployment and reconnecting, verify with your own Google account:
+
+1. Submit “Schedule a meeting with Alex tomorrow at 10 AM.” Review, choose a different start/end time, approve, and create it. Check the actual Calendar entry. Submit “Move it to 11 AM” afterward and verify the same saved event changes.
+2. Start a new request: “Remind me to submit my report tomorrow.” Approve/create it and check **Google Tasks**, including its date-only due date. No Calendar event should be created.
+3. Attach a text-based PDF, DOCX, or TXT timeline. Type “Only find meetings” and analyze. Approve one proposal, skip another, edit a time, and create. Check that only the approved item exists. Refine the input and verify the file remains attached.
+4. Try no-match instructions, a document with missing/conflicting dates, an unsupported file, a corrupt file, and an image-only PDF. Verify clear messages and no automatic Google writes. Deny Tasks access and verify a useful per-item error and a safe retry after reconnecting.
+
+Live AI accuracy, real consent, and real Google writes require those manual checks; automated stubs do not verify external account configuration.
+
 ## Install in Chrome
 
 1. Open Chrome and go to `chrome://extensions`.
@@ -149,16 +193,16 @@ Reference customers do not need a local server, `backend/.env`, or Node.js. Afte
 
 ## Event preview and save
 
-With Calendar connected and QuickCalAI ready, the floating bar sends what you type to the hosted parser. A complete event is created immediately. The card says **Creating event…** and then **Event successfully created** only after Google confirms it. If the date and start time are clear and no end time or duration was given, the event lasts one hour and the card says **1-hour default**. Incomplete text asks a question and creates nothing. After a successful save, the field says **Tell me what to change…**. A follow-up such as `Move it to 11 AM` updates that same calendar event. **New event** inside the card starts a separate event.
+With Calendar connected and QuickCalAI ready, the floating bar sends what you type to the hosted parser. A new event or task appears for review; nothing is created until you approve and confirm it. If the date and start time are clear and no end time or duration was given for a typed event, it lasts one hour and the card says **1-hour default**. Incomplete schedules need correction before approval. After a successful calendar save, a follow-up such as `Move it to 11 AM` updates that same event. **New request** starts a separate item.
 
 Customer use does not need a local server. Reload the extension, connect Calendar from the welcome page, and test on `https://example.com`:
 
-- [ ] Click the toolbar icon. Only the rounded input pill opens. The field is focused, the microphone still says **Voice input coming soon**, and a downward chevron inside the pill can hide it.
-- [ ] Type `Coffee with Alex tomorrow from 10 to 10:30 AM` and press Enter. The card says **Creating event…**, then **Event successfully created**, and offers **View in Google Calendar**. Open that link and confirm the event is on your primary calendar.
+- [ ] Click the toolbar icon. The rounded input pill opens with its paperclip and microphone. The field is focused, and the close control hides it.
+- [ ] Type `Coffee with Alex tomorrow from 10 to 10:30 AM` and press Enter. Review it, optionally adjust its times, approve it, and confirm creation. The item says **Created** only after Google confirms it. Choose **View** and check your primary calendar.
 - [ ] Closing and reopening the bar does not create another copy. Pressing Enter again while it is still saving does not either. If saving fails, **Try again** uses the same attempt.
 - [ ] The field now says **Tell me what to change…**. Type `Move it to 11 AM` and press Enter. The same calendar event moves to 11:00 and keeps its previous length. The card updates only after Google confirms the change.
-- [ ] Click **New event**. The next complete sentence creates a separate event.
-- [ ] Type `Coffee with Alex tomorrow at 10 AM` and press Enter. The created event ends one hour later and the card says **1-hour default**.
+- [ ] Click **New request**. The next complete sentence proposes a separate event for approval.
+- [ ] Type `Coffee with Alex tomorrow at 10 AM` and press Enter. The proposal ends one hour later and shows **1-hour default**. Approve and create it.
 - [ ] Type `Coffee with Alex` and press Enter. The card asks for the missing date and time, and nothing is created.
 - [ ] Disconnect on the settings page, submit a complete sentence, and choose **Connect Google Calendar**. The settings page opens and the sentence remains in the bar. Disconnect also clears the event that follow-up edits would change.
 - [ ] If QuickCal is still waking up, the bar says **Connecting to QuickCal…** and the text stays in the field. Pressing Enter again does not send a second parser request. If it stays unavailable, **Try again** appears and the text is still there.
@@ -177,7 +221,7 @@ Test on a normal webpage, such as `https://example.com`. Chrome restricts inject
 
 - [ ] Click the QuickCalAI toolbar icon. The input bar opens near the bottom-right, and the text field is focused.
 - [ ] Type and edit text in the field.
-- [ ] Press Enter. With Calendar connected and QuickCalAI ready, a complete sentence is created after Google confirms it. Incomplete text asks a question and creates nothing.
+- [ ] Press Enter. With Calendar connected and QuickCalAI ready, review the proposed item, approve it, and confirm creation. Incomplete schedules need correction and create nothing.
 - [ ] After a successful save, type a change such as `Move it to 11 AM` and press Enter. That saved event is updated. **New event** returns to creating a separate event.
 - [ ] Hide the pill with the chevron inside it, with Escape, and with the toolbar icon. The same bar toggles, and a second bar never appears.
 - [ ] Narrow the browser window. The bar stays inside the window.

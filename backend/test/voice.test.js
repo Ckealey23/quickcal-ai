@@ -105,7 +105,7 @@ function loadBackground(hooks) {
           async json() {
             return {
               ok: true,
-              quickcalApiVersion: 3,
+              quickcalApiVersion: 4,
               quickcalRelease: "test-revision",
               capabilities: ["event-notifications", "calendar-operations"],
             };

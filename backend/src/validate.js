@@ -4,6 +4,8 @@ import { normalizeCurrentEvent, normalizeDraft, normalizeRecurrence, normalizeRe
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const EVENT_FIELDS = [
+  "kind",
+  "description",
   "title",
   "date",
   "startTime",
@@ -254,11 +256,15 @@ export function validateExtraction(raw, requestedTimeZone) {
   const failure = { ok: false, error: "The model returned an event that failed validation." };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
   const keys = Object.keys(raw);
-  const requiredFields = EVENT_FIELDS.filter((field) => field !== "notificationAction" && field !== "notificationOverrides");
+  const requiredFields = EVENT_FIELDS.filter((field) => !["kind", "description", "notificationAction", "notificationOverrides"].includes(field));
   if (requiredFields.some((field) => !Object.hasOwn(raw, field))) return failure;
   if (keys.some((key) => !EVENT_FIELDS.includes(key))) return failure;
 
   const title = optionalText(raw.title, 200);
+  if (raw.kind != null && !["event", "task"].includes(raw.kind)) return failure;
+  const description = optionalText(raw.description ?? null, 4000);
+  if (!description.ok) return failure;
+  const task = raw.kind === "task";
   const date = optionalDate(raw.date);
   const startTime = optionalTime(raw.startTime);
   const endTime = optionalTime(raw.endTime);
@@ -289,11 +295,11 @@ export function validateExtraction(raw, requestedTimeZone) {
 
   let needsClarification = raw.needsClarification;
   const weekly = recurrence.recurrence && recurrence.recurrence.weekdays.length > 0;
-  if (!calendarIntent && !date.value && !weekly) {
+  if (!task && !calendarIntent && !date.value && !weekly) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");
   }
-  if (!calendarIntent && !startTime.value) {
+  if (!task && !calendarIntent && !startTime.value) {
     needsClarification = true;
     addQuestion(questions, "What time does this event start?");
   }
@@ -315,6 +321,7 @@ export function validateExtraction(raw, requestedTimeZone) {
   return {
     ok: true,
     event: {
+      ...(raw.kind ? { kind: raw.kind, description: description.value } : {}),
       title: title.value,
       date: date.value,
       startTime: startTime.value,
