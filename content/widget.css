@@ -10,21 +10,6 @@
   overflow: visible;
 }
 
-.drag-handle {
-  position: absolute;
-  top: 0;
-  right: 28px;
-  left: 28px;
-  z-index: 2;
-  height: 18px;
-  cursor: grab;
-  pointer-events: auto;
-}
-
-.drag-handle:active {
-  cursor: grabbing;
-}
-
 .panel {
   position: relative;
   width: 100%;

@@ -65,10 +65,6 @@
   const shell = document.createElement("div");
   shell.className = "shell";
 
-  const dragHandle = document.createElement("div");
-  dragHandle.className = "drag-handle";
-  dragHandle.setAttribute("aria-hidden", "true");
-
   function resizeControl(corner) {
     const button = document.createElement("button");
     button.type = "button";
@@ -342,7 +338,7 @@
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.append(resizeNw, resizeNe, resizeSw, resizeSe, card);
-  shell.append(dragHandle, panel, status, selectionChoice, connectRoute, healthRetry);
+  shell.append(panel, status, selectionChoice, connectRoute, healthRetry);
 
   const stylesheet = document.createElement("link");
   stylesheet.rel = "stylesheet";
@@ -364,6 +360,7 @@
   let queuedRemote = null;
   let allowFocus = !shared;
   let dragging = null;
+  let suppressBarClick = false;
   let styled = false;
   let alive = true;
   let pending = false;
@@ -1354,19 +1351,15 @@
       event.stopPropagation();
       return;
     }
-    if (event.target.closest && event.target.closest("button, input, a, textarea")) return;
     dragging = {
       kind: "move",
       pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
       dx: event.clientX - rect.left,
       dy: event.clientY - rect.top,
+      moved: false,
     };
-    try {
-      dragHandle.setPointerCapture(event.pointerId);
-    } catch (error) {
-      // A synthetic pointer can still move the panel without capture.
-    }
-    event.preventDefault();
   }
 
   function onPointerMove(event) {
@@ -1374,6 +1367,17 @@
     const api = globalThis.QuickCalLayout;
     if (!api) return;
     if (dragging.kind === "move") {
+      if (!dragging.moved) {
+        const distance = Math.hypot(event.clientX - dragging.startX, event.clientY - dragging.startY);
+        if (distance < 5) return;
+        dragging.moved = true;
+        try {
+          bar.setPointerCapture(event.pointerId);
+        } catch (error) {
+          // Window listeners still keep the panel moving without capture.
+        }
+      }
+      event.preventDefault();
       const rect = host.getBoundingClientRect();
       const next = api.clampPosition(event.clientX - dragging.dx, event.clientY - dragging.dy, rect.width, rect.height, viewportSize());
       widgetLeft = next.left;
@@ -1392,8 +1396,22 @@
 
   function onPointerUp(event) {
     if (!dragging || event.pointerId !== dragging.pointerId) return;
+    const moved = dragging.kind === "move" && dragging.moved;
     dragging = null;
+    if (moved) {
+      suppressBarClick = true;
+      queueMicrotask(() => {
+        suppressBarClick = false;
+      });
+    }
     publishLayout();
+  }
+
+  function onBarClick(event) {
+    if (!suppressBarClick) return;
+    suppressBarClick = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }
 
   function onResizeKey(event) {
@@ -1840,7 +1858,8 @@
   });
   input.addEventListener("focus", claimLeader);
   window.addEventListener("focus", claimLeader);
-  dragHandle.addEventListener("pointerdown", onPointerDown);
+  bar.addEventListener("pointerdown", onPointerDown);
+  bar.addEventListener("click", onBarClick, true);
   [resizeNw, resizeNe, resizeSw, resizeSe].forEach((button) => {
     button.addEventListener("pointerdown", onPointerDown);
     button.addEventListener("keydown", onResizeKey);
