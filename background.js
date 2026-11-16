@@ -1297,9 +1297,28 @@ async function saveWidgetEventOnce(prepared) {
   );
   if (denied) return denied;
 
-  const stored = await loadDraftEvent();
+  let stored = await loadDraftEvent();
   if (stored && stored.fingerprint === prepared.fingerprint && stored.phase === "created" && stored.htmlLink) {
-    return publicSavedEvent(stored);
+    // A local receipt is not proof that the event still exists: the user can
+    // delete it in Calendar and then submit the same schedule again.
+    const existing = await lookupEvent(stored);
+    const failure = callFailed(existing);
+    if (failure) return { ok: false, error: failure.message || "Google Calendar could not be checked." };
+    const deleted = existing.notFound || existing.status === 410 ||
+      (existing.ok && existing.body && existing.body.status === "cancelled");
+    if (!deleted) {
+      if (!existing.ok) {
+        return { ok: false, error: "QuickCalAI could not verify the previously saved event with Google Calendar. Try again." };
+      }
+      const confirmed = confirmedRecord(stored, existing.body);
+      if (!confirmed) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+      applyScheduleFields(confirmed, stored);
+      await saveDraftEvent(confirmed);
+      return publicSavedEvent(confirmed);
+    }
+    // Google confirmed deletion. This new submission needs a fresh event ID;
+    // reusing a deleted recurring event's ID can conflict with its tombstone.
+    stored = null;
   }
 
   let record = stored;

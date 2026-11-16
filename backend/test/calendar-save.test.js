@@ -10,6 +10,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function loadBackground(hooks) {
   const store = hooks.store || {};
+  const calendar = hooks.calendar || (hooks.calendar = new Map());
   const fetches = [];
   let releasePost = null;
   const listeners = {};
@@ -90,6 +91,12 @@ function loadBackground(hooks) {
       if (String(url).includes("revoke")) {
         return { ok: true, status: 200, async json() { return {}; } };
       }
+      if (String(url).includes("/events/") && (options || {}).method === "GET") {
+        if (hooks.eventReadNetwork) throw new TypeError("Failed to fetch");
+        const id = decodeURIComponent(new URL(url).pathname.split("/events/")[1]);
+        const body = calendar.get(id);
+        return { ok: !!body, status: body ? 200 : 404, async json() { return body || {}; } };
+      }
       if ((options || {}).method === "PATCH") {
         hooks.patches = hooks.patches || [];
         hooks.patchBodies = hooks.patchBodies || [];
@@ -135,17 +142,19 @@ function loadBackground(hooks) {
             },
           };
         }
+        const saved = {
+          id: body.id,
+          summary: body.summary,
+          htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
+          status: "confirmed",
+          reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
+        };
+        calendar.set(body.id, saved);
         return {
           ok: true,
           status: 200,
           async json() {
-            return {
-              id: body.id,
-              summary: body.summary,
-              htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
-              status: "confirmed",
-              reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
-            };
+            return saved;
           },
         };
       }
@@ -231,6 +240,41 @@ function weeklyDraft() {
 }
 
 describe("weekly calendar series", () => {
+  it("recreates a deleted finite schedule, but never duplicates one still present", async () => {
+    for (const deletedState of ["not-found", "cancelled"]) {
+      const hooks = { posts: 0, ids: [], bodies: [] };
+      const loaded = loadBackground(hooks);
+      const event = applySchedule({ ...draft(), title: "Guitar practice", startTime: "09:00", endTime: "10:00", durationDefaulted: false },
+        "Guitar practice every Mon/Wed/Fri in November 2026 except the 4th and 6th", { localDate: "2026-11-15", localTime: "12:00:00" });
+      const submit = () => new Promise(resolve => loaded.listener({ type: "quickcal-calendar", action: "create", event }, sender(), resolve));
+      assert.equal((await submit()).ok, true);
+      const firstId = hooks.ids[0];
+      assert.equal((await submit()).ok, true);
+      assert.equal(hooks.posts, 1);
+      if (deletedState === "not-found") hooks.calendar.delete(firstId);
+      else hooks.calendar.set(firstId, { id: firstId, status: "cancelled" });
+      assert.equal((await submit()).ok, true);
+      assert.equal(hooks.posts, 2, "a deleted schedule requires a fresh Google insert");
+      assert.notEqual(hooks.ids[1], firstId);
+      assert.deepEqual(hooks.bodies[1].recurrence, hooks.bodies[0].recurrence);
+      assert.equal((await submit()).ok, true);
+      assert.equal(hooks.posts, 2);
+    }
+  });
+
+  it("does not report cached success or create a duplicate when Google cannot be checked", async () => {
+    const hooks = { posts: 0, ids: [], bodies: [] };
+    const loaded = loadBackground(hooks);
+    const submit = () => new Promise(resolve => loaded.listener(createMessage(), sender(), resolve));
+    assert.equal((await submit()).ok, true);
+    hooks.eventReadNetwork = true;
+    const retry = await submit();
+    assert.equal(retry.ok, false);
+    assert.equal(hooks.posts, 1);
+    hooks.eventReadNetwork = false;
+    assert.equal((await submit()).ok, true);
+    assert.equal(hooks.posts, 1);
+  });
   it("sends exactly the resolved finite dates and shared time window to Calendar", async () => {
     for (const [text, startTime, endTime, expected] of [
       ["Walk the dog tmr through Saturday 9am–3pm", "09:00", "15:00", [12, 13, 14]],
