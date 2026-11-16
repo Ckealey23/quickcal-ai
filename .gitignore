@@ -1,4 +1,5 @@
 # Logs
+shared/local-config.js
 logs
 *.log
 npm-debug.log*

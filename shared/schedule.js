@@ -483,9 +483,94 @@
     return requestedZone;
   }
 
+  // Resolve finite calendars from the user's local date, never from today's UTC date.
+  function resolveBoundedDates(text, clock) {
+    const source = String(text || "").toLowerCase();
+    if (!clock || !isIsoDate(clock.localDate) || /\b(continuous|continuously|overnight|nonstop|all[- ]day)\b|\b(?:single|one)\s+event\b/.test(source)) return null;
+    const months = "january february march april may june july august september october november december".split(" ");
+    const monthPattern = months.map((name) => name.slice(0, 3) + "(?:" + name.slice(3) + ")?").join("|");
+    const weekdayPattern = "monday|mon|tuesday|tues|tue|wednesday|wed|thursday|thurs|thu|friday|fri|saturday|sat|sunday|sun";
+    const datePattern = "(?:\\d{4}-\\d{2}-\\d{2}|(?:" + monthPattern + ")\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?|today|tomorrow|tmr|(?:" + weekdayPattern + "))";
+    const pieces = source.split(/\b(?:except|excluding)\b/);
+    const main = pieces[0];
+    let start, end;
+    let days = [];
+    const pattern = /\b(?:every|each)\s+(.+?)\s+(?:in|during|from|between)\s+/.exec(main);
+    if (pattern) {
+      const tokens = pattern[1].replace(/\band\b/g, ",").split(/[\s,/&]+/).filter(Boolean);
+      const aliases = { m: "MO", w: "WE", f: "FR", tu: "TU", th: "TH", sa: "SA", su: "SU" };
+      for (const token of tokens) {
+        const found = weekdaysFromText(token);
+        if (aliases[token]) days.push(aliases[token]);
+        else if (found.length) days.push(...found);
+        else return { error: "Which weekdays should I use?" };
+      }
+      days = [...new Set(days)];
+    }
+    function parseDate(value, reference) {
+      if (isIsoDate(value)) return value;
+      if (value === "today") return clock.localDate;
+      if (value === "tomorrow" || value === "tmr") return addDays(clock.localDate, 1);
+      const weekday = weekdaysFromText(value)[0];
+      if (weekday) {
+        for (let offset = 0; offset < 7; offset++) {
+          const date = addDays(reference, offset);
+          if (weekdayCode(date) === weekday) return date;
+        }
+      }
+      const named = new RegExp("^(" + monthPattern + ")\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?$").exec(value);
+      if (!named) return null;
+      const month = months.findIndex((name) => name.slice(0, 3) === named[1].slice(0, 3)) + 1;
+      const date = (named[3] || clock.localDate.slice(0, 4)) + "-" + String(month).padStart(2, "0") + "-" + named[2].padStart(2, "0");
+      return isIsoDate(date) ? date : null;
+    }
+    const range = new RegExp("\\b(" + datePattern + ")\\s+(?:through|thru|to|until|–|-)\\s+(" + datePattern + ")\\b").exec(main);
+    if (!pattern && /\b(?:every|each|weekly)\b/.test(main) && !/\b(?:every|each)\s+day\b/.test(main)) return null;
+    if (range) {
+      if (!pattern && !/\b(?:daily|every day|each day|noon|midnight)\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b/.test(main) && !explicitDurationMinutes(main)) return null;
+      start = parseDate(range[1], clock.localDate);
+      end = parseDate(range[2], start || clock.localDate);
+      if (start && end && end < start && !/\d{4}/.test(range[2]) && new RegExp("^(" + monthPattern + ")").test(range[2])) {
+        end = String(Number(start.slice(0, 4)) + 1) + end.slice(4);
+      }
+    } else if (pattern) {
+      const month = new RegExp("\\b(?:in|during)\\s+(" + monthPattern + ")(?:\\s+(\\d{4}))?\\b").exec(main);
+      if (!month) return null;
+      const number = months.findIndex((name) => name.slice(0, 3) === month[1].slice(0, 3)) + 1;
+      start = (month[2] || clock.localDate.slice(0, 4)) + "-" + String(number).padStart(2, "0") + "-01";
+      end = addDays(start, 31);
+      end = addDays(end.slice(0, 7) + "-01", -1);
+    } else return null;
+    if (!start || !end || end < start) return { error: "What start and end dates should I use?" };
+    const excluded = [];
+    if (pieces.length > 1) {
+      const list = pieces.slice(1).join(",").split(/\s+(?:at\s+)?(?=\d{1,2}(?::\d{2})?\s*(?:am|pm)\b)/)[0].trim().replace(/[.!]$/, "");
+      for (const item of list.split(/\s*(?:,|\band\b|&)\s*/).filter(Boolean)) {
+        const ordinal = /^(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?$/.exec(item);
+        const date = ordinal && start.slice(0, 7) === end.slice(0, 7)
+          ? start.slice(0, 8) + ordinal[1].padStart(2, "0") : parseDate(item, start);
+        if (!date || !isIsoDate(date)) return { error: "Which dates should I exclude?" };
+        excluded.push(date);
+      }
+    }
+    const dates = [];
+    let date = start;
+    for (let count = 0; date <= end && count < 366; count++, date = addDays(date, 1)) {
+      if ((!days.length || days.includes(weekdayCode(date))) && !excluded.includes(date)) dates.push(date);
+    }
+    if (date <= end) return { error: "Please choose a date range of at most one year." };
+    return dates.length ? { dates: dates } : { error: "No dates remain in that schedule. Which dates should I use?" };
+  }
+
   function normalizeRecurrence(value) {
     if (value == null) return { ok: true, recurrence: null };
     if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
+    if (value.frequency === "dates") {
+      if (Object.keys(value).some((key) => key !== "frequency" && key !== "dates") ||
+          !Array.isArray(value.dates) || !value.dates.length || value.dates.length > 366 ||
+          value.dates.some((date) => typeof date !== "string" || !isIsoDate(date))) return { ok: false };
+      return { ok: true, recurrence: { frequency: "dates", dates: [...new Set(value.dates)].sort() } };
+    }
     const allowed = ["frequency", "weekdays", "until", "count"];
     const keys = Object.keys(value);
     for (let index = 0; index < keys.length; index += 1) {
@@ -524,6 +609,7 @@
 
   function seriesProblem(date, recurrence) {
     if (!recurrence) return "";
+    if (recurrence.frequency === "dates") return date === recurrence.dates[0] ? "" : "Which date should these events start on?";
     if (recurrence.until && recurrence.count) {
       return "Should this series end on a date or after a number of occurrences?";
     }
@@ -538,6 +624,7 @@
 
   function recurrenceScheduleText(recurrence) {
     if (!recurrence) return "";
+    if (recurrence.frequency === "dates") return recurrence.dates.length + " scheduled dates";
     const names = canonicalWeekdays(recurrence.weekdays).map((day) => WEEKDAY_LABELS[day]);
     if (names.length === 1) return "Every " + names[0];
     if (names.length === 2) return "Every " + names[0] + " and " + names[1];
@@ -546,6 +633,7 @@
 
   function seriesEndText(recurrence) {
     if (!recurrence) return "";
+    if (recurrence.frequency === "dates") return "Ends " + formatCompactDate(recurrence.dates[recurrence.dates.length - 1]);
     if (recurrence.until) return "Ends " + formatCompactDate(recurrence.until);
     if (recurrence.count === 1) return "Ends after 1 occurrence";
     if (recurrence.count) return "Ends after " + recurrence.count + " occurrences";
@@ -618,8 +706,13 @@
     );
   }
 
-  function buildRecurrenceRule(recurrence, timeZone) {
+  function buildRecurrenceRule(recurrence, timeZone, startTime) {
     if (!recurrence || (recurrence.until && recurrence.count)) return "";
+    if (recurrence.frequency === "dates") {
+      const starts = recurrence.dates.map((date) => resolveLocal(date, startTime, timeZone));
+      if (starts.some((start) => !start.ok)) return "";
+      return "RDATE:" + starts.map((start) => utcBasic(start.epoch)).join(",");
+    }
     const days = canonicalWeekdays(recurrence.weekdays);
     if (!days.length) return "";
     let rule = "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=" + days.join(",");
@@ -677,6 +770,34 @@
   }
 
   function applySchedule(event, sourceText, clock) {
+    const bounded = event.recurrence && event.recurrence.frequency === "dates"
+      ? { dates: event.recurrence.dates }
+      : resolveBoundedDates(sourceText, clock);
+    if (bounded) {
+      if (bounded.error) return ask(blankSchedule(event), bounded.error, null);
+      const dates = bounded.dates;
+      if (event.startTime && event.endTime && event.endTime <= event.startTime) {
+        return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), "What start and end times should each day's event use?", { frequency: "dates", dates: dates });
+      }
+      const timeTokens = String(sourceText || "").match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi) || [];
+      const timeWindows = String(sourceText || "").match(/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:[-–—]|to|until)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/gi) || [];
+      if (timeWindows.length > 1 || (timeTokens.length > 1 && !timeWindows.length)) {
+        return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), "Which dates should use each time window?", { frequency: "dates", dates: dates });
+      }
+      const unresolved = (event.clarificationQuestions || []).filter((question) => /which time|am or pm|select one|which event|different times|which duration/i.test(question));
+      if (unresolved.length) return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), unresolved[0], { frequency: "dates", dates: dates });
+      const duration = explicitDurationMinutes(sourceText);
+      if (duration && duration.ambiguous) return ask(blankSchedule(event), "Which duration should these events use?", null);
+      const base = Object.assign({}, event, { date: dates[0], recurrence: null, clarificationQuestions: [] });
+      const results = dates.map((date) => applySchedule(Object.assign({}, base, { date: date }), duration ? "for " + duration.minutes + " minutes" : "", clock));
+      const next = results.find((item) => item.needsClarification) || results[0];
+      if (results.some((item) => item.endDate && item.endDate !== item.date)) {
+        return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), "Should each event end on the following day?", { frequency: "dates", dates: dates });
+      }
+      next.date = dates[0];
+      if (!event.startTime) next.clarificationQuestions = ["What time should I schedule these events for?"];
+      return attachSeries(next, { frequency: "dates", dates: dates });
+    }
     const next = blankSchedule(event);
     const notificationOnly = event.notificationAction && event.notificationAction !== "preserve" &&
       !event.title && !event.date && !event.startTime && !event.endTime && !event.location && !event.recurrence;
@@ -838,18 +959,18 @@
 
   function applyClarification(extracted, draft, answerText, originalText, clock) {
     const current = draft || {};
-    const title = extracted.title || current.title || null;
+    const title = current.recurrence?.frequency === "dates" ? current.title : extracted.title || current.title || null;
     const date = extracted.date || current.date || null;
     const startTime = extracted.startTime || current.startTime || null;
     const location = extracted.location == null ? current.location || null : extracted.location;
-    const recurrence = extracted.recurrence || current.recurrence || null;
+    const recurrence = current.recurrence?.frequency === "dates" ? current.recurrence : extracted.recurrence || current.recurrence || null;
     const reminders = applyReminderChange(
       current.reminders,
       extracted.notificationAction,
       extracted.notificationOverrides
     ) || normalizeReminderSettings(current.reminders).reminders;
     const answerSetsEnd = mentionsScheduleChange(answerText);
-    const endTime = answerSetsEnd ? extracted.endTime : current.endTime || null;
+    const endTime = answerSetsEnd || current.recurrence?.frequency === "dates" ? extracted.endTime || current.endTime || null : current.endTime || null;
     const source = [originalText, answerText].filter(Boolean).join("\n");
     return applySchedule(
       {
@@ -1094,7 +1215,12 @@
     if (!start.ok || !end.ok || end.epoch <= start.epoch) return null;
     if (event.durationDefaulted && end.epoch - start.epoch !== 60 * 60000) return null;
     if (recurrence && seriesProblem(event.date, recurrence)) return null;
-    const recurrenceRule = recurrence ? buildRecurrenceRule(recurrence, event.timeZone) : "";
+    if (recurrence && recurrence.frequency === "dates" && recurrence.dates.some((date) => {
+      const first = resolveLocal(date, event.startTime, event.timeZone);
+      const last = resolveLocal(date, event.endTime, event.timeZone);
+      return !first.ok || !last.ok || last.epoch <= first.epoch;
+    })) return null;
+    const recurrenceRule = recurrence ? buildRecurrenceRule(recurrence, event.timeZone, event.startTime) : "";
     if (recurrence && !recurrenceRule) return null;
     const title = event.title.trim();
     const location = event.location ? event.location.trim() : "";
@@ -1132,6 +1258,7 @@
   }
 
   root.QuickCalSchedule = {
+    resolveBoundedDates: resolveBoundedDates,
     resolveLocal: resolveLocal,
     applySchedule: applySchedule,
     prepareForSave: prepareForSave,

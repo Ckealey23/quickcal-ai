@@ -288,7 +288,8 @@ export function validateExtraction(raw, requestedTimeZone) {
   }
 
   let needsClarification = raw.needsClarification;
-  const weekly = recurrence.recurrence && recurrence.recurrence.weekdays.length > 0;
+  const weekly = recurrence.recurrence && (recurrence.recurrence.frequency === "dates"
+    ? recurrence.recurrence.dates.length > 0 : recurrence.recurrence.weekdays.length > 0);
   if (!calendarIntent && !date.value && !weekly) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");

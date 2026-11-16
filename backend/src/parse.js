@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from "./config.js";
 import { referenceClock } from "./clock.js";
 import { EVENT_SCHEMA } from "./schema.js";
-import { applyClarification, applyEdit, applySchedule, reminderSettingsText, resolveEventZone } from "./schedule.js";
+import { applyClarification, applyEdit, applySchedule, reminderSettingsText, resolveEventZone, resolveBoundedDates } from "./schedule.js";
 import { validateExtraction } from "./validate.js";
 
 export class ParseError extends Error {
@@ -93,6 +93,7 @@ export function clarificationInput(answer, clarification) {
     "Original request: " + clarification.originalText,
     "Known title: " + (draft.title || "none"),
     "Known date: " + (draft.date || "none"),
+    "Known scheduled dates: " + (draft.recurrence?.frequency === "dates" ? draft.recurrence.dates.join(", ") : "none"),
     "Known startTime: " + (draft.startTime || "none"),
     "Known endTime: " + (draft.endTime || "none"),
     "Known location: " + (draft.location || "none"),
@@ -172,8 +173,12 @@ export function instructionsFor(clock, currentEvent, clarification, operation) {
     "Leave recurrence.until and recurrence.count null when the series has no end. Do not ask for an end date only because it is missing.",
     "If the user gives a series end date, set recurrence.until to that YYYY-MM-DD and leave count null. If the user gives a number of occurrences, set count and leave until null. Do not set both.",
     "If there is no recurrence, set recurrence to null.",
-    "If the repeat pattern is not a weekly series on specific weekdays, including daily, monthly, yearly, or every other week, set recurrence to null, set needsClarification to true, and ask one question. Do not turn that request into a one-time event.",
+    "Finite daily date ranges and weekday patterns within a month or explicit range are supported. tmr means tomorrow. A date range with a daily time window means one timed occurrence per day, inclusive. Explicit continuous or overnight wording must not be split into daily events.",
+    "For a specified month without a year, use the local current year, including earlier dates in that month. An explicit year is exact. Understand m/w/f, Mon/Wed/Fri and full weekday names. Exclusions remove only matching dates; a nonmatching exclusion needs no question.",
+    "For a finite date pattern, return recurrence null: the server resolves the exact dates. Extract the title and shared time window. A missing time stays null; never invent a time or all-day event. Ask only: What time should I schedule these events for? when dates are known but time is missing.",
+    "Unbounded daily, monthly, yearly, or every-other-week patterns still require clarification. Do not turn them into one-time events.",
     "If the text has multiple distinct events, set needsClarification to true and ask the user to select one event. Do not create any of them.",
+    "One activity on multiple resolved dates is supported and is not multiple distinct activities. If different dates need different time windows, ask how the times map to dates; never apply one of those windows silently to every date.",
     "If the text describes an all-day event or an overnight event, set needsClarification to true and ask a question. Do not drop that information and do not turn it into one ordinary same-day timed event.",
     "Ask only for information required to determine the schedule. Coffee with someone and no date or time still needs a date and a start time.",
     "If a date or time is ambiguous, set needsClarification to true and ask a question.",
@@ -226,7 +231,7 @@ export function instructionsFor(clock, currentEvent, clarification, operation) {
           ? " for " + series.count + " occurrences"
           : " with no end date";
       lines.push(
-        "Current recurrence: weekly on " + series.weekdays.join(",") + limit + ".",
+        "Current recurrence: " + (series.frequency === "dates" ? series.dates.join(",") : "weekly on " + series.weekdays.join(",") + limit) + ".",
         "Do not treat an edit as a change to the entire series unless the text explicitly says the entire series, the whole series, or all future occurrences.",
         "If the text does not say that, set needsClarification to true, ask whether the entire weekly series should change, and leave the schedule fields null.",
         "Leave recurrence null when the text does not change the recurrence."
@@ -268,6 +273,8 @@ function readModelEvent(response, timeZone, sourceText, currentEvent, clarificat
   if (!result.ok) throw new ParseError(422, result.error);
   const zone = currentEvent || clarification ? timeZone : resolveEventZone(result.event.timeZone, timeZone, sourceText);
   const event = Object.assign({}, result.event, { timeZone: zone });
+  const bounded = !currentEvent && resolveBoundedDates(clarification ? clarification.originalText : sourceText, referenceClock(now, zone));
+  if (event.intent === "clarify" && bounded && !event.operation.target && (event.title || clarification?.draft.title)) event.intent = "create";
   if (event.intent === "move" || event.intent === "delete" || event.intent === "find" || event.intent === "clarify") {
     return event;
   }

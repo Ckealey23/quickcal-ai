@@ -51,6 +51,23 @@ function fakeClient(response, error) {
 }
 
 describe("model request", () => {
+  it("recovers resolved date patterns from a model date clarification and preserves them through a time answer", async () => {
+    const original = "CPR training every m/w/f in November except the 4th";
+    const responses = [
+      { ...modelEvent(), title: "CPR training", date: null, startTime: null, endTime: null, intent: "clarify", needsClarification: true, clarificationQuestions: ["What date?"] },
+      { ...modelEvent(), title: null, date: null, startTime: "09:00", endTime: "10:00", needsClarification: false, clarificationQuestions: [] },
+    ];
+    const client = { responses: { create: async () => ({ status: "completed", output_text: JSON.stringify(responses.shift()) }) } };
+    const parse = createParser({ apiKey: secret, model: "test", client, now: () => new Date("2026-11-12T02:00:00Z") });
+    const first = await parse({ text: original, timeZone: zone });
+    assert.equal(first.recurrence.dates.length, 12);
+    assert.deepEqual(plain(first.clarificationQuestions), ["What time should I schedule these events for?"]);
+    const answered = await parse({ text: "9am–10am", timeZone: zone, clarification: { originalText: original, draft: first } });
+    assert.deepEqual(plain(answered.recurrence), plain(first.recurrence));
+    assert.equal(answered.needsClarification, false);
+    assert.equal(answered.title, "CPR training");
+    assert.ok(prepareForSave(answered));
+  });
   it("makes one strict Responses call and does not retry", async () => {
     const client = fakeClient({
       status: "completed",

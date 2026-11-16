@@ -89,6 +89,12 @@ const sampleEvent = {
 };
 
 describe("parser messages", () => {
+  it("preserves finite dates across the hosted response boundary", async () => {
+    const loaded = loadBackground(async () => {});
+    const recurrence = { frequency: "dates", dates: ["2026-11-03", "2026-11-10", "2026-11-17", "2026-11-24"] };
+    const event = loaded.sandbox.QuickCalLocalParse.sanitizeEvent({ ...sampleEvent, date: "2026-11-03", recurrence });
+    assert.deepEqual(JSON.parse(JSON.stringify(event.recurrence)), recurrence);
+  });
   it("fetches only the fixed local endpoint once", async () => {
     const calls = [];
     const listener = listen(async (url, options) => {

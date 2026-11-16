@@ -12,6 +12,7 @@ runInContext(
 );
 
 export const applySchedule = sandbox.QuickCalSchedule.applySchedule;
+export const resolveBoundedDates = sandbox.QuickCalSchedule.resolveBoundedDates;
 export const applyEdit = sandbox.QuickCalSchedule.applyEdit;
 export const applyClarification = sandbox.QuickCalSchedule.applyClarification;
 export const normalizeDraft = sandbox.QuickCalSchedule.normalizeDraft;

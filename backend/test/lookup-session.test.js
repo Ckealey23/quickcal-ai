@@ -25,6 +25,11 @@ const steveEarly = eventItem("series_20261029T000000Z", "Meeting with Steve", "2
 const steveLater = eventItem("other", "Meeting with Steve", "2026-10-29T02:00:00.000Z", "2026-10-29T03:00:00.000Z");
 
 function loadBackground(hooks) {
+  // The fixtures are on October 28 locally; do not let the real date change lookup results.
+  class ReferenceDate extends Date {
+    constructor(...args) { super(...(args.length ? args : ["2026-10-28T19:00:00Z"])); }
+    static now() { return new Date("2026-10-28T19:00:00Z").getTime(); }
+  }
   const sessionStore = {};
   const localStore = {};
   const listeners = {};
@@ -131,7 +136,7 @@ function loadBackground(hooks) {
     URL,
     URLSearchParams,
     Intl,
-    Date,
+    Date: ReferenceDate,
     JSON,
     Math,
     Number,

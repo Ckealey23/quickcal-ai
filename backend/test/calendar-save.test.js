@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { applySchedule, applyClarification } from "../src/schedule.js";
 
 const root = path.resolve(import.meta.dirname, "../..");
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -212,6 +213,29 @@ function weeklyDraft() {
 }
 
 describe("weekly calendar series", () => {
+  it("sends exactly the resolved finite dates and shared time window to Calendar", async () => {
+    for (const [text, startTime, endTime, expected] of [
+      ["Walk the dog tmr through Saturday 9am–3pm", "09:00", "15:00", [12, 13, 14]],
+      ["CPR training every m/w/f in November except the 4th", null, null, [2, 6, 9, 11, 13, 16, 18, 20, 23, 25, 27, 30]],
+      ["Walk the dog every Tuesday in November 2026", null, null, [3, 10, 17, 24]],
+    ]) {
+      const clock = { localDate: "2026-11-11", localTime: "12:00:00" };
+      let event = applySchedule({ ...draft(), title: "Activity", date: null, startTime, endTime, clarificationQuestions: [] }, text, clock);
+      if (!startTime) event = applyClarification({ startTime: "09:00", endTime: "10:00", timeZone: event.timeZone }, event, "9am–10am", text, clock);
+      const hooks = { posts: 0, ids: [], bodies: [], patches: [] };
+      const loaded = loadBackground(hooks);
+      const result = await new Promise((resolve) => loaded.listener({ type: "quickcal-calendar", action: "create", event }, sender(), resolve));
+      assert.equal(result.ok, true);
+      assert.equal(hooks.posts, 1);
+      const body = hooks.bodies[0];
+      assert.deepEqual(plain(body.recurrence), ["RDATE:" + expected.map((day) => "202611" + String(day).padStart(2, "0") + "T170000Z").join(",")]);
+      assert.match(body.start.dateTime, /T09:00:00-08:00$/);
+      assert.ok(body.end.dateTime.endsWith("T" + (endTime || "10:00") + ":00-08:00"));
+      const retry = await new Promise((resolve) => loaded.listener({ type: "quickcal-calendar", action: "create", event }, sender(), resolve));
+      assert.equal(retry.ok, true);
+      assert.equal(hooks.posts, 1);
+    }
+  });
   it("creates one series, keeps 6 PM local across daylight saving, and does not duplicate it on retry", async () => {
     const hooks = { posts: 0, ids: [], bodies: [], patches: [], holdPost: true };
     const loaded = loadBackground(hooks);

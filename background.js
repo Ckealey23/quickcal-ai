@@ -1,3 +1,13 @@
+// Optional machine-local configuration for unpacked development installs.
+// Store installs always use the hosted backend; the override is never committed.
+if (typeof chrome.runtime.getManifest === "function" && !chrome.runtime.getManifest().update_url) {
+  try {
+    importScripts("shared/local-config.js");
+  } catch (error) {
+    // No local override is the normal production configuration.
+  }
+}
+
 importScripts(
   "shared/schedule.js",
   "shared/test-event.js",

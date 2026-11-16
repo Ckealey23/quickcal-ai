@@ -288,12 +288,14 @@ function connect(wsUrl) {
   const ws = new WebSocket(wsUrl);
   let next = 1;
   const pending = new Map();
+  const events = [];
   const opened = new Promise((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("Could not connect to Chrome.")));
   });
   ws.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
+    if (!data.id) events.push(data);
     if (!data.id || !pending.has(data.id)) return;
     const waiter = pending.get(data.id);
     pending.delete(data.id);
@@ -301,6 +303,7 @@ function connect(wsUrl) {
     else waiter.resolve(data.result);
   });
   return {
+    events,
     ready: opened,
     send(method, params) {
       const id = next;
@@ -345,6 +348,8 @@ describe("real Chrome tabs", () => {
     const origin = "http://127.0.0.1:" + port;
     const profile = mkdtempSync(path.join(tmpdir(), "quickcal-tabs-"));
     const chrome = spawn(chromePath, [
+      "--headless=new",
+      "--disable-gpu",
       "--user-data-dir=" + profile,
       "--remote-debugging-port=0",
       "--enable-unsafe-extension-debugging",
@@ -369,11 +374,16 @@ describe("real Chrome tabs", () => {
       async function attachWorker(previousUrl) {
         const worker = await waitFor(async () => {
           const list = await targets(debugPort);
-          return list.find((item) => item.type === "service_worker" && item.url.includes("background.js") && item.webSocketDebuggerUrl !== previousUrl) || null;
+          return list.find((item) => item.type === "service_worker" && item.url === "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/background.js" && item.webSocketDebuggerUrl !== previousUrl) || null;
         }, (item) => !!item, "extension service worker", previousUrl ? 15000 : 8000);
         const attached = connect(worker.webSocketDebuggerUrl);
         await attached.ready;
         await attached.send("Runtime.enable");
+        await attached.send("Runtime.runIfWaitingForDebugger");
+        await waitFor(async () => {
+          const value = await attached.send("Runtime.evaluate", { expression: "typeof self.quickcalToggleWidget", returnByValue: true });
+          return { state: value.result && value.result.value, errors: attached.events.filter(event => event.method === "Runtime.exceptionThrown") };
+        }, value => value.state === "function", "extension worker did not initialize");
         return attached;
       }
       client = await attachWorker();

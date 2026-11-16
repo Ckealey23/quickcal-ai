@@ -13,6 +13,51 @@ Development setup complete. Building QuickCalAI in small, verified increments.
 
 After later code changes, click the reload icon on the QuickCalAI card.
 
+## Testing finite schedules locally
+
+Finite daily windows and weekday patterns within a month resolve to explicit dates.
+A month without a year uses the user's local current year, including past dates in
+that month. Exclusions are removed before saving. Missing times prompt for a time;
+an omitted duration uses the existing one-hour default. Calendar receives a finite
+`RDATE` list: separate timed occurrences linked as one bounded schedule, with no
+indefinite repetition. Date ranges are limited to 366 days. Different time windows
+within one request and overnight schedules still require clarification.
+
+With Node 24 or newer installed, from the repository folder:
+
+```sh
+npm ci --prefix backend
+node --test backend/test/bounded-schedule.test.js backend/test/parse.test.js backend/test/local-parse.test.js backend/test/calendar-save.test.js
+npm test --prefix backend
+```
+
+These tests mock model and Calendar calls and create no real events. They use fixed
+reference dates for schedule assertions. No extension build is required. Reload
+QuickCalAI at `chrome://extensions`, then refresh the webpage containing the bar.
+
+The extension uses the hosted parser by default; reloading it does not deploy backend changes.
+For an unpacked local test, create the Git-ignored `shared/local-config.js` containing
+`self.QuickCalUseLocalBackend = true;`. Start the local backend, reload the extension,
+and refresh the webpage. Parsing, health checks, access checks, and transcription
+then use `http://127.0.0.1:3000`. Google Calendar still receives real events.
+Set the flag to `false` and reload to switch back to the hosted server.
+Never include `shared/local-config.js` in a distributed extension ZIP.
+To test the updated parser locally, configure `backend/.env` as described below,
+run `npm start --prefix backend`, and in another terminal run:
+
+```sh
+curl http://127.0.0.1:3000/parse-event \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"CPR training every m/w/f in November 2026 except the 4th","timeZone":"America/Los_Angeles"}'
+```
+
+This parser-only request calls the model but does not create Calendar events.
+Check `recurrence.dates` for 12 dates and a time-only clarification. To test a
+follow-up, send `text: "9am–10am"` with the same timezone and a `clarification`
+object containing `originalText` and the returned event as `draft`. The dates
+must remain unchanged. Other users using the hosted server need the updated
+backend to be deployed separately.
+
 ## Development extension ID
 
 The `key` in `manifest.json` is this extension's public key. Chrome derives the extension ID from that key, so loading this folder unpacked keeps the same ID after every reload and on every machine that uses this manifest. Google OAuth needs that stable ID. Leave the key in place during normal development; replacing it creates a different extension ID.

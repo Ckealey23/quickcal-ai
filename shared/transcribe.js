@@ -1,5 +1,7 @@
 (function (root) {
-  const TRANSCRIBE_URL = "https://quickcal-ai.onrender.com/transcribe";
+  const TRANSCRIBE_URL = (root.QuickCalLocalParse
+    ? root.QuickCalLocalParse.BACKEND_ORIGIN
+    : "https://quickcal-ai.onrender.com") + "/transcribe";
   const MAX_AUDIO_BYTES = 4 * 1024 * 1024;
   const TIMEOUT_MS = 45000;
 

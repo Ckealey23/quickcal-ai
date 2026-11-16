@@ -54,7 +54,7 @@
       if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
     });
     const endDate = event.endDate || event.date;
-    const recurring = event.recurrence && event.recurrence.frequency === "weekly";
+    const recurring = !!event.recurrence;
     const saveable =
       event.needsClarification !== true &&
       !!event.title &&

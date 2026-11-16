@@ -1,7 +1,10 @@
 (function (root) {
-  const PARSE_URL = "https://quickcal-ai.onrender.com/parse-event";
-  const HEALTH_URL = "https://quickcal-ai.onrender.com/health";
-  const ACCESS_URL = "https://quickcal-ai.onrender.com/access";
+  const BACKEND_ORIGIN = root.QuickCalUseLocalBackend === true
+    ? "http://127.0.0.1:3000"
+    : "https://quickcal-ai.onrender.com";
+  const PARSE_URL = BACKEND_ORIGIN + "/parse-event";
+  const HEALTH_URL = BACKEND_ORIGIN + "/health";
+  const ACCESS_URL = BACKEND_ORIGIN + "/access";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
   const API_VERSION = 3;
@@ -384,6 +387,7 @@
   }
 
   root.QuickCalLocalParse = {
+    BACKEND_ORIGIN: BACKEND_ORIGIN,
     PARSE_URL: PARSE_URL,
     HEALTH_URL: HEALTH_URL,
     ACCESS_URL: ACCESS_URL,
