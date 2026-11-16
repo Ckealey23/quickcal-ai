@@ -1371,9 +1371,18 @@
 
 .invite-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   width: 100%;
   margin: 0;
+}
+
+.invite-help {
+  flex-basis: 100%;
+  margin: 0;
+  color: #7a7f8a;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .guest-email {

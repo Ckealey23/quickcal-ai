@@ -1837,10 +1837,13 @@ function inviteWidgetGuest(message) {
 }
 
 async function inviteWidgetGuestOnce(message) {
-  const email = typeof message.email === "string" ? message.email.trim().toLowerCase() : "";
-  if (email.length > 254 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email)) {
-    return { ok: false, error: "Enter a valid email address." };
+  const addresses = message.emails === undefined ? [message.email] : message.emails;
+  if (!Array.isArray(addresses) || !addresses.length || addresses.some(email =>
+      typeof email !== "string" || email.trim().length > 254 ||
+      !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email.trim()))) {
+    return { ok: false, error: "Enter valid email addresses separated by commas." };
   }
+  const emails = [...new Set(addresses.map(email => email.trim().toLowerCase()))];
   if (await isSuppressed()) return { ok: false, error: "Connect Google Calendar before inviting people." };
   const stored = await loadDraftEvent();
   if (!stored || stored.phase !== "created" || !message.eventId || stored.id !== message.eventId ||
@@ -1864,8 +1867,10 @@ async function inviteWidgetGuestOnce(message) {
   const event = read.body;
   if (event.attendeesOmitted) return { ok: false, error: "Google Calendar did not return the full guest list. Try again." };
   const attendees = Array.isArray(event.attendees) ? event.attendees : [];
-  if (attendees.some((guest) => String(guest.email || "").toLowerCase() === email)) {
-    return { ok: true, email, alreadyInvited: true };
+  const existingEmails = new Set(attendees.map(guest => String(guest.email || "").toLowerCase()));
+  const newEmails = emails.filter(email => !existingEmails.has(email));
+  if (!newEmails.length) {
+    return { ok: true, email: emails[0], emails, alreadyInvited: true };
   }
   // Recheck after network reads: never apply a send to a replacement draft.
   const active = await loadDraftEvent();
@@ -1875,7 +1880,7 @@ async function inviteWidgetGuestOnce(message) {
   const result = await calendarCall(url + "?sendUpdates=all", {
     method: "PATCH",
     headers: event.etag ? { "If-Match": event.etag } : {},
-    body: JSON.stringify({ attendees: attendees.concat({ email }) }),
+    body: JSON.stringify({ attendees: attendees.concat(newEmails.map(email => ({ email }))) }),
   });
   const failure = callFailed(result);
   if (failure) return { ok: false, error: failure.message };
@@ -1886,10 +1891,11 @@ async function inviteWidgetGuestOnce(message) {
   if (result.status === 403) return { ok: false, error: "Google Calendar did not allow this invitation. Check that you can invite guests to this event." };
   const confirmed = result.body;
   if (!result.ok || !confirmed || confirmed.id !== stored.id || confirmed.status === "cancelled" ||
-      !Array.isArray(confirmed.attendees) || !confirmed.attendees.some((guest) => String(guest.email || "").toLowerCase() === email)) {
+      !Array.isArray(confirmed.attendees) || !emails.every(email =>
+        confirmed.attendees.some(guest => String(guest.email || "").toLowerCase() === email))) {
     return { ok: false, error: "Google Calendar did not confirm the invitation. Check the event before trying again." };
   }
-  return { ok: true, email };
+  return { ok: true, email: newEmails[0], emails: newEmails };
 }
 
 async function activeWidgetEvent() {

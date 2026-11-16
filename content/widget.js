@@ -321,17 +321,22 @@
   addPeople.setAttribute("aria-controls", inviteForm.id);
   const guestEmail = document.createElement("input");
   guestEmail.type = "email";
+  guestEmail.multiple = true;
   guestEmail.className = "guest-email";
   guestEmail.placeholder = "name@gmail.com";
-  guestEmail.setAttribute("aria-label", "Guest email address");
+  guestEmail.setAttribute("aria-label", "Guest email addresses");
+  guestEmail.setAttribute("aria-describedby", "quickcal-invite-help");
   guestEmail.required = true;
-  guestEmail.maxLength = 254;
   guestEmail.autocomplete = "email";
   const sendInvite = document.createElement("button");
   sendInvite.type = "submit";
   sendInvite.className = "send-invite";
   sendInvite.textContent = "Send";
-  inviteForm.append(guestEmail, sendInvite);
+  const inviteHelp = document.createElement("p");
+  inviteHelp.id = "quickcal-invite-help";
+  inviteHelp.className = "invite-help";
+  inviteHelp.textContent = "Seperate emails using commas.";
+  inviteForm.append(guestEmail, sendInvite, inviteHelp);
   const inviteStatus = document.createElement("p");
   inviteStatus.className = "invite-status";
   inviteStatus.hidden = true;
@@ -3945,7 +3950,11 @@
     if (inviteSending || !savedRecord || !inviteEventId || mode !== "saved") return;
     guestEmail.value = guestEmail.value.trim();
     if (!guestEmail.reportValidity()) return;
-    const email = guestEmail.value.toLowerCase();
+    const emails = [...new Set(guestEmail.value.split(",").map(email => email.trim().toLowerCase()))];
+    if (emails.some(email => !email || email.length > 254)) {
+      showInviteStatus("Enter valid email addresses separated by commas.", true);
+      return;
+    }
     const eventId = inviteEventId;
     const generation = ++inviteGeneration;
     inviteSending = true;
@@ -3956,11 +3965,15 @@
     try {
       const result = await chrome.runtime.sendMessage({
         type: "quickcal-calendar", action: "invite", eventId,
-        calendarId: savedRecord.calendarId || "primary", email,
+        calendarId: savedRecord.calendarId || "primary",
+        ...(emails.length === 1 ? { email: emails[0] } : { emails }),
       });
       if (!alive || generation !== inviteGeneration || inviteEventId !== eventId) return;
       if (result && result.ok) {
-        showInviteStatus(result.alreadyInvited ? email + " is already on the guest list." : "Invitation sent to " + email + ".", false);
+        const invited = result.emails || emails;
+        showInviteStatus(result.alreadyInvited
+          ? emails.join(", ") + (emails.length === 1 ? " is" : " are") + " already on the guest list."
+          : (invited.length === 1 ? "Invitation sent to " : "Invitations sent to ") + invited.join(", ") + ".", false);
         guestEmail.value = "";
       } else {
         showInviteStatus(result && result.error || "The invitation was not confirmed. Check the event and try again.", true);

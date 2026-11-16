@@ -279,6 +279,10 @@ const page = `<!DOCTYPE html>
     check("add people appears only after save", !shadow.querySelector(".people").hidden && inviteForm.hidden);
     addPeople.click();
     check("add people opens email field", !inviteForm.hidden && shadow.activeElement === guestEmail);
+    const inviteHelp = shadow.querySelector(".invite-help");
+    check("comma instructions below the field", inviteHelp.textContent === "Seperate emails using commas." &&
+      inviteHelp.getBoundingClientRect().top >= guestEmail.getBoundingClientRect().bottom &&
+      guestEmail.getAttribute("aria-describedby") === inviteHelp.id);
     const parsesBeforeInvite = parses().length;
     guestEmail.value = "guest@gmail.com";
     nextResult = { ok: true, email: "guest@gmail.com" };
@@ -290,6 +294,25 @@ const page = `<!DOCTYPE html>
     release();
     await settle();
     check("invitation confirmation", shadow.querySelector(".invite-status").textContent === "Invitation sent to guest@gmail.com." && !sendInvite.disabled && guestEmail.value === "");
+    guestEmail.value = "one@gmail.com, invalid";
+    inviteForm.requestSubmit();
+    check("invalid address blocks whole send", invitations().length === 1 && !guestEmail.checkValidity());
+    guestEmail.value = " One@gmail.com , two@gmail.com, ONE@gmail.com ";
+    nextResult = { ok: true, emails: ["one@gmail.com", "two@gmail.com"] };
+    inviteForm.requestSubmit();
+    check("multiple guests sent together", invitations().length === 2 &&
+      JSON.stringify(invitations()[1].emails) === JSON.stringify(["one@gmail.com", "two@gmail.com"]));
+    release();
+    await settle();
+    check("multiple invitations confirmed", shadow.querySelector(".invite-status").textContent ===
+      "Invitations sent to one@gmail.com, two@gmail.com." && guestEmail.value === "");
+    guestEmail.value = "three@gmail.com, four@gmail.com";
+    nextResult = { ok: false, error: "Google Calendar did not allow this invitation." };
+    inviteForm.requestSubmit();
+    release();
+    await settle();
+    check("failed send preserves entire list", guestEmail.value.split(",").map(email => email.trim()).join(", ") === "three@gmail.com, four@gmail.com" &&
+      shadow.querySelector(".invite-status").classList.contains("error") && !sendInvite.disabled);
     guestEmail.value = "another@gmail.com";
     nextResult = { ok: false, error: "Google Calendar did not allow this invitation." };
     inviteForm.requestSubmit();

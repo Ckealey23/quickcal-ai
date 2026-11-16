@@ -783,6 +783,39 @@ describe("saved event invitations", () => {
     assert.equal(again.alreadyInvited, true);
   });
 
+  it("adds multiple guests in one send, normalizes addresses, and skips existing guests", async () => {
+    const { hooks, invite } = await setup();
+    const emails = [" One@gmail.com ", "two@gmail.com", "ONE@gmail.com", "EXISTING@gmail.com"];
+    const result = await invite(undefined, { emails });
+    assert.equal(result.ok, true);
+    assert.deepEqual(Array.from(result.emails), ["one@gmail.com", "two@gmail.com"]);
+    assert.equal(hooks.patches.length, 1);
+    assert.deepEqual(hooks.patchBodies[0].attendees, [
+      { email: "existing@gmail.com", responseStatus: "accepted" },
+      { email: "one@gmail.com" }, { email: "two@gmail.com" },
+    ]);
+    assert.equal((await invite(undefined, { emails })).alreadyInvited, true);
+    assert.equal(hooks.patches.length, 1);
+  });
+
+  it("validates the entire list before writing any guests", async () => {
+    const { hooks, invite } = await setup();
+    for (const emails of [[], null, "one@gmail.com", ["one@gmail.com", ""],
+      ["one@gmail.com", "invalid"], ["one@gmail.com", 42],
+      ["one@gmail.com", "a".repeat(250) + "@gmail.com"]]) {
+      assert.equal((await invite(undefined, { emails })).ok, false);
+    }
+    assert.equal(hooks.patches, undefined);
+  });
+
+  it("requires confirmation of every address before reporting a successful send", async () => {
+    const { hooks, invite } = await setup();
+    hooks.inviteMismatch = true;
+    const result = await invite(undefined, { emails: ["existing@gmail.com", "new@gmail.com"] });
+    assert.equal(result.ok, false);
+    assert.equal(hooks.patches.length, 1);
+  });
+
   it("serializes simultaneous sends without losing guests", async () => {
     const { hooks, invite } = await setup();
     const results = await Promise.all([invite("one@gmail.com"), invite("two@gmail.com"), invite("one@gmail.com")]);
