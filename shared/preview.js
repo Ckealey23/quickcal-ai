@@ -85,6 +85,13 @@
     return clock ? "Due " + clock.text + " " + clock.suffix : "";
   }
 
+  // The Google Tasks API keeps only a due date, so a stated time is written
+  // into the task's title, where it shows in every Tasks list.
+  function taskTitleWithTime(title, time) {
+    const clock = formatClock(time);
+    return clock ? title + " (" + clock.text + " " + clock.suffix + ")" : title;
+  }
+
   // Google Tasks keeps a due date only, so a stated due time is shown here and
   // written into the task notes rather than dropped.
   function taskModel(event, questions) {
@@ -163,6 +170,7 @@
     formatTimeRange: formatTimeRange,
     previewModel: previewModel,
     taskDueTime: taskDueTime,
+    taskTitleWithTime: taskTitleWithTime,
     tasksLink: trustedTasksUrl,
     calendarEditLink: calendarEditLink,
     calendarViewLink: calendarViewLink,

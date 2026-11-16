@@ -1554,7 +1554,7 @@ function tasksLink(value) {
 }
 
 // Google Tasks stores only the date part of `due`, so a stated due time goes
-// into the notes where the user can still see it.
+// into the task's title, e.g. "Call Mom (6:00 PM)".
 function prepareTask(event) {
   if (!event || event.kind !== "task" || event.needsClarification) return null;
   const title = typeof event.title === "string" ? event.title.trim() : "";
@@ -1564,11 +1564,12 @@ function prepareTask(event) {
   const dueTime = event.startTime == null ? null : event.startTime;
   if (dueTime !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime)) return null;
   const description = typeof event.description === "string" ? event.description.trim().slice(0, 1000) : "";
-  const dueText = self.QuickCalPreview.taskDueTime(dueTime);
-  const notes = [description, dueText ? dueText + "." : "", WIDGET_DESCRIPTION].filter(Boolean).join("\n\n");
+  const taskTitle = self.QuickCalPreview.taskTitleWithTime(title, dueTime);
+  const notes = [description, WIDGET_DESCRIPTION].filter(Boolean).join("\n\n");
   return {
-    fingerprint: JSON.stringify({ kind: "task", title: title, date: date, dueTime: dueTime, notes: notes }),
+    fingerprint: JSON.stringify({ kind: "task", title: taskTitle, date: date, dueTime: dueTime, notes: notes }),
     title: title,
+    taskTitle: taskTitle,
     notes: notes,
     due: date ? date + "T00:00:00.000Z" : null,
     date: date,
@@ -1605,7 +1606,7 @@ function publicSavedTask(prepared, body) {
 
 function confirmedTask(prepared, body) {
   if (!body || typeof body.id !== "string" || !body.id || body.deleted === true) return false;
-  if (body.title !== prepared.title || (body.notes || "") !== prepared.notes) return false;
+  if (body.title !== prepared.taskTitle || (body.notes || "") !== prepared.notes) return false;
   const due = typeof body.due === "string" ? body.due.slice(0, 10) : null;
   return due === prepared.date;
 }
@@ -1677,7 +1678,7 @@ async function saveWidgetTaskOnce(prepared) {
   } catch (error) {
     return { ok: false, error: "QuickCalAI could not save this task request." };
   }
-  const body = { title: prepared.title, notes: prepared.notes };
+  const body = { title: prepared.taskTitle, notes: prepared.notes };
   if (prepared.due) body.due = prepared.due;
   const created = await calendarCall(taskInsertUrl(), { method: "POST", body: JSON.stringify(body) });
   if (created.ok && confirmedTask(prepared, created.body)) {
@@ -4753,7 +4754,7 @@ async function findDocumentTask(item, since) {
 }
 
 async function insertDocumentTask(item, fileName, since) {
-  const body = self.QuickCalDocuments.taskBody(item, fileName, self.QuickCalPreview.taskDueTime(item.startTime));
+  const body = self.QuickCalDocuments.taskBody(item, fileName, self.QuickCalPreview.taskTitleWithTime(item.title, item.startTime));
   if (!body) return { ok: false, error: "This task needs a title." };
   const saved = (task) => ({ ok: true, kind: "task", id: task.id, link: tasksLink(task.webViewLink) });
   if (item.result) {

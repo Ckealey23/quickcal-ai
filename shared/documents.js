@@ -282,16 +282,16 @@
     return body;
   }
 
-  // Google Tasks keeps only a due date, so a stated time goes into the notes.
-  // The reference line lets a retry recognize a task that was already saved.
-  function taskBody(item, fileName, dueText) {
+  // Google Tasks keeps only a due date, so the caller passes the title with
+  // any stated time already added. The reference line lets a retry recognize
+  // a task that was already saved.
+  function taskBody(item, fileName, titleWithTime) {
     if (item.kind !== "task" || itemProblem(item)) return null;
     const notes = [
       sourceNote(item, fileName),
-      dueText ? dueText + "." : "",
       "Created by QuickCalAI (ref " + item.ref + ").",
     ].filter(Boolean).join("\n\n");
-    const body = { title: item.title, notes: notes };
+    const body = { title: titleWithTime || item.title, notes: notes };
     if (item.date) body.due = item.date + "T00:00:00.000Z";
     return body;
   }

@@ -233,7 +233,7 @@ Reference customers do not need a local server, `backend/.env`, or Node.js. Afte
 
 ## Google Tasks
 
-A to-do request such as `Remind me to submit my report tomorrow`, `Add buy groceries to my tasks`, or `I need to finish chapter 7 by Wednesday` creates a Google Task in the default task list instead of a calendar event. It is saved immediately, like an event, and the card says **Task successfully created** with **View in Google Tasks**. A task keeps its due date when one is given and has no due date otherwise. Google Tasks stores only the date part of a due time, so a stated time such as `by 5 PM` is written into the task notes and shown on the card. QuickCalAI never invents a due date or time, does not create repeating tasks (it asks instead), and does not edit a task after it is created.
+A to-do request such as `Remind me to submit my report tomorrow`, `Add buy groceries to my tasks`, or `I need to finish chapter 7 by Wednesday` creates a Google Task in the default task list instead of a calendar event. It is saved immediately, like an event, and the card says **Task successfully created** with **View in Google Tasks**. A task keeps its due date when one is given and has no due date otherwise. The Google Tasks API stores only a due date and cannot set a task's time, so a stated time such as `at 6 PM` is added to the task's title, for example **Call Mom (6:00 PM)**, and shown on the card. Google does not send a reminder at that time. QuickCalAI never invents a due date or time, does not create repeating tasks (it asks instead), and does not edit a task after it is created.
 
 ## Changing a saved event's time
 

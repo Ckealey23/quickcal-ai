@@ -235,9 +235,9 @@ describe("document approval and creation", () => {
     assert.equal(env.calendarPosts[0].start.dateTime, "2026-10-10T15:05:00-07:00");
     assert.equal(env.calendarPosts[0].end.dateTime, "2026-10-10T16:35:00-07:00");
     assert.equal(env.taskPosts.length, 1);
-    assert.equal(env.taskPosts[0].title, "Final Exam");
+    assert.equal(env.taskPosts[0].title, "Final Exam (8:00 AM)");
     assert.equal(env.taskPosts[0].due, "2026-12-14T00:00:00.000Z");
-    assert.match(env.taskPosts[0].notes, /Due 8:00 AM\./);
+    assert.doesNotMatch(env.taskPosts[0].notes, /8:00 AM/);
     assert.equal(created.session.doc.message, "Created 1 event and 1 task.");
   });
 

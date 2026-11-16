@@ -1351,7 +1351,7 @@
       seriesEndText: result.seriesEndText || "",
       remindersText: result.remindersText || "",
       changeText: task && result.startTime
-        ? "Google Tasks saves due dates only, so the due time is in the task notes."
+        ? "Google Tasks can't store a time, so it's added to the task's title."
         : result.changeText || "",
     });
     fillList(questionList, []);
@@ -1551,7 +1551,7 @@
     if (item.kind === "event" && item.startTime && api.effectiveEnd(item).defaulted) {
       notes.push("End time not in the document. 1 hour is assumed.");
     }
-    if (item.kind === "task" && item.startTime) notes.push("Google Tasks saves the due time in the task notes.");
+    if (item.kind === "task" && item.startTime) notes.push("Google Tasks can't store a time, so it's added to the task's title.");
     const problem = item.decision !== "approved" && !(item.result && item.result.ok) ? api.itemProblem(item) : "";
     if (problem) notes.push("Before approving: " + problem.toLowerCase().replace(/.$/, "") + ".");
     return notes;

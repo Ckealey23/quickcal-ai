@@ -234,17 +234,24 @@ describe("Google Tasks save", () => {
     assert.match(api.calls.inserts[0].notes, /Created by QuickCalAI/);
   });
 
-  it("records a stated due time in the notes and leaves an undated task undated", async () => {
+  it("puts a stated time in the task title and leaves an undated task undated", async () => {
     const api = tasksApi();
     const loaded = loadBackground({ route: api.route });
-    const timed = await loaded.ask({ type: "quickcal-calendar", action: "create", event: taskEvent({ startTime: "17:00", description: "Send to Dana" }) });
+    const timed = await loaded.ask({ type: "quickcal-calendar", action: "create", event: taskEvent({ startTime: "18:00", description: "Send to Dana" }) });
     assert.equal(timed.ok, true);
-    assert.equal(timed.timeText, "Due 5:00 PM");
-    assert.equal(api.calls.inserts[0].notes, "Send to Dana\n\nDue 5:00 PM.\n\nCreated by QuickCalAI.");
+    assert.equal(timed.timeText, "Due 6:00 PM");
+    assert.equal(timed.title, "Submit report", "the card shows the plain title beside the time");
+    assert.equal(api.calls.inserts[0].title, "Submit report (6:00 PM)");
+    assert.equal(api.calls.inserts[0].notes, "Send to Dana\n\nCreated by QuickCalAI.");
+    assert.equal(api.calls.inserts[0].due, "2026-11-17T00:00:00.000Z");
+    const again = await loaded.ask({ type: "quickcal-calendar", action: "create", event: taskEvent({ startTime: "18:00", description: "Send to Dana" }) });
+    assert.equal(again.id, timed.id, "the titled task is recognized on a repeat, not duplicated");
+    assert.equal(api.calls.inserts.length, 1);
     const undated = await loaded.ask({ type: "quickcal-calendar", action: "create", event: taskEvent({ title: "Buy groceries", date: null, endDate: null }) });
     assert.equal(undated.ok, true);
     assert.equal(undated.dateText, "No due date");
     assert.equal(Object.hasOwn(api.calls.inserts[1], "due"), false);
+    assert.equal(api.calls.inserts[1].title, "Buy groceries");
   });
 
   it("does not duplicate a task on a repeated request or after a lost response", async () => {
