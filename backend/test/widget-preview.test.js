@@ -122,6 +122,20 @@ const page = `<!DOCTYPE html>
     const rect = bar.getBoundingClientRect();
     field.focus({ focusVisible: true });
     const glow = getComputedStyle(bar).boxShadow;
+    const orbitStroke = shadow.querySelector(".border-orbit rect");
+    const orbitAnimation = orbitStroke && orbitStroke.getAnimations()[0];
+    check("border orbit has an animation", !!orbitAnimation);
+    if (orbitAnimation) {
+      orbitAnimation.pause();
+      orbitAnimation.currentTime = 0;
+      const start = parseFloat(getComputedStyle(orbitStroke).strokeDashoffset);
+      orbitAnimation.currentTime = 4500;
+      const halfway = parseFloat(getComputedStyle(orbitStroke).strokeDashoffset);
+      check("border travels half its perimeter in half a lap: " + start + " to " + halfway,
+        Math.abs((start - halfway) - 50) < 0.1);
+      orbitAnimation.currentTime = 0;
+      orbitAnimation.play();
+    }
     const shellStyle = getComputedStyle(shadow.querySelector(".shell"));
     check("mic ready", shadow.querySelector(".mic").disabled === false && shadow.querySelector(".mic").getAttribute("aria-label") === "Start voice input");
     field.value = "typed draft";
@@ -134,7 +148,7 @@ const page = `<!DOCTYPE html>
     check("close", shadow.querySelector(".dismiss").getAttribute("aria-label") === "Close QuickCal" && !!shadow.querySelector(".dismiss svg"));
     check("no external close", shadow.querySelector(".close") === null);
     check("no panel", shellStyle.backgroundColor === "rgba(0, 0, 0, 0)" && (shellStyle.borderTopWidth === "0px" || shellStyle.borderTopStyle === "none"));
-    check("focus glow", glow.indexOf("138, 164, 214") !== -1);
+    check("no blue focus halo", glow.indexOf("138, 164, 214") === -1);
     check("pill inset", rect.left >= 8 && rect.right <= window.innerWidth - 8 && rect.bottom <= window.innerHeight - 8 && rect.top >= 8);
     check("narrow window " + window.innerWidth, window.innerWidth <= 520 && window.innerWidth >= 320);
     check("no horizontal overflow", document.documentElement.scrollWidth <= window.innerWidth + 1);
@@ -212,7 +226,7 @@ const page = `<!DOCTYPE html>
     check("saved title", shadow.querySelector(".event-title").textContent === "Coffee with Alex <script>");
     check("saved notification", shadow.textContent.includes("Popup 1 hour before"));
     check("expanded corners do not clip", expandedStyle.overflow === "visible" && expandedBar.left > expanded.left && expandedBar.right < expanded.right);
-    check("expanded focus visible", expandedFocus.indexOf("138, 164, 214") !== -1);
+    check("no expanded focus halo", expandedFocus === "none");
     check("mic inside input area", micBox.left >= expandedBar.left && micBox.right <= expandedBar.right && micBox.top >= expandedBar.top && micBox.bottom <= expandedBar.bottom);
     check("saved when", shadow.textContent.includes("Oct 17, 2026") && shadow.textContent.includes("10:00–11:00 AM"));
     const createdLink = shadow.querySelector("a.action");

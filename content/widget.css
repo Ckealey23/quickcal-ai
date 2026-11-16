@@ -58,6 +58,7 @@
 }
 
 .bar {
+  position: relative;
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -68,20 +69,38 @@
   border: 1px solid rgba(220, 232, 247, 0.95);
   border-radius: 30px;
   background: #f7faff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+  box-shadow: 0 10px 24px -10px rgba(53, 50, 45, 0.08);
   pointer-events: auto;
 }
 
-.bar:has(.input:focus-visible),
-.bar:has(.dismiss:focus-visible) {
-  outline: none;
-  box-shadow:
-    0 0 0 1px rgba(138, 164, 214, 0.4),
-    0 0 0 6px rgba(138, 164, 214, 0.16),
-    0 0 22px 2px rgba(138, 164, 214, 0.32),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+/* Decorative only: the SVG never intercepts typing, dragging, or controls. */
+.border-orbit {
+  position: absolute;
+  inset: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px rgba(84, 193, 245, 0.45));
+}
+
+.border-orbit rect {
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  rx: 29px;
+  fill: none;
+  stroke-width: 1.8px;
+  stroke-linecap: round;
+  animation: quickcal-border-orbit 9s linear infinite;
+}
+
+.card.expanded .border-orbit rect {
+  rx: 17px;
+}
+
+@keyframes quickcal-border-orbit {
+  from { stroke-dashoffset: var(--orbit-offset); }
+  to { stroke-dashoffset: calc(var(--orbit-offset) - 100px); }
 }
 
 .input {
@@ -242,6 +261,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .bar.recording .rec-dot { animation: none; }
+  .border-orbit { display: none; }
 }
 
 .connect-route,
@@ -320,9 +340,7 @@
   border: 1px solid #dce8f7;
   border-radius: 30px 30px 20px 20px;
   background: #f7faff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+  box-shadow: 0 10px 24px -10px rgba(53, 50, 45, 0.08);
   pointer-events: auto;
 }
 
@@ -334,12 +352,6 @@
   border-radius: 18px;
   background: #ffffff;
   box-shadow: none;
-}
-
-.card.expanded .bar:has(.input:focus-visible) {
-  box-shadow:
-    0 0 0 2px rgba(138, 164, 214, 0.55),
-    0 0 0 5px rgba(138, 164, 214, 0.14);
 }
 
 .card.clarifying .body {

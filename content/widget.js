@@ -125,6 +125,27 @@
   const bar = document.createElement("div");
   bar.className = "bar";
 
+  // Layer short strokes into a violet-to-cyan tail. Normalized path lengths
+  // keep the orbit smooth around the corners at every widget size.
+  const orbit = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  orbit.setAttribute("class", "border-orbit");
+  orbit.setAttribute("aria-hidden", "true");
+  orbit.setAttribute("focusable", "false");
+  for (let step = 0; step < 24; step += 1) {
+    const progress = step / 23;
+    const length = 24 - progress * 23;
+    const stroke = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    stroke.setAttribute("x", "1");
+    stroke.setAttribute("y", "1");
+    stroke.setAttribute("pathLength", "100");
+    stroke.setAttribute("stroke-dasharray", length + " " + (100 - length));
+    stroke.style.setProperty("--orbit-offset", String(-(24 - length)) + "px");
+    stroke.style.stroke = "hsl(" + (270 - progress * 80) + " 90% " + (65 - 17 * progress * progress) + "%)";
+    stroke.style.strokeWidth = (0.6 + 2.2 * Math.pow(progress, 1.3)) + "px";
+    stroke.style.opacity = String(0.08 + progress * 0.85);
+    orbit.appendChild(stroke);
+  }
+
   const input = document.createElement("input");
   input.id = "quickcal-input";
   input.type = "text";
@@ -305,7 +326,7 @@
 
   actions.append(retryButton, connectButton, viewLink, newButton, deleteButton, cancelButton);
   body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, saveError, rule, actions);
-  bar.append(input, listening, dismissButton, micButton);
+  bar.append(input, listening, dismissButton, micButton, orbit);
   card.append(bar, body);
   card.setAttribute("aria-labelledby", "quickcal-event-title");
 
