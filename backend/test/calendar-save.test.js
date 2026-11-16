@@ -103,6 +103,15 @@ function loadBackground(hooks) {
         hooks.patches.push(String(url));
         const body = JSON.parse(options.body);
         hooks.patchBodies.push(body);
+        if (body.attendees) {
+          if (hooks.inviteStatus) return { ok: false, status: hooks.inviteStatus, async json() { return {}; } };
+          const id = decodeURIComponent(new URL(url).pathname.split("/events/")[1]);
+          const current = calendar.get(id);
+          const saved = { ...current, attendees: body.attendees };
+          if (!hooks.inviteMismatch) calendar.set(id, saved);
+          if (hooks.inviteNetwork) throw new TypeError("Failed to fetch");
+          return { ok: true, status: 200, async json() { return hooks.inviteMismatch ? current : saved; } };
+        }
         if (hooks.failPatch) {
           return { ok: false, status: 403, async json() { return {}; } };
         }
@@ -735,5 +744,96 @@ describe("hosted calendar authorization", () => {
     const saved = await ask(backendLoad.listener, createMessage(), sender());
     assert.equal(saved.ok, true);
     assert.equal(backend.posts, 1);
+  });
+});
+
+
+describe("saved event invitations", () => {
+  async function setup() {
+    const hooks = { posts: 0, ids: [], bodies: [] };
+    const loaded = loadBackground(hooks);
+    const request = (message, from = sender()) => new Promise(resolve => loaded.listener(message, from, resolve));
+    const saved = await request(createMessage());
+    assert.equal(saved.ok, true);
+    const record = hooks.calendar.get(saved.id);
+    record.etag = '"version-1"';
+    record.attendees = [{ email: "existing@gmail.com", responseStatus: "accepted" }];
+    const invite = (email, extra = {}) => request({ type: "quickcal-calendar", action: "invite", eventId: saved.id, email, ...extra });
+    return { hooks, loaded, saved, invite };
+  }
+
+  it("sends an invitation for the saved event, preserves guests, and avoids duplicates", async () => {
+    const { hooks, loaded, saved, invite } = await setup();
+    const result = await invite(" New.Guest@gmail.com ");
+    assert.equal(result.ok, true);
+    assert.equal(result.email, "new.guest@gmail.com");
+    assert.equal(hooks.posts, 1);
+    assert.deepEqual(hooks.patchBodies[0], { attendees: [
+      { email: "existing@gmail.com", responseStatus: "accepted" }, { email: "new.guest@gmail.com" },
+    ] });
+    const patch = loaded.fetches.find(call => call.options.method === "PATCH");
+    assert.equal(new URL(patch.url).searchParams.get("sendUpdates"), "all");
+    assert.equal(patch.options.headers["If-Match"], '"version-1"');
+    assert.ok(patch.url.includes(saved.id));
+    assert.equal((await invite("NEW.GUEST@gmail.com")).alreadyInvited, true);
+    assert.equal(hooks.patches.length, 1);
+    // A worker restart still checks Google instead of sending a second email.
+    const restarted = loadBackground({ ...hooks, store: loaded.store });
+    const again = await new Promise(resolve => restarted.listener({ type: "quickcal-calendar", action: "invite", eventId: saved.id, email: "new.guest@gmail.com" }, sender(), resolve));
+    assert.equal(again.alreadyInvited, true);
+  });
+
+  it("serializes simultaneous sends without losing guests", async () => {
+    const { hooks, invite } = await setup();
+    const results = await Promise.all([invite("one@gmail.com"), invite("two@gmail.com"), invite("one@gmail.com")]);
+    assert.ok(results.every(result => result.ok));
+    assert.equal(hooks.patches.length, 2);
+    assert.deepEqual(hooks.patchBodies[1].attendees.map(guest => guest.email), ["existing@gmail.com", "one@gmail.com", "two@gmail.com"]);
+  });
+
+  it("rejects invalid emails, stale event IDs, and arbitrary calendars without writing", async () => {
+    const { hooks, loaded, invite } = await setup();
+    for (const email of ["", "not-an-email", "one@gmail.com,two@gmail.com", "a@b.com\r\nBcc:evil@b.com"]) {
+      assert.equal((await invite(email)).ok, false);
+    }
+    assert.equal((await invite("new@gmail.com", { eventId: "some-other-event" })).ok, false);
+    assert.equal((await invite("new@gmail.com", { calendarId: "someone-else@gmail.com" })).ok, false);
+    assert.equal(hooks.patches, undefined);
+    assert.equal(loaded.listener({ type: "quickcal-calendar", action: "invite" }, { ...sender(), id: "other-extension" }, () => {}), false);
+  });
+
+  it("blocks deleted, disconnected, unapproved, and incomplete guest-list sends", async () => {
+    for (const condition of ["deleted", "cancelled", "disconnected", "unapproved", "incomplete", "offline"]) {
+      const { hooks, saved, invite } = await setup();
+      if (condition === "deleted") hooks.calendar.delete(saved.id);
+      if (condition === "cancelled") hooks.calendar.get(saved.id).status = "cancelled";
+      if (condition === "disconnected") hooks.disconnected = true;
+      if (condition === "unapproved") hooks.accessStatus = 403;
+      if (condition === "incomplete") hooks.calendar.get(saved.id).attendeesOmitted = true;
+      if (condition === "offline") hooks.eventReadNetwork = true;
+      assert.equal((await invite("new@gmail.com")).ok, false, condition);
+      assert.equal(hooks.patches, undefined, condition);
+    }
+  });
+
+  it("reports failures and unconfirmed responses without claiming an invitation was sent", async () => {
+    for (const status of [403, 412, 500, "mismatch"]) {
+      const { hooks, invite } = await setup();
+      if (status === "mismatch") hooks.inviteMismatch = true;
+      else hooks.inviteStatus = status;
+      const result = await invite("new@gmail.com");
+      assert.equal(result.ok, false);
+      assert.ok(result.error);
+      assert.equal(hooks.patches.length, 1);
+    }
+  });
+
+  it("does not send a duplicate after a lost successful response", async () => {
+    const { hooks, invite } = await setup();
+    hooks.inviteNetwork = true;
+    assert.equal((await invite("new@gmail.com")).ok, false);
+    hooks.inviteNetwork = false;
+    assert.equal((await invite("new@gmail.com")).alreadyInvited, true);
+    assert.equal(hooks.patches.length, 1);
   });
 });

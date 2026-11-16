@@ -204,6 +204,7 @@ describe("task results", () => {
       await settle();
       check("task saved", $(".success").hidden === false && $(".success p").textContent === "Task successfully created");
       check("no time editor for tasks", $(".time-edit").hidden === true);
+      check("no guest invitations for tasks", $(".people").hidden === true);
       check("due date shown", $(".summary").textContent.includes("Nov 17, 2026"));
       const link = $$(".actions .action").find((node) => node.tagName === "A");
       check("tasks link", !!link && !link.hidden && link.textContent === "View in Google Tasks" && link.href.startsWith("https://tasks.google.com/"));

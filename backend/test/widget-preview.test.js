@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -20,6 +20,7 @@ function fileUrl(filePath) {
 const page = `<!DOCTYPE html>
 <meta charset="utf-8">
 <title>QuickCalAI preview checks</title>
+<meta http-equiv="Content-Security-Policy" content="font-src 'none'">
 <pre id="result">pending</pre>
 <script src="${fileUrl(path.join(root, "shared/schedule.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/preview.js"))}"></script>
@@ -29,6 +30,16 @@ const page = `<!DOCTYPE html>
 <script src="${fileUrl(path.join(root, "shared/lookup.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/batch.js"))}"></script>
 <script>
+  // The browser fixture uses file URLs; emulate the extension resource fetch
+  // with the actual bundled font bytes (file URLs are not supported by fetch).
+  const browserFetch = globalThis.fetch;
+  globalThis.fetch = (url, options) => {
+    if (String(url).endsWith("/assets/fonts/InterVariable.woff2")) {
+      const bytes = Uint8Array.from(atob(${JSON.stringify(readFileSync(path.join(root, "assets/fonts/InterVariable.woff2")).toString("base64"))}), ch => ch.charCodeAt(0));
+      return Promise.resolve(new Response(bytes));
+    }
+    return browserFetch(url, options);
+  };
   globalThis.quickcalListeners = [];
   const calls = [];
   let release = null;
@@ -98,8 +109,11 @@ const page = `<!DOCTYPE html>
       return;
     }
     const link = host.shadowRoot.querySelector("link");
-    if (host.dataset.open === "true") run();
-    else link.addEventListener("load", run);
+    function waitForOpen() {
+      if (host.dataset.open === "true") run();
+      else setTimeout(waitForOpen, 16);
+    }
+    waitForOpen();
     link.addEventListener("error", () => {
       failures.push("css");
       finish();
@@ -113,6 +127,7 @@ const page = `<!DOCTYPE html>
   }
 
     ready(async () => {
+      await document.fonts.load("15px QuickCalAIInter");
       await settle();
     const field = input();
     const shadow = rootNode();
@@ -137,6 +152,25 @@ const page = `<!DOCTYPE html>
       orbitAnimation.currentTime = 0;
       orbitAnimation.play();
     }
+    check("bundled Inter is loaded", Array.from(document.fonts).some(font => font.family === "QuickCalAIInter" && font.status === "loaded"));
+    function typography(node, pseudo) {
+      const style = getComputedStyle(node, pseudo);
+      return [style.fontFamily, style.fontSize, style.fontWeight, style.fontStyle,
+        style.letterSpacing, style.lineHeight, style.textTransform, style.fontStretch, style.fontVariant].join("|");
+    }
+    const textNodes = [field, shadow.querySelector(".event-title"), shadow.querySelector(".detail"),
+      shadow.querySelector(".add-people"), shadow.querySelector(".guest-email"), shadow.querySelector(".send-invite")];
+    const defaultTypography = textNodes.map(node => typography(node));
+    const placeholderTypography = typography(field, "::placeholder");
+    const pageStyle = document.createElement("style");
+    pageStyle.textContent = '@font-face { font-family: Inter; src: local("Courier New"); } html, body, #quickcal-ai-host { font: italic 900 30px/3 Georgia, serif !important; letter-spacing: 8px !important; text-transform: uppercase !important; font-variant: small-caps !important; }';
+    document.head.appendChild(pageStyle);
+    check("page typography cannot change widget", textNodes.every((node, index) => typography(node) === defaultTypography[index]) && typography(field, "::placeholder") === placeholderTypography);
+    check("widget uses private font family", textNodes.every(node => getComputedStyle(node).fontFamily.includes("QuickCalAIInter")));
+    // Simulate a same-tab navigation replacing the page's typography and fonts.
+    pageStyle.textContent = 'html, body, #quickcal-ai-host { font: bold 28px/2 monospace !important; font-stretch: condensed !important; letter-spacing: -2px !important; text-transform: lowercase !important; }';
+    check("new page keeps widget typography", textNodes.every((node, index) => typography(node) === defaultTypography[index]));
+    pageStyle.remove();
     const shellStyle = getComputedStyle(shadow.querySelector(".shell"));
     check("mic ready", shadow.querySelector(".mic").disabled === false && shadow.querySelector(".mic").getAttribute("aria-label") === "Start voice input");
     field.value = "typed draft";
@@ -175,6 +209,7 @@ const page = `<!DOCTYPE html>
     };
     const saved = {
       ok: true,
+      id: "saved-event-123",
       summary: "Coffee with Alex <script>",
       title: "Coffee with Alex <script>",
       date: "2026-10-17",
@@ -235,6 +270,40 @@ const page = `<!DOCTYPE html>
     check("follow-up", field.value === "" && field.placeholder === "Tell me what to change…");
     check("new event", visibleAction("New event") !== null);
     check("card inset", expanded.left >= 8 && expanded.right <= window.innerWidth - 8 && expanded.bottom <= window.innerHeight - 8);
+    const addPeople = shadow.querySelector(".add-people");
+    const inviteForm = shadow.querySelector(".invite-form");
+    const guestEmail = shadow.querySelector(".guest-email");
+    const sendInvite = shadow.querySelector(".send-invite");
+    const invitations = () => calls.filter(message => message.action === "invite");
+    check("add people appears only after save", !shadow.querySelector(".people").hidden && inviteForm.hidden);
+    addPeople.click();
+    check("add people opens email field", !inviteForm.hidden && shadow.activeElement === guestEmail);
+    const parsesBeforeInvite = parses().length;
+    guestEmail.value = "guest@gmail.com";
+    nextResult = { ok: true, email: "guest@gmail.com" };
+    inviteForm.requestSubmit();
+    check("send invitation targets saved event", invitations().length === 1 && invitations()[0].eventId === "saved-event-123" && invitations()[0].email === "guest@gmail.com");
+    check("send pending has no success", sendInvite.disabled && sendInvite.textContent === "Sending…" && !shadow.querySelector(".invite-status").textContent);
+    inviteForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    check("duplicate send blocked", invitations().length === 1);
+    release();
+    await settle();
+    check("invitation confirmation", shadow.querySelector(".invite-status").textContent === "Invitation sent to guest@gmail.com." && !sendInvite.disabled && guestEmail.value === "");
+    guestEmail.value = "another@gmail.com";
+    nextResult = { ok: false, error: "Google Calendar did not allow this invitation." };
+    inviteForm.requestSubmit();
+    release();
+    await settle();
+    check("invitation failure keeps address", guestEmail.value === "another@gmail.com" && shadow.querySelector(".invite-status").classList.contains("error"));
+    nextResult = { ok: true, alreadyInvited: true };
+    inviteForm.requestSubmit();
+    release();
+    await settle();
+    check("already invited is distinct", shadow.querySelector(".invite-status").textContent.includes("already on the guest list"));
+    check("inviting does not create or parse events", creates().length === 2 && parses().length === parsesBeforeInvite);
+    addPeople.click();
+    shadow.querySelector(".invite-status").hidden = true;
+
     check("timezone label hidden", !shadow.textContent.includes("America/Los_Angeles"));
     check("saved event keeps its timezone", creates()[1].event.timeZone === "America/Los_Angeles");
     const savedHost = document.getElementById("quickcal-ai-host");
@@ -320,8 +389,11 @@ const page = `<!DOCTYPE html>
     check("updated time", shadow.textContent.includes("11:00–11:30 AM") && !shadow.querySelector(".schedule").textContent.includes("10:00–11:00 AM"));
     check("updated edit link", shadow.querySelector("a.action").textContent === "Edit in Google Calendar" && shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/updatedevent");
 
+    visibleAction("New event").focus();
     visibleAction("New event").click();
+    check("new event focuses input immediately", shadow.activeElement === field);
     await settle();
+    check("new event keeps input focused", shadow.activeElement === field);
     check("creation mode", document.getElementById("quickcal-ai-host").dataset.mode === "input" && field.placeholder === "Coffee with Alex tomorrow at 10 AM");
 
     field.value = "Coffee with Alex";
@@ -782,6 +854,21 @@ const page = `<!DOCTYPE html>
     route.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     check("connect after status refresh", calls.filter((message) => message.action === "open-settings").length === settingsMid + 1);
     check("draft survives status refresh click", field.value === refreshDraft);
+    // Restore a saved event, then dismiss while a guest request is pending.
+    const listener = globalThis.quickcalListeners[0];
+    listener({ type: "quickcal-widget", action: "render", session: {
+      incognito: false, visible: true, mode: "saved", savedRecord: saved, input: "", sessionId: "invite-test",
+    } }, {}, () => {});
+    await settle();
+    addPeople.click();
+    guestEmail.value = "late@gmail.com";
+    nextResult = { ok: true };
+    inviteForm.requestSubmit();
+    const finishLateInvite = release;
+    shadow.querySelector(".dismiss").click();
+    finishLateInvite();
+    await settle();
+    check("late invitation reply stays off dismissed card", !shadow.querySelector(".invite-status").textContent && shadow.querySelector(".people").hidden);
     finish();
   });
 </script>

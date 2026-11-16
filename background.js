@@ -895,7 +895,8 @@ async function calendarFetch(token, url, options) {
       credentials: "omit",
       headers: Object.assign(
         { Authorization: "Bearer " + token },
-        options.body ? { "Content-Type": "application/json" } : null
+        options.body ? { "Content-Type": "application/json" } : null,
+        options.headers || null
       ),
       body: options.body,
     });
@@ -1708,6 +1709,70 @@ function saveWidgetTask(event) {
   });
   widgetSaves.set(key, promise);
   return promise;
+}
+
+// Serialize invitations across tabs so adding guests never overwrites another send.
+let invitationQueue = Promise.resolve();
+function inviteWidgetGuest(message) {
+  const run = invitationQueue.then(() => inviteWidgetGuestOnce(message));
+  invitationQueue = run.catch(() => {});
+  return run;
+}
+
+async function inviteWidgetGuestOnce(message) {
+  const email = typeof message.email === "string" ? message.email.trim().toLowerCase() : "";
+  if (email.length > 254 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email)) {
+    return { ok: false, error: "Enter a valid email address." };
+  }
+  if (await isSuppressed()) return { ok: false, error: "Connect Google Calendar before inviting people." };
+  const stored = await loadDraftEvent();
+  if (!stored || stored.phase !== "created" || !message.eventId || stored.id !== message.eventId ||
+      (message.calendarId && message.calendarId !== (stored.calendarId || "primary"))) {
+    return { ok: false, error: "This event is no longer active. Open the saved event and try again." };
+  }
+  const status = await refreshStatus();
+  const denied = missingCalendarGrant(status, "Connect Google Calendar before inviting people.");
+  if (denied) return denied;
+  if (!status.quickcalReady) return { ok: false, error: status.message || "QuickCalAI could not verify this account. Try again." };
+  const url = CALENDAR_EVENTS_URL + "/" + encodeURIComponent(stored.id);
+  const read = await calendarCall(url, { method: "GET" });
+  const readFailure = callFailed(read);
+  if (readFailure) return { ok: false, error: readFailure.message };
+  if (read.notFound || read.status === 410 || (read.body && read.body.status === "cancelled")) {
+    return { ok: false, error: "This event was deleted from Google Calendar." };
+  }
+  if (!read.ok || !read.body || read.body.id !== stored.id) {
+    return { ok: false, error: "Google Calendar could not check this event. Try again." };
+  }
+  const event = read.body;
+  if (event.attendeesOmitted) return { ok: false, error: "Google Calendar did not return the full guest list. Try again." };
+  const attendees = Array.isArray(event.attendees) ? event.attendees : [];
+  if (attendees.some((guest) => String(guest.email || "").toLowerCase() === email)) {
+    return { ok: true, email, alreadyInvited: true };
+  }
+  // Recheck after network reads: never apply a send to a replacement draft.
+  const active = await loadDraftEvent();
+  if (!active || active.id !== stored.id || await isSuppressed()) {
+    return { ok: false, error: "The active event changed. Open it and try again." };
+  }
+  const result = await calendarCall(url + "?sendUpdates=all", {
+    method: "PATCH",
+    headers: event.etag ? { "If-Match": event.etag } : {},
+    body: JSON.stringify({ attendees: attendees.concat({ email }) }),
+  });
+  const failure = callFailed(result);
+  if (failure) return { ok: false, error: failure.message };
+  if (result.network) {
+    return { ok: false, error: "Google Calendar did not confirm the invitation. Check the event before trying again." };
+  }
+  if (result.status === 412) return { ok: false, error: "The guest list changed. Try again to use the latest version." };
+  if (result.status === 403) return { ok: false, error: "Google Calendar did not allow this invitation. Check that you can invite guests to this event." };
+  const confirmed = result.body;
+  if (!result.ok || !confirmed || confirmed.id !== stored.id || confirmed.status === "cancelled" ||
+      !Array.isArray(confirmed.attendees) || !confirmed.attendees.some((guest) => String(guest.email || "").toLowerCase() === email)) {
+    return { ok: false, error: "Google Calendar did not confirm the invitation. Check the event before trying again." };
+  }
+  return { ok: true, email };
 }
 
 async function activeWidgetEvent() {
@@ -5181,6 +5246,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       updateWidgetEvent(message.event, typeof message.expectedId === "string" ? message.expectedId : "")
         .then((result) => sendResponse(result))
         .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not update this event." }));
+      return true;
+    }
+    if (message.action === "invite") {
+      inviteWidgetGuest(message)
+        .then((result) => sendResponse(result))
+        .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not confirm the invitation. Check the event before trying again." }));
       return true;
     }
     if (message.action === "active") {

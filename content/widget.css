@@ -1,8 +1,15 @@
 :host {
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "QuickCalAIInter", Arial, sans-serif;
 }
 
 .shell {
+  /* Reset inherited page typography before applying QuickCalAI's own font. */
+  all: initial;
+  display: block;
+  direction: ltr;
+  font: normal 400 15px/1.4 "QuickCalAIInter", Arial, sans-serif;
+  color: #35322d;
+  text-align: left;
   position: relative;
   box-sizing: border-box;
   width: 456px;
@@ -126,7 +133,7 @@
   background: transparent;
   color: #35322d;
   caret-color: #35322d;
-  font-family: Inter, "Segoe UI", sans-serif;
+  font-family: "QuickCalAIInter", Arial, sans-serif;
   font-size: 15px;
   font-style: normal;
   font-weight: 400;
@@ -1339,6 +1346,72 @@
   outline-offset: 2px;
 }
 
+.people {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: default;
+}
+
+.add-people {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6f9fd8;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.invite-form {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+}
+
+.guest-email {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  padding: 9px 11px;
+  border: 1px solid #dce8f7;
+  border-radius: 10px;
+  background: #fff;
+  color: #35322d;
+  font: inherit;
+  font-size: 13px;
+  cursor: text;
+}
+
+.send-invite {
+  flex: 0 0 auto;
+  padding: 9px 14px;
+  border: 1px solid #d7e6f8;
+  border-radius: 10px;
+  background: #eaf3ff;
+  color: #4274ac;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send-invite:disabled { opacity: 0.65; cursor: default; }
+.add-people:focus-visible,
+.guest-email:focus-visible,
+.send-invite:focus-visible {
+  outline: 2px solid #8aa4d6;
+  outline-offset: 2px;
+}
+
 .time-menu {
   position: absolute;
   z-index: 6;
@@ -1410,6 +1483,18 @@
   outline: 2px solid #8aa4d6;
   outline-offset: -2px;
 }
+
+.invite-scope,
+.invite-status {
+  margin: 0;
+  color: #65947d;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.invite-scope { color: #7a7f8a; }
+.invite-status.error { color: #8b3a3a; }
 
 [hidden] {
   display: none !important;
