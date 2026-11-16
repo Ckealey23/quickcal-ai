@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { applyEnvFile, decodeEnvBytes, envFilePath, parseEnvFile } from "../src/config.js";
-import { isRealDate, isRealTime, validateExtraction, validateRequest } from "../src/validate.js";
+import { isRealDate, isRealTime, validateExtraction, validateRequest, validateBatchExtraction } from "../src/validate.js";
 
 const zone = "America/Los_Angeles";
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -117,6 +117,75 @@ describe("request validation", () => {
     });
     assert.equal(mixed.ok, false);
     assert.match(mixed.error, /saved event/);
+  });
+
+  it("accepts batch extraction and rejects mixing batch with other contexts", () => {
+    const batch = validateRequest({ text: "Two meetings tomorrow", timeZone: zone, batch: true });
+    assert.equal(batch.ok, true);
+    assert.equal(batch.batch, true);
+    assert.equal(batch.batchContext, null);
+    const mixed = validateRequest({
+      text: "Two meetings",
+      timeZone: zone,
+      batch: true,
+      clarification: {
+        originalText: "Coffee",
+        draft: { title: "Coffee", date: null, startTime: null, endTime: null, timeZone: zone, location: null, recurrence: null },
+      },
+    });
+    assert.equal(mixed.ok, false);
+  });
+
+  it("validates batch extraction payloads without silent truncation", () => {
+    const ok = validateBatchExtraction({
+      kind: "batch",
+      tooMany: false,
+      message: null,
+      events: [{
+        ref: "e1",
+        title: "Standup",
+        date: "2026-11-18",
+        startTime: "09:00",
+        endTime: "09:30",
+        timeZone: zone,
+        location: null,
+        recurrence: null,
+        notificationAction: "preserve",
+        notificationOverrides: [],
+        needsClarification: false,
+        clarificationQuestions: [],
+      }],
+    }, zone);
+    assert.equal(ok.ok, true);
+    assert.equal(ok.batch.events[0].ref, "e1");
+    const many = validateBatchExtraction({
+      kind: "batch",
+      tooMany: true,
+      message: "Highlight a smaller passage.",
+      events: [],
+    }, zone);
+    assert.equal(many.ok, true);
+    assert.equal(many.batch.tooMany, true);
+    const overflow = validateBatchExtraction({
+      kind: "batch",
+      tooMany: false,
+      message: null,
+      events: Array.from({ length: 11 }, (_, index) => ({
+        ref: "e" + String(index + 1),
+        title: "E",
+        date: "2026-11-18",
+        startTime: "09:00",
+        endTime: "10:00",
+        timeZone: zone,
+        location: null,
+        recurrence: null,
+        notificationAction: "preserve",
+        notificationOverrides: [],
+        needsClarification: false,
+        clarificationQuestions: [],
+      })),
+    }, zone);
+    assert.equal(overflow.ok, false);
   });
 });
 

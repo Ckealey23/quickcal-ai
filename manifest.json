@@ -32,6 +32,7 @@
         "shared/selection.js",
         "shared/layout.js",
         "shared/lookup.js",
+        "shared/batch.js",
         "content/widget.js"
       ],
       "run_at": "document_idle"

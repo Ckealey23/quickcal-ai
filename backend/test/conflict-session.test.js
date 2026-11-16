@@ -85,7 +85,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return hooks.parseBody || {
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 5,
               intent: "create",
               quickcalRelease: "test",
               title: "Coffee with Alex",
@@ -396,7 +396,7 @@ describe("post-save conflict notices", () => {
       parseBody: null,
     };
     hooks.parseBody = {
-      quickcalApiVersion: 4,
+      quickcalApiVersion: 5,
       intent: "move",
       quickcalRelease: "test",
       timeZone: zone,

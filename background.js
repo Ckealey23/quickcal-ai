@@ -20,7 +20,8 @@ importScripts(
   "shared/session.js",
   "shared/lookup.js",
   "shared/conflicts.js",
-  "shared/availability.js"
+  "shared/availability.js",
+  "shared/batch.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -55,6 +56,7 @@ const WIDGET_FILES = [
   "shared/selection.js",
   "shared/layout.js",
   "shared/lookup.js",
+  "shared/batch.js",
   "content/widget.js",
 ];
 const WIDGET_MESSAGE = "quickcal-widget";
@@ -1186,7 +1188,12 @@ async function saveDraftEvent(record) {
   await chrome.storage.local.set({ [DRAFT_EVENT_KEY]: record });
 }
 
-async function commitWidgetRecord(record) {
+async function persistWidgetDraft(record, options) {
+  if (options && options.persistDraft === false) return;
+  await saveDraftEvent(record);
+}
+
+async function commitWidgetRecord(record, options) {
   const existing = await lookupEvent(record);
   const existingFailure = callFailed(existing);
   if (existingFailure) {
@@ -1203,7 +1210,7 @@ async function commitWidgetRecord(record) {
     if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
     applyScheduleFields(saved, record);
     try {
-      await saveDraftEvent(saved);
+      await persistWidgetDraft(saved, options);
     } catch (error) {
       return publicSavedEvent(saved);
     }
@@ -1229,7 +1236,7 @@ async function commitWidgetRecord(record) {
     if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
     applyScheduleFields(saved, record);
     try {
-      await saveDraftEvent(saved);
+      await persistWidgetDraft(saved, options);
     } catch (error) {
       return publicSavedEvent(saved);
     }
@@ -1256,7 +1263,7 @@ async function commitWidgetRecord(record) {
     const saved = confirmedRecord(record, check.body);
     if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
     applyScheduleFields(saved, record);
-    await saveDraftEvent(saved);
+    await persistWidgetDraft(saved, options);
     return publicSavedEvent(saved);
   }
   if (check.notFound && (created.network || (created.status && created.status >= 500))) {
@@ -1265,13 +1272,14 @@ async function commitWidgetRecord(record) {
       const saved = confirmedRecord(record, second.body);
       if (!saved) return { ok: false, error: "Google Calendar did not confirm the saved event." };
       applyScheduleFields(saved, record);
-      await saveDraftEvent(saved);
+      await persistWidgetDraft(saved, options);
       return publicSavedEvent(saved);
     }
   }
 
   return {
     ok: false,
+    uncertain: true,
     error: "QuickCalAI could not confirm whether this event was saved. It will use the same event if you try again.",
   };
 }
@@ -1291,12 +1299,48 @@ function missingCalendarGrant(status, message) {
   };
 }
 
-async function saveWidgetEventOnce(prepared) {
+async function saveWidgetEventOnce(prepared, preferredId) {
   const denied = missingCalendarGrant(
     await refreshStatus(),
     "Connect Google Calendar before saving this event."
   );
   if (denied) return denied;
+
+  if (preferredId) {
+    const probe = await lookupEvent({ id: preferredId });
+    const probeFailure = callFailed(probe);
+    if (probeFailure) return { ok: false, error: probeFailure.message || "Google Calendar could not be checked." };
+    if (probe.ok && probe.body && probe.body.status !== "cancelled") {
+      const confirmed = confirmedRecord(applyScheduleFields({
+        id: preferredId,
+        phase: "created",
+        summary: prepared.summary,
+        description: prepared.description,
+        startDateTime: prepared.startDateTime,
+        endDateTime: prepared.endDateTime,
+        timeZone: prepared.timeZone,
+        dateText: prepared.dateText,
+        timeText: prepared.timeText,
+        htmlLink: "",
+      }, prepared), probe.body);
+      if (!confirmed) return { ok: false, error: "Google Calendar did not confirm the saved event." };
+      applyScheduleFields(confirmed, prepared);
+      return publicSavedEvent(confirmed);
+    }
+    const record = applyScheduleFields({
+      id: preferredId,
+      phase: "pending",
+      summary: prepared.summary,
+      description: prepared.description,
+      startDateTime: prepared.startDateTime,
+      endDateTime: prepared.endDateTime,
+      timeZone: prepared.timeZone,
+      dateText: prepared.dateText,
+      timeText: prepared.timeText,
+      htmlLink: "",
+    }, prepared);
+    return commitWidgetRecord(record, { persistDraft: false });
+  }
 
   let stored = await loadDraftEvent();
   if (stored && stored.fingerprint === prepared.fingerprint && stored.phase === "created" && stored.htmlLink) {
@@ -1346,7 +1390,7 @@ async function saveWidgetEventOnce(prepared) {
   return commitWidgetRecord(record);
 }
 
-function saveWidgetEvent(event) {
+function saveWidgetEvent(event, options) {
   const prepared = self.QuickCalSchedule.prepareForSave(event);
   if (!prepared) {
     return Promise.resolve({
@@ -1354,12 +1398,16 @@ function saveWidgetEvent(event) {
       error: "This event needs a title, date, and start and end time before it can be saved.",
     });
   }
-  const current = widgetSaves.get(prepared.fingerprint);
+  const preferredId = options && typeof options.eventId === "string" && self.QuickCalTestEvent.isValidEventId(options.eventId)
+    ? options.eventId
+    : "";
+  const key = preferredId ? "id:" + preferredId : prepared.fingerprint;
+  const current = widgetSaves.get(key);
   if (current) return current;
-  const promise = saveWidgetEventOnce(prepared).finally(() => {
-    widgetSaves.delete(prepared.fingerprint);
+  const promise = saveWidgetEventOnce(prepared, preferredId).finally(() => {
+    widgetSaves.delete(key);
   });
-  widgetSaves.set(prepared.fingerprint, promise);
+  widgetSaves.set(key, promise);
   return promise;
 }
 
@@ -1486,7 +1534,8 @@ async function checkHealth() {
         Array.isArray(body.capabilities) &&
         body.capabilities.includes("event-notifications") &&
         body.capabilities.includes("calendar-operations") &&
-        body.capabilities.includes("availability-search")
+        body.capabilities.includes("availability-search") &&
+        body.capabilities.includes("multi-event-batch")
       );
       if (body && body.ok === true && !compatible) {
         const release = typeof body.quickcalRelease === "string" ? " (running " + body.quickcalRelease + ")" : "";
@@ -2455,6 +2504,26 @@ async function applyConflictNotice(incognito, checkId, saved, notice) {
   notice.savedEventId = saved && saved.id ? saved.id : notice.savedEventId || "";
   return mutateWidgetSession(incognito, (latest) => {
     if (!api.noticeStillCurrent(latest, notice)) return latest;
+    if (latest.mode === "reviewing" || latest.mode === "batch-results") {
+      if (!latest.batch || !Array.isArray(latest.batch.drafts)) return latest;
+      const drafts = latest.batch.drafts.map((draft) => {
+        if (!draft || draft.saveStatus !== "saved") return draft;
+        const matchId = draft.calendarEventId || (draft.savedRecord && draft.savedRecord.id) || "";
+        if (!matchId || matchId !== notice.savedEventId) return draft;
+        if (draft.conflictNotice && draft.conflictNotice.checkId && draft.conflictNotice.checkId !== checkId) {
+          return draft;
+        }
+        return Object.assign({}, draft, { conflictNotice: notice });
+      });
+      const firstNotice = drafts.map((draft) => draft.conflictNotice).find((item) => item && item.status && item.status !== "clear" && item.status !== "checking");
+      return Object.assign({}, latest, {
+        batch: Object.assign({}, latest.batch, { drafts: drafts }),
+        conflictNotice: firstNotice || notice,
+        statusText: firstNotice && firstNotice.statusText ? firstNotice.statusText : (notice.status === "clear" && !notice.horizonText ? "" : notice.statusText),
+        statusError: false,
+        revision: latest.revision + 1,
+      });
+    }
     if (latest.conflictNotice && latest.conflictNotice.checkId && latest.conflictNotice.checkId !== checkId) {
       return latest;
     }
@@ -2998,6 +3067,22 @@ async function scheduleConflictCheck(incognito, saved) {
   const checkId = conflictCheckId();
   const checking = api.checkingNotice(checkId, saved);
   await mutateWidgetSession(incognito, (latest) => {
+    if (latest.mode === "reviewing" || latest.mode === "batch-results") {
+      if (!latest.batch || !Array.isArray(latest.batch.drafts)) return latest;
+      const drafts = latest.batch.drafts.map((draft) => {
+        if (!draft || draft.saveStatus !== "saved") return draft;
+        const matchId = draft.calendarEventId || (draft.savedRecord && draft.savedRecord.id) || "";
+        if (!saved.id || matchId !== saved.id) return draft;
+        return Object.assign({}, draft, { conflictNotice: checking });
+      });
+      return Object.assign({}, latest, {
+        batch: Object.assign({}, latest.batch, { drafts: drafts }),
+        conflictNotice: checking,
+        statusText: checking.statusText,
+        statusError: false,
+        revision: latest.revision + 1,
+      });
+    }
     if (latest.mode !== "saved" || !latest.savedRecord) return latest;
     if (saved.id && latest.savedRecord.id && saved.id !== latest.savedRecord.id) return latest;
     return Object.assign({}, latest, {
@@ -3462,6 +3547,355 @@ async function runInterpreted(incognito, text, timeZone, operation, pending, eve
   return runLookup(incognito, text, zone, operation, { intent: action, query: query });
 }
 
+function cloneBatch(batch) {
+  if (!batch) return null;
+  return Object.assign({}, batch, {
+    drafts: (batch.drafts || []).map((draft) => Object.assign({}, draft, {
+      event: Object.assign({}, draft.event),
+      savedRecord: draft.savedRecord ? Object.assign({}, draft.savedRecord) : null,
+      conflictNotice: draft.conflictNotice ? Object.assign({}, draft.conflictNotice) : null,
+    })),
+  });
+}
+
+function ensureDraftIds(batch) {
+  const next = cloneBatch(batch);
+  next.drafts.forEach((draft) => {
+    if (draft.selected && draft.complete && draft.saveStatus !== "saved" && !draft.calendarEventId) {
+      draft.calendarEventId = createEventId();
+    }
+  });
+  return next;
+}
+
+async function runBatchExtract(incognito, text, timeZone, operation) {
+  const result = await parseForContent({ text: text, timeZone: timeZone || "UTC", batch: true });
+  return mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    if (!result || result.ok !== true || !result.batch) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        statusText: result && result.error ? result.error : "QuickCalAI could not read those events.",
+        statusError: true,
+        input: text,
+        batch: null,
+        mode: "input",
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    const payload = result.batch;
+    if (payload.tooMany) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "input",
+        batch: null,
+        input: "",
+        statusText: payload.message || "That selection looks like more than 10 events. Highlight a smaller passage and try again.",
+        statusError: true,
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    if (!payload.events || !payload.events.length) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "input",
+        batch: null,
+        input: "",
+        statusText: payload.message || "QuickCalAI did not find any calendar events in that selection.",
+        statusError: false,
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    const batch = self.QuickCalBatch.buildBatch(text, payload.events, timeZone || "UTC");
+    if (batch.drafts.length === 1) {
+      const only = batch.drafts[0];
+      if (only.complete) {
+        return Object.assign({}, latest, {
+          mode: "creating",
+          event: only.event,
+          draftEvent: only.event,
+          draftText: text,
+          batch: null,
+          lookup: null,
+          statusText: "Creating event\u2026",
+          statusError: false,
+        });
+      }
+      const noted = self.QuickCalSession.noteClarification(latest, only.event, text);
+      const finished = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "clarifying",
+        event: noted.event,
+        clarification: noted.clarification,
+        batch: null,
+        savedRecord: null,
+        draftEvent: null,
+        lookup: null,
+        input: "",
+        statusText: "",
+        statusError: false,
+      });
+      return finished.accepted ? finished.state : latest;
+    }
+    const noted = self.QuickCalSession.noteBatch(latest, batch, "");
+    const finished = self.QuickCalSession.finishOperation(latest, operation, {
+      mode: "reviewing",
+      batch: noted.batch,
+      clarification: null,
+      savedRecord: null,
+      draftEvent: null,
+      event: null,
+      lookup: null,
+      input: "",
+      statusText: "",
+      statusError: false,
+      conflictNotice: null,
+    });
+    return finished.accepted ? finished.state : latest;
+  }).then(async (state) => {
+    if (!self.QuickCalSession.operationCurrent(state, operation)) return state;
+    if (state.mode === "creating" && state.event) {
+      const saveResult = await saveWidgetEvent(state.event);
+      return mutateWidgetSession(incognito, (after) => {
+        if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
+        if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+          const checking = self.QuickCalConflicts
+            ? self.QuickCalConflicts.checkingNotice("pending", saveResult)
+            : null;
+          const saved = self.QuickCalSession.finishOperation(after, operation, {
+            mode: "saved",
+            savedRecord: saveResult,
+            event: state.event,
+            draftEvent: null,
+            clarification: null,
+            batch: null,
+            lookup: null,
+            input: "",
+            statusText: checking ? checking.statusText : "",
+            statusError: false,
+            conflictNotice: checking,
+          });
+          return saved.accepted ? saved.state : after;
+        }
+        const kept = self.QuickCalSession.finishOperation(after, operation, {
+          mode: "failed",
+          draftEvent: state.event,
+          event: state.event,
+          batch: null,
+          statusText: saveResult && saveResult.error ? saveResult.error : "QuickCalAI could not save this event.",
+          statusError: true,
+          conflictNotice: null,
+        });
+        return kept.accepted ? kept.state : after;
+      }).then((finished) => {
+        if (finished.mode === "saved" && finished.savedRecord) {
+          return scheduleConflictCheck(incognito, finished.savedRecord).then(() => finished);
+        }
+        return finished;
+      });
+    }
+    return state;
+  });
+}
+
+async function runBatchFollowup(incognito, text, timeZone, operation, batch, targetRef) {
+  const context = self.QuickCalBatch.contextForModel(batch, targetRef || batch.clarifyingRef || null);
+  const result = await parseForContent({
+    text: text,
+    timeZone: timeZone || "UTC",
+    batchContext: context,
+  });
+  return mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    if (!latest.batch) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        statusText: "That batch is no longer open.",
+        statusError: true,
+        input: text,
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    if (!result || result.ok !== true || !result.followup) {
+      const failed = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "batch-clarifying",
+        statusText: result && result.error ? result.error : "QuickCalAI could not read that answer.",
+        statusError: true,
+        input: text,
+      });
+      return failed.accepted ? failed.state : latest;
+    }
+    const followup = result.followup;
+    if (followup.action === "ambiguous") {
+      const finished = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "batch-clarifying",
+        statusText: followup.question || "Which event do you mean?",
+        statusError: false,
+        input: "",
+      });
+      return finished.accepted ? finished.state : latest;
+    }
+    if (followup.action === "none") {
+      const finished = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "reviewing",
+        batch: Object.assign({}, latest.batch, { clarifyingRef: "" }),
+        clarification: null,
+        event: null,
+        input: "",
+        statusText: followup.question || "",
+        statusError: false,
+      });
+      return finished.accepted ? finished.state : latest;
+    }
+    const patches = [];
+    if (followup.action === "skip" && followup.ref) {
+      patches.push({ ref: followup.ref, skip: true });
+    } else if (followup.action === "update" && followup.ref && followup.event) {
+      patches.push({ ref: followup.ref, event: followup.event });
+    }
+    const nextBatch = self.QuickCalBatch.mergePatch(latest.batch, patches);
+    nextBatch.clarifyingRef = "";
+    const finished = self.QuickCalSession.finishOperation(latest, operation, {
+      mode: "reviewing",
+      batch: nextBatch,
+      clarification: null,
+      event: null,
+      input: "",
+      statusText: "",
+      statusError: false,
+    });
+    return finished.accepted ? finished.state : latest;
+  });
+}
+
+async function saveBatchDraft(incognito, draft, generation) {
+  if (!draft || !draft.complete || draft.saveStatus === "saved") {
+    return { ref: draft && draft.ref, skipped: true };
+  }
+  const eventId = draft.calendarEventId || createEventId();
+  await mutateWidgetSession(incognito, (latest) => {
+    if (!latest.visible || !latest.batch || latest.batch.generation !== generation) return latest;
+    const drafts = latest.batch.drafts.map((item) => {
+      if (item.ref !== draft.ref) return item;
+      return Object.assign({}, item, {
+        calendarEventId: eventId,
+        saveStatus: "saving",
+        saveError: "",
+      });
+    });
+    return Object.assign({}, latest, {
+      batch: Object.assign({}, latest.batch, { drafts: drafts, saving: true }),
+      revision: latest.revision + 1,
+    });
+  });
+  const result = await saveWidgetEvent(draft.event, { eventId: eventId });
+  await mutateWidgetSession(incognito, (latest) => {
+    // Late responses must not reopen a dismissed widget or overwrite a newer conversation.
+    if (!latest.visible || !latest.batch || latest.batch.generation !== generation) return latest;
+    const drafts = latest.batch.drafts.map((item) => {
+      if (item.ref !== draft.ref) return item;
+      if (result && result.ok === true && result.htmlLink) {
+        return Object.assign({}, item, {
+          calendarEventId: result.id || eventId,
+          saveStatus: "saved",
+          savedRecord: result,
+          saveError: "",
+          selected: false,
+        });
+      }
+      if (result && result.uncertain) {
+        return Object.assign({}, item, {
+          calendarEventId: eventId,
+          saveStatus: "uncertain",
+          saveError: result.error || "QuickCalAI could not confirm whether this event was saved.",
+        });
+      }
+      return Object.assign({}, item, {
+        calendarEventId: eventId,
+        saveStatus: "failed",
+        saveError: result && result.error ? result.error : "QuickCalAI could not save this event.",
+      });
+    });
+    const unfinished = drafts.some((item) => item.saveStatus === "saving" || item.saveStatus === "pending");
+    return Object.assign({}, latest, {
+      batch: Object.assign({}, latest.batch, { drafts: drafts, saving: unfinished }),
+      revision: latest.revision + 1,
+    });
+  });
+  return { ref: draft.ref, result: result, eventId: eventId };
+}
+
+async function runBatchSave(incognito, operation, batch, refs) {
+  let working = ensureDraftIds(batch);
+  const selected = working.drafts.filter((draft) => {
+    if (draft.saveStatus === "saved") return false;
+    if (Array.isArray(refs) && refs.length) return refs.indexOf(draft.ref) !== -1;
+    return draft.selected && draft.complete;
+  });
+  if (!selected.length) {
+    return mutateWidgetSession(incognito, (latest) => {
+      if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+      const finished = self.QuickCalSession.finishOperation(latest, operation, {
+        mode: "reviewing",
+        statusText: "Select at least one complete event to add.",
+        statusError: true,
+      });
+      return finished.accepted ? finished.state : latest;
+    });
+  }
+  const generation = working.generation || 1;
+  await mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    const next = ensureDraftIds(latest.batch || working);
+    next.saving = true;
+    next.drafts = next.drafts.map((draft) => {
+      const chosen = selected.some((item) => item.ref === draft.ref);
+      if (!chosen) return draft;
+      return Object.assign({}, draft, {
+        calendarEventId: draft.calendarEventId || selected.find((item) => item.ref === draft.ref).calendarEventId,
+        saveStatus: draft.saveStatus === "saved" ? "saved" : "pending",
+      });
+    });
+    working = next;
+    return Object.assign({}, latest, {
+      mode: "batch-results",
+      batch: next,
+      statusText: "Adding selected events\u2026",
+      statusError: false,
+      revision: latest.revision + 1,
+    });
+  });
+  const savedRecords = [];
+  for (let index = 0; index < selected.length; index += 1) {
+    const live = await readWidgetSession(incognito);
+    if (!live.visible || !live.batch) break;
+    if (!self.QuickCalSession.operationCurrent(live, operation) && live.operation) break;
+    const currentDraft = (live.batch.drafts || []).find((item) => item.ref === selected[index].ref) || selected[index];
+    if (currentDraft.saveStatus === "saved") continue;
+    const outcome = await saveBatchDraft(incognito, currentDraft, live.batch.generation || generation);
+    if (outcome && outcome.result && outcome.result.ok && outcome.result.htmlLink) {
+      savedRecords.push(outcome.result);
+    }
+  }
+  const finished = await mutateWidgetSession(incognito, (latest) => {
+    if (!latest.batch) return latest;
+    const drafts = latest.batch.drafts;
+    const savedCount = drafts.filter((item) => item.saveStatus === "saved").length;
+    const failedCount = drafts.filter((item) => item.saveStatus === "failed" || item.saveStatus === "uncertain").length;
+    let statusText = "";
+    if (savedCount && failedCount) statusText = "Added " + savedCount + " event" + (savedCount === 1 ? "" : "s") + ". Some could not be saved.";
+    else if (savedCount) statusText = "Added " + savedCount + " event" + (savedCount === 1 ? "" : "s") + ".";
+    else if (failedCount) statusText = "QuickCalAI could not save the selected events.";
+    const done = self.QuickCalSession.finishOperation(latest, operation, {
+      mode: "batch-results",
+      batch: Object.assign({}, latest.batch, { saving: false }),
+      statusText: statusText,
+      statusError: !savedCount && !!failedCount,
+      conflictNotice: null,
+    });
+    return done.accepted ? done.state : latest;
+  });
+  for (let index = 0; index < savedRecords.length; index += 1) {
+    await scheduleConflictCheck(incognito, savedRecords[index]);
+  }
+  return finished;
+}
+
 async function runWidgetSubmit(incognito, text, timeZone, operation, editing, clarification, savedRecord, originalText, parsed) {
   const message = { text: text, timeZone: timeZone || "UTC" };
   if (clarification) message.clarification = clarification;
@@ -3653,6 +4087,75 @@ function handleWidgetMessage(message, sender) {
       return runConfirmedLookup(incognito, operation, lookup).then((session) => ({ ok: true, session: session }));
     });
   }
+  if (action === "batch-toggle") {
+    const ref = typeof message.ref === "string" ? message.ref : "";
+    const selected = message.selected === true;
+    return mutateWidgetSession(incognito, (state) => {
+      if (!state.visible || !state.batch || state.batch.saving) return state;
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      const next = self.QuickCalBatch.mergePatch(state.batch, [{ ref: ref, selected: selected }]);
+      return Object.assign({}, state, {
+        batch: next,
+        mode: state.mode === "batch-results" ? "reviewing" : state.mode,
+        revision: state.revision + 1,
+      });
+    }).then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "batch-complete") {
+    const ref = typeof message.ref === "string" ? message.ref : "";
+    return mutateWidgetSession(incognito, (state) => {
+      if (!state.visible || !state.batch) return state;
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      const draft = (state.batch.drafts || []).find((item) => item.ref === ref);
+      if (!draft || draft.complete || draft.saveStatus === "saved") return state;
+      return self.QuickCalSession.noteBatchClarification(state, state.batch, ref, draft.event);
+    }).then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "batch-cancel-clarify") {
+    return mutateWidgetSession(incognito, (state) => {
+      if (!state.visible || !state.batch) return state;
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      if (state.mode !== "batch-clarifying") return state;
+      return Object.assign({}, state, {
+        mode: "reviewing",
+        batch: Object.assign({}, state.batch, { clarifyingRef: "" }),
+        clarification: null,
+        event: null,
+        input: "",
+        statusText: "",
+        statusError: false,
+        revision: state.revision + 1,
+      });
+    }).then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "batch-confirm") {
+    let operation = null;
+    let batch = null;
+    const refs = Array.isArray(message.refs) ? message.refs.filter((item) => typeof item === "string") : [];
+    return mutateWidgetSession(incognito, (state) => {
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      if (!state.visible || !state.batch || state.batch.saving) return state;
+      if (state.mode !== "reviewing" && state.mode !== "batch-results") return state;
+      const begun = self.QuickCalSession.beginOperation(
+        state,
+        "batch-save",
+        message.operationId || "batch-" + String(state.revision + 1),
+        state.sessionId
+      );
+      if (!begun.accepted) return state;
+      operation = begun.state.operation;
+      batch = state.batch;
+      return Object.assign({}, begun.state, {
+        statusText: "Adding selected events\u2026",
+        statusError: false,
+      });
+    }).then((state) => {
+      if (!operation || !state.operation || state.operation.id !== operation.id || !batch) {
+        return { ok: false, ignored: true, session: state };
+      }
+      return runBatchSave(incognito, operation, batch, refs).then((session) => ({ ok: true, session: session }));
+    });
+  }
   if (action === "submit") {
     const text = typeof message.text === "string" ? message.text.trim() : "";
     if (!text) return Promise.resolve({ ok: false, error: "Text is required." });
@@ -3662,9 +4165,10 @@ function handleWidgetMessage(message, sender) {
       let current = state;
       if (message.fresh) current = self.QuickCalSession.openReset(current);
       if (message.sessionId && !message.fresh && message.sessionId !== current.sessionId) return state;
+      const batchMode = message.batch === true || current.mode === "batch-clarifying" || current.mode === "reviewing";
       const begun = self.QuickCalSession.beginOperation(
         current,
-        "parse",
+        batchMode ? "batch-parse" : "parse",
         message.operationId || "op-" + String(current.revision + 1),
         current.sessionId
       );
@@ -3673,6 +4177,12 @@ function handleWidgetMessage(message, sender) {
       context = {
         editing: current.mode === "saved" && !!current.savedRecord,
         clarification: current.mode === "clarifying" ? current.clarification : null,
+        batch: current.batch,
+        batchClarifying: current.mode === "batch-clarifying",
+        batchTarget: current.mode === "batch-clarifying"
+          ? (current.batch && current.batch.clarifyingRef) || (current.clarification && current.clarification.batchRef) || ""
+          : "",
+        extractBatch: message.batch === true && current.mode !== "batch-clarifying" && current.mode !== "reviewing",
         savedRecord: current.savedRecord,
         originalText: current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
       };
@@ -3681,14 +4191,29 @@ function handleWidgetMessage(message, sender) {
         input: text,
         statusText: context.editing
           ? "Updating event\u2026"
-          : pendingAvailability
-            ? "Checking availability\u2026"
-            : "Reading your event\u2026",
+          : context.batchClarifying || context.extractBatch
+            ? "Reading your events\u2026"
+            : pendingAvailability
+              ? "Checking availability\u2026"
+              : "Reading your event\u2026",
         statusError: false,
       });
     }).then((state) => {
       if (!operation || !state.operation || state.operation.id !== operation.id) {
         return { ok: false, ignored: true, session: state };
+      }
+      if (context.extractBatch) {
+        return runBatchExtract(incognito, text, message.timeZone || "UTC", operation)
+          .then((session) => ({ ok: true, session: session }));
+      }
+      if (context.batchClarifying && context.batch) {
+        return runBatchFollowup(incognito, text, message.timeZone || "UTC", operation, context.batch, context.batchTarget)
+          .then((session) => ({ ok: true, session: session }));
+      }
+      if (context.batch && (state.mode === "reviewing" || state.batch)) {
+        // Free-text corrections while reviewing a batch.
+        return runBatchFollowup(incognito, text, message.timeZone || "UTC", operation, context.batch, "")
+          .then((session) => ({ ok: true, session: session }));
       }
       const pendingLookup = state.lookup || null;
       const request = { text: text, timeZone: message.timeZone || "UTC" };
