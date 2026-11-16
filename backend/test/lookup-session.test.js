@@ -53,9 +53,10 @@ function addLocalDays(date, days) {
   );
 }
 
-const today = localParts(new Date()).date;
+const fixtureNow = new Date("2026-10-28T19:00:00Z");
+const today = localParts(fixtureNow).date;
 const nextTuesdayDelta = (() => {
-  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short" }).format(new Date());
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short" }).format(fixtureNow);
   const index = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[weekday] || 0;
   const delta = (2 - index + 7) % 7;
   return delta === 0 ? 7 : delta;
@@ -137,7 +138,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return interpreted || {
-              quickcalApiVersion: 3,
+              quickcalApiVersion: 4,
               intent: "clarify",
               timeZone: zone,
               needsClarification: true,
@@ -151,6 +152,12 @@ function loadBackground(hooks) {
                 destinationEndTime: null,
                 scope: "occurrence",
                 selection: [],
+                durationMinutes: null,
+                windowStart: null,
+                windowEnd: null,
+                preference: null,
+                searchEndDate: null,
+                readOnly: null,
               },
             };
           },
@@ -270,12 +277,18 @@ function operationFields(fields) {
     destinationEndTime: null,
     scope: "occurrence",
     selection: [],
+    durationMinutes: null,
+    windowStart: null,
+    windowEnd: null,
+    preference: null,
+    searchEndDate: null,
+    readOnly: null,
   }, fields || {});
 }
 
 function interpreted(intent, fields) {
   return {
-    quickcalApiVersion: 3,
+    quickcalApiVersion: 4,
     quickcalRelease: "test",
     intent: intent,
     timeZone: zone,
@@ -640,7 +653,7 @@ describe("calendar lookup through the service worker", () => {
     hooks.interpret = (request) => {
       if (request.text === "make it 7 PM") {
         return {
-          quickcalApiVersion: 3,
+          quickcalApiVersion: 4,
           intent: "edit",
           title: "Meeting with Steve",
           date: today,

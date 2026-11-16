@@ -31,6 +31,12 @@ function event(overrides = {}) {
       destinationEndTime: null,
       scope: "occurrence",
       selection: [],
+      durationMinutes: null,
+      windowStart: null,
+      windowEnd: null,
+      preference: null,
+      searchEndDate: null,
+      readOnly: null,
     },
     ...overrides,
   };

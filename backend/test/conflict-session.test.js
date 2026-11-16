@@ -29,6 +29,12 @@ function blankOperation() {
     destinationEndTime: null,
     scope: "occurrence",
     selection: [],
+    durationMinutes: null,
+    windowStart: null,
+    windowEnd: null,
+    preference: null,
+    searchEndDate: null,
+    readOnly: null,
   };
 }
 
@@ -79,7 +85,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return hooks.parseBody || {
-              quickcalApiVersion: 3,
+              quickcalApiVersion: 4,
               intent: "create",
               quickcalRelease: "test",
               title: "Coffee with Alex",
@@ -390,7 +396,7 @@ describe("post-save conflict notices", () => {
       parseBody: null,
     };
     hooks.parseBody = {
-      quickcalApiVersion: 3,
+      quickcalApiVersion: 4,
       intent: "move",
       quickcalRelease: "test",
       timeZone: zone,

@@ -19,7 +19,8 @@ importScripts(
   "shared/layout.js",
   "shared/session.js",
   "shared/lookup.js",
-  "shared/conflicts.js"
+  "shared/conflicts.js",
+  "shared/availability.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -1484,7 +1485,8 @@ async function checkHealth() {
         body.quickcalApiVersion === self.QuickCalLocalParse.API_VERSION &&
         Array.isArray(body.capabilities) &&
         body.capabilities.includes("event-notifications") &&
-        body.capabilities.includes("calendar-operations")
+        body.capabilities.includes("calendar-operations") &&
+        body.capabilities.includes("availability-search")
       );
       if (body && body.ok === true && !compatible) {
         const release = typeof body.quickcalRelease === "string" ? " (running " + body.quickcalRelease + ")" : "";
@@ -2116,21 +2118,30 @@ function lookupState(action, kind, query, timeZone, candidates, prompt, extra) {
 function operationContext(lookup) {
   if (!lookup || !lookup.query) return null;
   const query = lookup.query;
+  const availability = lookup.action === "availability";
   return {
     intent: lookup.action || "find",
     target: query.target || query.person || null,
-    searchDate: query.explicitDate ? query.date || null : null,
+    searchDate: availability ? query.date || null : query.explicitDate ? query.date || null : null,
     searchTime: query.explicitTime ? query.startTime || null : null,
     destinationDate: query.newDate || null,
     destinationTime: query.newStartTime || null,
     destinationEndTime: query.newEndTime || null,
     scope: query.scope || "occurrence",
     selection: [],
+    durationMinutes: query.durationMinutes == null ? null : query.durationMinutes,
+    windowStart: query.windowStart || null,
+    windowEnd: query.windowEnd || null,
+    preference: query.preference || null,
+    searchEndDate: query.searchEndDate || null,
+    readOnly: query.readOnly == null ? null : !!query.readOnly,
     missing: lookup.awaiting || null,
     prompt: lookup.prompt || null,
     candidates: (lookup.candidates || []).map((item) => ({
       ref: item.ref,
-      label: item.summary + ", " + item.dateText + ", " + item.timeText,
+      label: availability
+        ? item.summary || item.dateText + ", " + item.timeText
+        : item.summary + ", " + item.dateText + ", " + item.timeText,
     })),
   };
 }
@@ -2455,6 +2466,516 @@ async function applyConflictNotice(incognito, checkId, saved, notice) {
       revision: latest.revision + 1,
     });
   });
+}
+
+function availabilitySearchId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "avail-" + String(Date.now()) + "-" + String(Math.floor(Math.random() * 1000));
+}
+
+function availabilityWindowBounds(query, timeZone) {
+  const api = self.QuickCalAvailability;
+  const schedule = self.QuickCalSchedule;
+  if (!api || !schedule || !query || !query.date) return null;
+  const endDate = query.searchEndDate || query.date;
+  const window = api.resolveWindow({
+    windowStart: query.windowStart || undefined,
+    windowEnd: query.windowEnd || undefined,
+    preference: query.preference || undefined,
+  });
+  if (!window.ok) return null;
+  const start = schedule.resolveLocal(query.date, window.start, timeZone);
+  const end = schedule.resolveLocal(endDate, window.end, timeZone);
+  if (!start.ok || !end.ok || end.epoch <= start.epoch) return null;
+  return {
+    timeMin: new Date(start.epoch).toISOString(),
+    timeMax: new Date(end.epoch).toISOString(),
+    startMs: start.epoch,
+    endMs: end.epoch,
+  };
+}
+
+async function gatherBusyIntervals(window, timeZone) {
+  const api = self.QuickCalConflicts;
+  if (!api || !window) {
+    return { ok: false, error: "Availability checking is unavailable." };
+  }
+  const listed = await listConflictCalendars();
+  if (listed.disconnected) {
+    return { ok: false, disconnected: true, error: listed.error || "Connect Google Calendar before searching availability." };
+  }
+  if (listed.needsScopes) {
+    return { ok: false, needsScopes: true, error: "Reconnect Google Calendar to allow QuickCalAI to check your calendars." };
+  }
+  if (!listed.ok) {
+    return {
+      ok: false,
+      error:
+        listed.error === "network"
+          ? "QuickCalAI could not reach Google Calendar while checking availability."
+          : "QuickCalAI could not list calendars for availability checking.",
+    };
+  }
+
+  const incompleteReasons = [];
+  if (listed.truncated) incompleteReasons.push("Not every calendar could be listed.");
+  const busyIntervals = [];
+  const freeBusyFallback = [];
+
+  for (let index = 0; index < listed.calendars.length; index += 1) {
+    const calendar = listed.calendars[index];
+    const events = await listConflictEvents(calendar, window);
+    if (events.disconnected) {
+      return { ok: false, disconnected: true, error: "Google Calendar sign-in expired while checking availability." };
+    }
+    if (events.network) {
+      incompleteReasons.push("Could not reach " + (calendar.summary || calendar.id) + ".");
+      continue;
+    }
+    if (events.inaccessible || !events.ok) {
+      freeBusyFallback.push(calendar);
+      continue;
+    }
+    if (events.truncated) {
+      incompleteReasons.push("Not every event on " + (calendar.summary || calendar.id) + " could be checked.");
+    }
+    events.items.forEach((item) => {
+      if (!api.isBusyCandidate(item)) return;
+      const interval = api.intervalFromGoogleTimes(item.start, item.end);
+      if (interval) busyIntervals.push(interval);
+    });
+  }
+
+  if (freeBusyFallback.length) {
+    const busy = await freeBusyCalendars(freeBusyFallback, window, timeZone);
+    if (busy.needsScopes) {
+      return { ok: false, needsScopes: true, error: "Reconnect Google Calendar to allow QuickCalAI to check your calendars." };
+    }
+    if (busy.ok && busy.calendars) {
+      freeBusyFallback.forEach((calendar) => {
+        const block = busy.calendars[calendar.id];
+        if (!block) {
+          incompleteReasons.push("Could not check " + (calendar.summary || calendar.id) + ".");
+          return;
+        }
+        if (Array.isArray(block.errors) && block.errors.length) {
+          incompleteReasons.push(
+            "Google does not allow availability checks on " + (calendar.summary || calendar.id) + "."
+          );
+          return;
+        }
+        (block.busy || []).forEach((slot) => {
+          const entry = api.entryFromBusy(slot, calendar);
+          if (entry) busyIntervals.push({ startMs: entry.startMs, endMs: entry.endMs });
+        });
+      });
+    } else {
+      freeBusyFallback.forEach((calendar) => {
+        incompleteReasons.push("Could not check " + (calendar.summary || calendar.id) + ".");
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    busyIntervals: self.QuickCalAvailability.mergeBusy(busyIntervals),
+    incompleteReasons: incompleteReasons,
+    calendarCount: listed.calendars.length,
+  };
+}
+
+function availabilityMeetingTitle(query, event) {
+  if (event && typeof event.title === "string" && event.title.trim()) return event.title.trim();
+  if (query && typeof query.title === "string" && query.title.trim()) return query.title.trim();
+  const readOnly = query && query.readOnly != null
+    ? !!query.readOnly
+    : event && event.operation && event.operation.readOnly != null
+      ? !!event.operation.readOnly
+      : false;
+  if (readOnly) return "";
+  if (query && query.target) {
+    const target = String(query.target).trim();
+    if (target) return /^meeting\b/i.test(target) ? target : "Meeting with " + target;
+  }
+  return "";
+}
+
+function presentAvailability(query, zone, search, extra) {
+  const api = self.QuickCalAvailability;
+  const title = query.title || "";
+  const slots = api.slotRefs(search.slots || []);
+  const defaults = api.summarizeDefaults(search);
+  const lines = api.slotLines(slots.map((slot) => Object.assign({}, slot, {
+    summary: title || "Available",
+  })), title || "Available");
+  const partial = !!(extra && extra.incompleteReasons && extra.incompleteReasons.length);
+  const promptParts = [];
+  if (!slots.length) {
+    promptParts.push("No open " + search.durationMinutes + "-minute slots fit that window (" + defaults + ").");
+    promptParts.push("Try another day, a shorter duration, or a different time window.");
+  } else if (title) {
+    promptParts.push("Open times for " + title + " (" + defaults + "). Reply with a number to schedule.");
+  } else {
+    promptParts.push("You're free at these times (" + defaults + ").");
+    if (!query.readOnly) promptParts.push("Reply with a number to schedule, or name the event.");
+  }
+  if (partial) {
+    promptParts.push("Partial check: " + extra.incompleteReasons.join(" "));
+  }
+  return lookupState(
+    "availability",
+    "choose",
+    Object.assign({}, query, {
+      date: search.searchDate,
+      searchEndDate: search.searchEndDate,
+      durationMinutes: search.durationMinutes,
+      windowStart: search.windowStart,
+      windowEnd: search.windowEnd,
+      preference: search.preference || query.preference || "",
+      title: title,
+    }),
+    zone,
+    slots.map((slot) => Object.assign({}, slot, {
+      summary: title || "Available",
+      dateText: slot.dateText,
+      timeText: slot.timeText,
+    })),
+    promptParts.join(" "),
+    Object.assign(
+      {
+        lines: lines,
+        awaiting: slots.length ? "selection" : "refine",
+        searchId: (extra && extra.searchId) || "",
+        partial: partial,
+        incompleteReasons: (extra && extra.incompleteReasons) || [],
+        hint: slots.length && title ? "Reply 1, 2, or 3 to schedule that slot." : slots.length ? "Reply with a number, or name what to schedule." : "Change the day, duration, or time window.",
+      },
+      extra || {}
+    )
+  );
+}
+
+async function runAvailabilitySearch(incognito, operation, query, zone, event) {
+  const api = self.QuickCalAvailability;
+  const searchId = availabilitySearchId();
+  const title = availabilityMeetingTitle(query, event);
+  const nextQuery = Object.assign({}, query, {
+    title: title,
+    date: query.date || (event && event.operation && event.operation.searchDate) || "",
+    searchEndDate: query.searchEndDate || (event && event.operation && event.operation.searchEndDate) || "",
+    durationMinutes:
+      query.durationMinutes != null
+        ? query.durationMinutes
+        : event && event.operation && event.operation.durationMinutes != null
+          ? event.operation.durationMinutes
+          : null,
+    windowStart: query.windowStart || (event && event.operation && event.operation.windowStart) || "",
+    windowEnd: query.windowEnd || (event && event.operation && event.operation.windowEnd) || "",
+    preference: query.preference || (event && event.operation && event.operation.preference) || "",
+    readOnly:
+      query.readOnly != null
+        ? query.readOnly
+        : event && event.operation && event.operation.readOnly != null
+          ? event.operation.readOnly
+          : !title,
+  });
+
+  if (!nextQuery.date) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      "availability",
+      "ask",
+      nextQuery,
+      zone,
+      [],
+      (event && event.clarificationQuestions && event.clarificationQuestions[0]) || "What day should I check?",
+      { awaiting: "searchDate", searchId: searchId }
+    )));
+  }
+
+  const window = availabilityWindowBounds(nextQuery, zone);
+  if (!window) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      statusText: "That availability window is not valid.",
+      statusError: true,
+    }));
+  }
+
+  await mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    return Object.assign({}, latest, {
+      statusText: "Checking your calendars\u2026",
+      statusError: false,
+    });
+  });
+
+  const busy = await gatherBusyIntervals(window, zone);
+  if (!self.QuickCalSession.operationCurrent(await readWidgetSession(incognito), operation)) {
+    return readWidgetSession(incognito);
+  }
+  if (busy.disconnected) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      statusText: busy.error || "Connect Google Calendar before searching availability.",
+      statusError: true,
+    }));
+  }
+  if (busy.needsScopes) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      statusText: busy.error,
+      statusError: true,
+    }));
+  }
+  if (!busy.ok) {
+    return settleLookup(incognito, operation, async () => ({
+      mode: "input",
+      lookup: null,
+      statusText: busy.error || "QuickCalAI could not check availability.",
+      statusError: true,
+    }));
+  }
+
+  let afterStartMs = nextQuery.afterStartMs || 0;
+  if (nextQuery.preference === "later" && !afterStartMs) {
+    afterStartMs = Date.now();
+  }
+  const searched = api.searchRange({
+    searchDate: nextQuery.date,
+    searchEndDate: nextQuery.searchEndDate || nextQuery.date,
+    durationMinutes: nextQuery.durationMinutes,
+    windowStart: nextQuery.windowStart || undefined,
+    windowEnd: nextQuery.windowEnd || undefined,
+    preference: nextQuery.preference === "later" ? null : nextQuery.preference || undefined,
+    timeZone: zone,
+    nowMs: Date.now(),
+    busyIntervals: busy.busyIntervals,
+    afterStartMs: afterStartMs || undefined,
+  });
+  if (!searched.ok) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      "availability",
+      "ask",
+      nextQuery,
+      zone,
+      [],
+      searched.error || "What day should I check?",
+      { awaiting: searched.missing || "refine", searchId: searchId }
+    )));
+  }
+
+  const presented = presentAvailability(nextQuery, zone, searched, {
+    searchId: searchId,
+    incompleteReasons: busy.incompleteReasons || [],
+  });
+  return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, presented));
+}
+
+async function recheckAvailabilitySlot(slot, zone) {
+  const schedule = self.QuickCalSchedule;
+  const api = self.QuickCalConflicts;
+  if (!schedule || !api || !slot) return { ok: false, error: "That slot is no longer available to check." };
+  const start = schedule.resolveLocal(slot.date, slot.startTime, zone);
+  const end = schedule.resolveLocal(slot.endDate || slot.date, slot.endTime, zone);
+  if (!start.ok || !end.ok || end.epoch <= start.epoch) {
+    return { ok: false, error: "That slot is not valid." };
+  }
+  const window = {
+    timeMin: new Date(start.epoch).toISOString(),
+    timeMax: new Date(end.epoch).toISOString(),
+    startMs: start.epoch,
+    endMs: end.epoch,
+  };
+  const busy = await gatherBusyIntervals(window, zone);
+  if (!busy.ok) return busy;
+  const conflict = busy.busyIntervals.some((item) => api.intervalsOverlap(start.epoch, end.epoch, item.startMs, item.endMs));
+  return {
+    ok: true,
+    free: !conflict,
+    incompleteReasons: busy.incompleteReasons || [],
+    startMs: start.epoch,
+    endMs: end.epoch,
+  };
+}
+
+async function saveAvailabilitySlot(incognito, operation, query, zone, slot, force) {
+  const title = availabilityMeetingTitle(query);
+  if (!title) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+      "availability",
+      "ask",
+      query,
+      zone,
+      [slot],
+      "What should I call this event?",
+      { awaiting: "title", searchId: query.searchId || "", selectedSlot: slot }
+    )));
+  }
+  if (!force) {
+    const check = await recheckAvailabilitySlot(slot, zone);
+    if (!check.ok) {
+      return settleLookup(incognito, operation, async () => ({
+        mode: "input",
+        lookup: null,
+        statusText: check.error || "QuickCalAI could not recheck that slot.",
+        statusError: true,
+      }));
+    }
+    if (!check.free) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+        "availability",
+        "confirm",
+        Object.assign({}, query, { title: title }),
+        zone,
+        [slot],
+        "That slot is no longer free. Reply Schedule anyway, or ask for refreshed times.",
+        {
+          awaiting: "stale",
+          selectedSlot: slot,
+          hint: "Press Enter to schedule anyway, or ask for new options.",
+          forceSchedule: true,
+        }
+      )));
+    }
+  }
+
+  const event = {
+    title: title,
+    date: slot.date,
+    endDate: slot.endDate || slot.date,
+    startTime: slot.startTime,
+    endTime: slot.endTime,
+    timeZone: zone,
+    location: null,
+    recurrence: null,
+    reminders: { useDefault: false, overrides: [] },
+    remindersText: "",
+    recurrenceText: "",
+    seriesEndText: "",
+    needsClarification: false,
+    clarificationQuestions: [],
+    durationDefaulted: false,
+    intent: "create",
+  };
+
+  await mutateWidgetSession(incognito, (latest) => {
+    if (!self.QuickCalSession.operationCurrent(latest, operation)) return latest;
+    return Object.assign({}, latest, {
+      mode: "creating",
+      event: event,
+      draftEvent: event,
+      lookup: null,
+      statusText: "Creating event\u2026",
+      statusError: false,
+    });
+  });
+
+  const saveResult = await saveWidgetEvent(event);
+  const finished = await mutateWidgetSession(incognito, (after) => {
+    if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
+    if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+      const checking = self.QuickCalConflicts
+        ? self.QuickCalConflicts.checkingNotice("pending", saveResult)
+        : null;
+      const saved = self.QuickCalSession.finishOperation(after, operation, {
+        mode: "saved",
+        savedRecord: saveResult,
+        event: event,
+        draftEvent: null,
+        clarification: null,
+        lookup: null,
+        input: "",
+        statusText: checking ? checking.statusText : "",
+        statusError: false,
+        conflictNotice: checking,
+      });
+      return saved.accepted ? saved.state : after;
+    }
+    const kept = self.QuickCalSession.finishOperation(after, operation, {
+      mode: "failed",
+      draftEvent: event,
+      event: event,
+      statusText: saveResult && saveResult.error ? saveResult.error : "QuickCalAI could not save this event.",
+      statusError: true,
+      conflictNotice: null,
+    });
+    return kept.accepted ? kept.state : after;
+  });
+  if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+    return scheduleConflictCheck(incognito, saveResult);
+  }
+  return finished;
+}
+
+async function runAvailabilityFollowUp(incognito, text, operation, pending, event) {
+  const zone = (pending && pending.timeZone) || "UTC";
+  const query = self.QuickCalLookup.mergeQuery(pending && pending.query, event.operation);
+  if (event.title) query.title = event.title;
+  if (event.operation && event.operation.readOnly != null) query.readOnly = event.operation.readOnly;
+  if (pending && pending.searchId) query.searchId = pending.searchId;
+  if (pending && pending.query && pending.query.afterStartMs) query.afterStartMs = pending.query.afterStartMs;
+
+  if (pending && pending.awaiting === "title") {
+    const named = (event.title || text || "").trim();
+    if (!named) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, pending, {
+        prompt: "What should I call this event?",
+      })));
+    }
+    query.title = named;
+    query.readOnly = false;
+    const slot = pending.selectedSlot || (pending.candidates && pending.candidates[0]);
+    if (!slot) return runAvailabilitySearch(incognito, operation, query, zone, event);
+    return saveAvailabilitySlot(incognito, operation, query, zone, slot, false);
+  }
+
+  if (pending && pending.forceSchedule && pending.kind === "confirm") {
+    const slot = pending.selectedSlot || (pending.candidates && pending.candidates[0]);
+    if (slot && (!event.operation.selection || !event.operation.selection.length)) {
+      return saveAvailabilitySlot(incognito, operation, query, zone, slot, true);
+    }
+  }
+
+  const bound = bindSelection(event.operation && event.operation.selection, pending && pending.candidates);
+  if (bound.invalid) {
+    return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, pending, {
+      prompt: "Which time do you mean? Reply with a number.",
+      awaiting: "selection",
+    })));
+  }
+  if (bound.selected && bound.selected.length) {
+    if (bound.selected.length > 1) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, Object.assign({}, pending, {
+        prompt: "Choose one time. Reply with a single number.",
+        awaiting: "selection",
+      })));
+    }
+    const slot = bound.selected[0];
+    if (query.readOnly && !query.title) {
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+        "availability",
+        "ask",
+        Object.assign({}, query, { readOnly: false }),
+        zone,
+        [slot],
+        "What should I call this event?",
+        { awaiting: "title", selectedSlot: slot, searchId: pending.searchId || "" }
+      )));
+    }
+    return saveAvailabilitySlot(incognito, operation, Object.assign({}, query, { readOnly: false }), zone, slot, false);
+  }
+
+  if (query.preference === "later" && pending && pending.candidates && pending.candidates.length) {
+    const last = pending.candidates[pending.candidates.length - 1];
+    query.afterStartMs = last.startMs || 0;
+  } else if (event.operation && event.operation.preference !== "later") {
+    query.afterStartMs = 0;
+  }
+
+  return runAvailabilitySearch(incognito, operation, query, zone, event);
 }
 
 async function scheduleConflictCheck(incognito, saved) {
@@ -2845,6 +3366,25 @@ async function runInterpreted(incognito, text, timeZone, operation, pending, eve
   const zone = timeZone || "UTC";
   const query = self.QuickCalLookup.mergeQuery(pending && pending.query, event.operation);
   const action = event.intent === "clarify" ? (pending && pending.action) || "find" : event.intent;
+  if (action === "availability" || (pending && pending.action === "availability" && event.intent === "clarify")) {
+    if (event.intent === "clarify" || query.scope === "unsupported") {
+      const question = (event.clarificationQuestions && event.clarificationQuestions[0]) || "What day should I check?";
+      return settleLookup(incognito, operation, async () => self.QuickCalSession.noteLookup({}, lookupState(
+        "availability",
+        "ask",
+        Object.assign({}, query, { title: availabilityMeetingTitle(query, event) }),
+        zone,
+        pending && pending.candidates || [],
+        question,
+        { awaiting: (pending && pending.awaiting) || "searchDate", searchId: pending && pending.searchId || "" }
+      )));
+    }
+    if (pending && pending.action === "availability") {
+      return runAvailabilityFollowUp(incognito, text, operation, pending, event);
+    }
+    if (event.title) query.title = event.title;
+    return runAvailabilitySearch(incognito, operation, query, zone, event);
+  }
   if (event.intent === "clarify" || query.scope === "unsupported") {
     const question = query.scope === "unsupported"
       ? "Changing this and the following occurrences is not supported yet. No events were changed."
@@ -3077,10 +3617,24 @@ function handleWidgetMessage(message, sender) {
       if (!begun.accepted) return state;
       operation = begun.state.operation;
       lookup = state.lookup;
-      return Object.assign({}, begun.state, { statusText: state.lookup.action === "delete" ? "Deleting event\u2026" : "Updating event\u2026", statusError: false });
+      const confirmingAvailability = state.lookup.action === "availability";
+      return Object.assign({}, begun.state, {
+        statusText: state.lookup.action === "delete"
+          ? "Deleting event\u2026"
+          : confirmingAvailability
+            ? "Creating event\u2026"
+            : "Updating event\u2026",
+        statusError: false,
+      });
     }).then((state) => {
       if (!operation || !state.operation || state.operation.id !== operation.id) {
         return { ok: false, ignored: true, session: state };
+      }
+      if (lookup && lookup.action === "availability" && lookup.forceSchedule) {
+        const slot = lookup.selectedSlot || (lookup.candidates && lookup.candidates[0]);
+        const query = Object.assign({}, lookup.query || {});
+        return saveAvailabilitySlot(incognito, operation, query, lookup.timeZone || "UTC", slot, true)
+          .then((session) => ({ ok: true, session: session }));
       }
       return runConfirmedLookup(incognito, operation, lookup).then((session) => ({ ok: true, session: session }));
     });
@@ -3108,9 +3662,14 @@ function handleWidgetMessage(message, sender) {
         savedRecord: current.savedRecord,
         originalText: current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
       };
+      const pendingAvailability = current.lookup && current.lookup.action === "availability";
       return Object.assign({}, begun.state, {
         input: text,
-        statusText: context.editing ? "Updating event\u2026" : "Reading your event\u2026",
+        statusText: context.editing
+          ? "Updating event\u2026"
+          : pendingAvailability
+            ? "Checking availability\u2026"
+            : "Reading your event\u2026",
         statusError: false,
       });
     }).then((state) => {
@@ -3135,6 +3694,13 @@ function handleWidgetMessage(message, sender) {
           }).then((session) => ({ ok: true, session: session }));
         }
         const intent = result.event.intent;
+        if (pendingLookup && pendingLookup.action === "availability" && (intent === "create" || intent === "edit")) {
+          return settleLookup(incognito, operation, async () => ({
+            statusText: "That sounds like a new event. Dismiss availability first, or pick a listed time.",
+            statusError: false,
+            input: text,
+          })).then((session) => ({ ok: true, session: session }));
+        }
         if (intent === "create" || intent === "edit") {
           const view = self.QuickCalPreview.previewModel(result.event);
           if (pendingLookup && !view.saveable) {

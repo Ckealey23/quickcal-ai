@@ -268,9 +268,9 @@ describe("production parse access", { concurrency: false }, () => {
     assert.deepEqual(health.body, {
       ok: true,
       apiKeyConfigured: true,
-      quickcalApiVersion: 3,
+      quickcalApiVersion: 4,
       quickcalRelease: "test-revision",
-      capabilities: ["event-notifications", "calendar-operations"],
+      capabilities: ["event-notifications", "calendar-operations", "availability-search"],
     });
     assert.equal(health.text.includes(SECRET), false);
 

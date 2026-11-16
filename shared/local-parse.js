@@ -7,7 +7,7 @@
   const ACCESS_URL = BACKEND_ORIGIN + "/access";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
-  const API_VERSION = 3;
+  const API_VERSION = 4;
 
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;
@@ -94,16 +94,55 @@
     return { ok: true, value: value };
   }
 
+  function contextDuration(value) {
+    if (value == null) return { ok: true, value: null };
+    if (!Number.isInteger(value) || value < 5 || value > 480) return { ok: false };
+    return { ok: true, value: value };
+  }
+
+  function contextPreference(value) {
+    if (value == null) return { ok: true, value: null };
+    if (typeof value !== "string") return { ok: false };
+    const key = value.trim().toLowerCase();
+    if (["morning", "afternoon", "evening", "later"].indexOf(key) === -1) return { ok: false };
+    return { ok: true, value: key };
+  }
+
+  function contextReadOnly(value) {
+    if (value == null) return { ok: true, value: null };
+    if (typeof value !== "boolean") return { ok: false };
+    return { ok: true, value: value };
+  }
+
   function normalizeOperationContext(value) {
     if (value == null) return { ok: true, operation: null };
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { ok: false, error: "Operation context is not valid." };
     }
-    const allowed = ["intent", "target", "searchDate", "searchTime", "destinationDate", "destinationTime", "destinationEndTime", "scope", "selection", "missing", "prompt", "candidates"];
+    const allowed = [
+      "intent",
+      "target",
+      "searchDate",
+      "searchTime",
+      "destinationDate",
+      "destinationTime",
+      "destinationEndTime",
+      "scope",
+      "selection",
+      "durationMinutes",
+      "windowStart",
+      "windowEnd",
+      "preference",
+      "searchEndDate",
+      "readOnly",
+      "missing",
+      "prompt",
+      "candidates",
+    ];
     if (Object.keys(value).some((key) => allowed.indexOf(key) === -1)) {
       return { ok: false, error: "Operation context is not valid." };
     }
-    if (["move", "delete", "find", "clarify"].indexOf(value.intent) === -1) {
+    if (["move", "delete", "find", "clarify", "availability"].indexOf(value.intent) === -1) {
       return { ok: false, error: "Operation context is not valid." };
     }
     if (["occurrence", "series", "unsupported"].indexOf(value.scope || "occurrence") === -1) {
@@ -115,9 +154,30 @@
     const destinationDate = contextDate(value.destinationDate);
     const destinationTime = contextTime(value.destinationTime);
     const destinationEndTime = contextTime(value.destinationEndTime);
+    const durationMinutes = contextDuration(Object.hasOwn(value, "durationMinutes") ? value.durationMinutes : null);
+    const windowStart = contextTime(Object.hasOwn(value, "windowStart") ? value.windowStart : null);
+    const windowEnd = contextTime(Object.hasOwn(value, "windowEnd") ? value.windowEnd : null);
+    const preference = contextPreference(Object.hasOwn(value, "preference") ? value.preference : null);
+    const searchEndDate = contextDate(Object.hasOwn(value, "searchEndDate") ? value.searchEndDate : null);
+    const readOnly = contextReadOnly(Object.hasOwn(value, "readOnly") ? value.readOnly : null);
     const missing = nullableContextText(value.missing, 40);
     const prompt = nullableContextText(value.prompt, 240);
-    if (!target.ok || !searchDate.ok || !searchTime.ok || !destinationDate.ok || !destinationTime.ok || !destinationEndTime.ok || !missing.ok || !prompt.ok) {
+    if (
+      !target.ok ||
+      !searchDate.ok ||
+      !searchTime.ok ||
+      !destinationDate.ok ||
+      !destinationTime.ok ||
+      !destinationEndTime.ok ||
+      !durationMinutes.ok ||
+      !windowStart.ok ||
+      !windowEnd.ok ||
+      !preference.ok ||
+      !searchEndDate.ok ||
+      !readOnly.ok ||
+      !missing.ok ||
+      !prompt.ok
+    ) {
       return { ok: false, error: "Operation context is not valid." };
     }
     const selection = [];
@@ -157,6 +217,12 @@
         destinationEndTime: destinationEndTime.value,
         scope: value.scope || "occurrence",
         selection: selection,
+        durationMinutes: durationMinutes.value,
+        windowStart: windowStart.value,
+        windowEnd: windowEnd.value,
+        preference: preference.value,
+        searchEndDate: searchEndDate.value,
+        readOnly: readOnly.value,
         missing: missing.value,
         prompt: prompt.value,
         candidates: candidates,
@@ -183,6 +249,26 @@
     return value;
   }
 
+  function optionalDuration(value) {
+    if (value === null) return null;
+    if (!Number.isInteger(value) || value < 5 || value > 480) return undefined;
+    return value;
+  }
+
+  function optionalPreference(value) {
+    if (value === null) return null;
+    if (typeof value !== "string") return undefined;
+    const key = value.trim().toLowerCase();
+    if (["morning", "afternoon", "evening", "later"].indexOf(key) === -1) return undefined;
+    return key;
+  }
+
+  function optionalReadOnly(value) {
+    if (value === null) return null;
+    if (typeof value !== "boolean") return undefined;
+    return value;
+  }
+
   function sanitizeOperation(body) {
     const operation = body.operation;
     if (!operation || typeof operation !== "object" || Array.isArray(operation)) return null;
@@ -192,7 +278,17 @@
     const destinationDate = optionalDate(operation.destinationDate);
     const destinationTime = optionalTime(operation.destinationTime);
     const destinationEndTime = optionalTime(operation.destinationEndTime);
-    if ([target, searchDate, searchTime, destinationDate, destinationTime, destinationEndTime].some((item) => item === undefined)) {
+    const durationMinutes = optionalDuration(Object.hasOwn(operation, "durationMinutes") ? operation.durationMinutes : null);
+    const windowStart = optionalTime(Object.hasOwn(operation, "windowStart") ? operation.windowStart : null);
+    const windowEnd = optionalTime(Object.hasOwn(operation, "windowEnd") ? operation.windowEnd : null);
+    const preference = optionalPreference(Object.hasOwn(operation, "preference") ? operation.preference : null);
+    const searchEndDate = optionalDate(Object.hasOwn(operation, "searchEndDate") ? operation.searchEndDate : null);
+    const readOnly = optionalReadOnly(Object.hasOwn(operation, "readOnly") ? operation.readOnly : null);
+    if (
+      [target, searchDate, searchTime, destinationDate, destinationTime, destinationEndTime, durationMinutes, windowStart, windowEnd, preference, searchEndDate, readOnly].some(
+        (item) => item === undefined
+      )
+    ) {
       return null;
     }
     if (["occurrence", "series", "unsupported"].indexOf(operation.scope) === -1) return null;
@@ -212,9 +308,11 @@
         if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
       });
     }
+    const title = body.intent === "availability" ? optionalText(body.title) : null;
+    if (body.intent === "availability" && title === undefined) return null;
     return {
       intent: body.intent,
-      title: null,
+      title: title,
       date: null,
       startTime: null,
       endTime: null,
@@ -238,13 +336,25 @@
         destinationEndTime: destinationEndTime,
         scope: operation.scope,
         selection: selection,
+        durationMinutes: durationMinutes,
+        windowStart: windowStart,
+        windowEnd: windowEnd,
+        preference: preference,
+        searchEndDate: searchEndDate,
+        readOnly: readOnly,
       },
     };
   }
 
   function sanitizeEvent(body) {
     if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-    if (body.intent === "move" || body.intent === "delete" || body.intent === "find" || body.intent === "clarify") {
+    if (
+      body.intent === "move" ||
+      body.intent === "delete" ||
+      body.intent === "find" ||
+      body.intent === "clarify" ||
+      body.intent === "availability"
+    ) {
       return sanitizeOperation(body);
     }
     if (body.intent !== "create" && body.intent !== "edit") return null;

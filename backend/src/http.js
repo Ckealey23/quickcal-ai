@@ -12,7 +12,7 @@ import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.
 import { validateRequest } from "./validate.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
-export const QUICKCAL_API_VERSION = 3;
+export const QUICKCAL_API_VERSION = 4;
 
 function publicRelease(value) {
   const release = typeof value === "string" ? value.trim() : "";
@@ -173,7 +173,7 @@ export function createHandler({
         apiKeyConfigured: Boolean(apiKeyConfigured),
         quickcalApiVersion: QUICKCAL_API_VERSION,
         quickcalRelease: quickcalRelease,
-        capabilities: ["event-notifications", "calendar-operations"],
+        capabilities: ["event-notifications", "calendar-operations", "availability-search"],
       });
       return;
     }

@@ -18,8 +18,8 @@ const EVENT_FIELDS = [
   "intent",
   "operation",
 ];
-const INTENTS = ["create", "edit", "move", "delete", "find", "clarify"];
-const CALENDAR_INTENTS = ["move", "delete", "find", "clarify"];
+const INTENTS = ["create", "edit", "move", "delete", "find", "clarify", "availability"];
+const CALENDAR_INTENTS = ["move", "delete", "find", "clarify", "availability"];
 const SCOPES = ["occurrence", "series", "unsupported"];
 const OPERATION_FIELDS = [
   "target",
@@ -30,8 +30,15 @@ const OPERATION_FIELDS = [
   "destinationEndTime",
   "scope",
   "selection",
+  "durationMinutes",
+  "windowStart",
+  "windowEnd",
+  "preference",
+  "searchEndDate",
+  "readOnly",
 ];
 const CONTEXT_FIELDS = OPERATION_FIELDS.concat(["intent", "missing", "prompt", "candidates"]);
+const PREFERENCES = ["morning", "afternoon", "evening", "later"];
 
 export function isValidTimeZone(timeZone) {
   if (typeof timeZone !== "string") return false;
@@ -96,6 +103,26 @@ function nullableText(value, maxLength) {
   return optionalText(value, maxLength);
 }
 
+function optionalDuration(value) {
+  if (value == null) return { ok: true, value: null };
+  if (!Number.isInteger(value) || value < 5 || value > 480) return { ok: false };
+  return { ok: true, value: value };
+}
+
+function optionalPreference(value) {
+  if (value == null) return { ok: true, value: null };
+  if (typeof value !== "string") return { ok: false };
+  const key = value.trim().toLowerCase();
+  if (!PREFERENCES.includes(key)) return { ok: false };
+  return { ok: true, value: key };
+}
+
+function optionalReadOnly(value) {
+  if (value == null) return { ok: true, value: null };
+  if (typeof value !== "boolean") return { ok: false };
+  return { ok: true, value: value };
+}
+
 function normalizeModelOperation(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false };
   const keys = Object.keys(raw);
@@ -107,7 +134,26 @@ function normalizeModelOperation(raw) {
   const destinationDate = optionalDate(raw.destinationDate);
   const destinationTime = optionalTime(raw.destinationTime);
   const destinationEndTime = optionalTime(raw.destinationEndTime);
-  if (!target.ok || !searchDate.ok || !searchTime.ok || !destinationDate.ok || !destinationTime.ok || !destinationEndTime.ok) {
+  const durationMinutes = optionalDuration(raw.durationMinutes);
+  const windowStart = optionalTime(raw.windowStart);
+  const windowEnd = optionalTime(raw.windowEnd);
+  const preference = optionalPreference(raw.preference);
+  const searchEndDate = optionalDate(raw.searchEndDate);
+  const readOnly = optionalReadOnly(raw.readOnly);
+  if (
+    !target.ok ||
+    !searchDate.ok ||
+    !searchTime.ok ||
+    !destinationDate.ok ||
+    !destinationTime.ok ||
+    !destinationEndTime.ok ||
+    !durationMinutes.ok ||
+    !windowStart.ok ||
+    !windowEnd.ok ||
+    !preference.ok ||
+    !searchEndDate.ok ||
+    !readOnly.ok
+  ) {
     return { ok: false };
   }
   if (!SCOPES.includes(raw.scope)) return { ok: false };
@@ -129,6 +175,12 @@ function normalizeModelOperation(raw) {
       destinationEndTime: destinationEndTime.value,
       scope: raw.scope,
       selection: selection,
+      durationMinutes: durationMinutes.value,
+      windowStart: windowStart.value,
+      windowEnd: windowEnd.value,
+      preference: preference.value,
+      searchEndDate: searchEndDate.value,
+      readOnly: readOnly.value,
     },
   };
 }
@@ -154,6 +206,12 @@ export function normalizeOperationContext(value) {
     destinationEndTime: Object.hasOwn(value, "destinationEndTime") ? value.destinationEndTime : null,
     scope: value.scope || "occurrence",
     selection: Array.isArray(value.selection) ? value.selection : [],
+    durationMinutes: Object.hasOwn(value, "durationMinutes") ? value.durationMinutes : null,
+    windowStart: Object.hasOwn(value, "windowStart") ? value.windowStart : null,
+    windowEnd: Object.hasOwn(value, "windowEnd") ? value.windowEnd : null,
+    preference: Object.hasOwn(value, "preference") ? value.preference : null,
+    searchEndDate: Object.hasOwn(value, "searchEndDate") ? value.searchEndDate : null,
+    readOnly: Object.hasOwn(value, "readOnly") ? value.readOnly : null,
   });
   if (!model.ok) return { ok: false, error: "Operation context is not valid." };
   const missing = nullableText(Object.hasOwn(value, "missing") ? value.missing : null, 40);
@@ -301,6 +359,10 @@ export function validateExtraction(raw, requestedTimeZone) {
   if (raw.intent === "clarify") {
     needsClarification = true;
     if (questions.length === 0) addQuestion(questions, "What should I change?");
+  }
+  if (raw.intent === "availability" && !operation.operation.searchDate) {
+    needsClarification = true;
+    addQuestion(questions, "What day should I check?");
   }
   if (startTime.value && endTime.value && endTime.value <= startTime.value) {
     needsClarification = true;

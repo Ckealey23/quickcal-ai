@@ -567,12 +567,21 @@
     hideActions();
     cancelButton.hidden = false;
     const seriesChange = lookup.action === "move" && lookup.kind === "confirm";
-    deleteButton.hidden = lookup.kind !== "confirm" || (lookup.action !== "delete" && !seriesChange);
-    deleteButton.textContent = lookup.action === "delete" ? "Delete event" : "Change series";
+    const scheduleAnyway = lookup.action === "availability" && lookup.kind === "confirm" && !!lookup.forceSchedule;
+    deleteButton.hidden = lookup.kind !== "confirm" || (lookup.action !== "delete" && !seriesChange && !scheduleAnyway);
+    deleteButton.textContent = lookup.action === "delete"
+      ? "Delete event"
+      : scheduleAnyway
+        ? "Schedule anyway"
+        : "Change series";
     rule.hidden = false;
     actions.hidden = false;
     input.value = "";
-    input.placeholder = lookup.kind === "confirm" && lookup.action === "delete" ? "Press Enter to delete" : "Your answer";
+    input.placeholder = lookup.kind === "confirm" && lookup.action === "delete"
+      ? "Press Enter to delete"
+      : scheduleAnyway
+        ? "Press Enter to schedule anyway"
+        : "Your answer";
     input.setAttribute("aria-label", lookup.kind === "confirm" ? "Confirm or correct" : "Answer");
     host.dataset.mode = mode;
     if (allowFocus) input.focus();

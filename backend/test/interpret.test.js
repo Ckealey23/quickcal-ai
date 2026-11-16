@@ -19,6 +19,12 @@ function blankOperation(fields) {
     destinationEndTime: null,
     scope: "occurrence",
     selection: [],
+    durationMinutes: null,
+    windowStart: null,
+    windowEnd: null,
+    preference: null,
+    searchEndDate: null,
+    readOnly: null,
   }, fields || {});
 }
 

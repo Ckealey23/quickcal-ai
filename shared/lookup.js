@@ -332,6 +332,14 @@
       newEndTime: base.newEndTime || "",
       scope: base.scope || "occurrence",
       ambiguousTime: false,
+      title: base.title || "",
+      durationMinutes: base.durationMinutes == null ? null : base.durationMinutes,
+      windowStart: base.windowStart || "",
+      windowEnd: base.windowEnd || "",
+      preference: base.preference || "",
+      searchEndDate: base.searchEndDate || "",
+      readOnly: base.readOnly == null ? null : !!base.readOnly,
+      afterStartMs: base.afterStartMs || 0,
     };
     if (!incoming) return next;
     if (incoming.target) {
@@ -341,6 +349,9 @@
     if (incoming.searchDate) {
       next.date = incoming.searchDate;
       next.explicitDate = true;
+      if (!incoming.searchEndDate && next.searchEndDate && next.searchEndDate < incoming.searchDate) {
+        next.searchEndDate = "";
+      }
     }
     if (incoming.searchTime) {
       next.startTime = incoming.searchTime;
@@ -350,6 +361,14 @@
     if (incoming.destinationTime) next.newStartTime = incoming.destinationTime;
     if (incoming.destinationEndTime) next.newEndTime = incoming.destinationEndTime;
     if (incoming.scope) next.scope = incoming.scope;
+    if (incoming.durationMinutes != null) next.durationMinutes = incoming.durationMinutes;
+    if (incoming.windowStart) next.windowStart = incoming.windowStart;
+    if (incoming.windowEnd) next.windowEnd = incoming.windowEnd;
+    if (incoming.preference) next.preference = incoming.preference;
+    if (Object.prototype.hasOwnProperty.call(incoming, "searchEndDate")) {
+      next.searchEndDate = incoming.searchEndDate || "";
+    }
+    if (incoming.readOnly != null) next.readOnly = !!incoming.readOnly;
     return next;
   }
 

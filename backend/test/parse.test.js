@@ -33,6 +33,12 @@ function blankOperation() {
     destinationEndTime: null,
     scope: "occurrence",
     selection: [],
+    durationMinutes: null,
+    windowStart: null,
+    windowEnd: null,
+    preference: null,
+    searchEndDate: null,
+    readOnly: null,
   };
 }
 
@@ -308,16 +314,7 @@ describe("notification parsing", () => {
       needsClarification: false,
       clarificationQuestions: [],
       intent: "edit",
-      operation: {
-        target: null,
-        searchDate: null,
-        searchTime: null,
-        destinationDate: null,
-        destinationTime: null,
-        destinationEndTime: null,
-        scope: "occurrence",
-        selection: [],
-      },
+      operation: blankOperation(),
     };
   }
 
