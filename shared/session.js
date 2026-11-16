@@ -31,6 +31,7 @@
       lookup: null,
       doc: null,
       batch: null,
+      onboarding: null,
     };
   }
 
@@ -50,6 +51,7 @@
       voice: null,
       lookup: null,
       batch: null,
+      onboarding: null,
     };
   }
 
@@ -75,6 +77,13 @@
       claim: state.claim + 1,
       ownerTabId: state.ownerTabId,
       inputSeq: 0,
+    });
+  }
+
+  function setOnboarding(state, onboarding) {
+    return Object.assign({}, state, {
+      onboarding: onboarding || null,
+      revision: state.revision + 1,
     });
   }
 
@@ -255,6 +264,7 @@
     claim: claim,
     patchInput: patchInput,
     setLayout: setLayout,
+    setOnboarding: setOnboarding,
     beginOperation: beginOperation,
     operationCurrent: operationCurrent,
     finishOperation: finishOperation,

@@ -576,6 +576,64 @@
   card.append(bar, body);
   card.setAttribute("aria-labelledby", "quickcal-event-title");
 
+  const onboarding = document.createElement("section");
+  onboarding.className = "onboarding";
+  onboarding.hidden = true;
+  onboarding.setAttribute("aria-label", "QuickCalAI welcome tour");
+  const onboardingTitle = document.createElement("h2");
+  onboardingTitle.className = "onboarding-title";
+  const onboardingProgress = document.createElement("p");
+  onboardingProgress.className = "onboarding-progress";
+  onboardingProgress.hidden = true;
+  const onboardingCopy = document.createElement("p");
+  onboardingCopy.className = "onboarding-copy";
+  const onboardingCapabilities = document.createElement("div");
+  onboardingCapabilities.className = "onboarding-capabilities";
+  onboardingCapabilities.hidden = true;
+  const onboardingStage = document.createElement("div");
+  onboardingStage.className = "onboarding-stage";
+  onboardingStage.hidden = true;
+  onboardingStage.setAttribute("aria-hidden", "true");
+  const onboardingSr = document.createElement("p");
+  onboardingSr.className = "onboarding-sr";
+  onboardingSr.setAttribute("aria-live", "polite");
+  const onboardingDetail = document.createElement("p");
+  onboardingDetail.className = "onboarding-detail";
+  onboardingDetail.hidden = true;
+  onboardingDetail.setAttribute("role", "status");
+  const onboardingActions = document.createElement("div");
+  onboardingActions.className = "onboarding-actions";
+  const onboardingBack = document.createElement("button");
+  onboardingBack.type = "button";
+  onboardingBack.className = "onboarding-secondary";
+  onboardingBack.textContent = "Back";
+  const onboardingReplay = document.createElement("button");
+  onboardingReplay.type = "button";
+  onboardingReplay.className = "onboarding-secondary onboarding-replay";
+  onboardingReplay.textContent = "Replay";
+  onboardingReplay.hidden = true;
+  onboardingReplay.setAttribute("aria-label", "Replay this example");
+  const onboardingSkip = document.createElement("button");
+  onboardingSkip.type = "button";
+  onboardingSkip.className = "onboarding-secondary onboarding-skip";
+  onboardingSkip.textContent = "Skip tour";
+  onboardingSkip.setAttribute("aria-label", "Skip welcome tour");
+  const onboardingPrimary = document.createElement("button");
+  onboardingPrimary.type = "button";
+  onboardingPrimary.className = "onboarding-primary";
+  onboardingPrimary.textContent = "See how it works";
+  onboardingActions.append(onboardingBack, onboardingReplay, onboardingSkip, onboardingPrimary);
+  onboarding.append(
+    onboardingTitle,
+    onboardingProgress,
+    onboardingCopy,
+    onboardingCapabilities,
+    onboardingStage,
+    onboardingSr,
+    onboardingDetail,
+    onboardingActions
+  );
+
   const status = document.createElement("p");
   status.className = "status";
   status.hidden = true;
@@ -604,7 +662,7 @@
   selectionChoice.append(useSelection, keepDraft);
   const panel = document.createElement("div");
   panel.className = "panel";
-  panel.append(resizeNw, resizeNe, resizeSw, resizeSe, card, docs);
+  panel.append(resizeNw, resizeNe, resizeSw, resizeSe, card, docs, onboarding);
   shell.append(panel, status, selectionChoice, connectRoute, healthRetry, timeMenu);
 
   const stylesheet = document.createElement("link");
@@ -637,6 +695,11 @@
   let requestGeneration = 0;
   let saveGeneration = 0;
   let mode = "input";
+  let onboardingState = null;
+  let onboardingBusy = false;
+  let onboardingDemoKey = "";
+  let onboardingDemoRun = null;
+  let onboardingDemoPaused = false;
   let draftEvent = null;
   let draftText = "";
   let savedRecord = null;
@@ -928,6 +991,493 @@
     input.placeholder = INPUT_PLACEHOLDER;
     input.setAttribute("aria-label", "Event description");
     host.dataset.mode = "input";
+    hideOnboarding();
+  }
+
+  function hideOnboarding() {
+    stopOnboardingDemo();
+    onboardingState = null;
+    onboardingDemoKey = "";
+    onboarding.hidden = true;
+    card.hidden = false;
+    docs.hidden = !docOpen();
+  }
+
+  function onboardingApi() {
+    return globalThis.QuickCalOnboarding || null;
+  }
+
+  function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  function stopOnboardingDemo() {
+    if (onboardingDemoRun) {
+      onboardingDemoRun.generation += 1;
+      (onboardingDemoRun.timers || []).forEach((id) => clearTimeout(id));
+    }
+    onboardingDemoRun = null;
+    onboardingDemoPaused = false;
+    clearList(onboardingStage);
+  }
+
+  function demoStillActive(run) {
+    return !!(
+      onboardingDemoRun &&
+      run &&
+      onboardingDemoRun.generation === run.generation &&
+      onboardingState &&
+      onboardingState.active &&
+      !onboarding.hidden
+    );
+  }
+
+  function scheduleDemo(run, delay, work) {
+    if (!run || !demoStillActive(run)) return;
+    const id = setTimeout(() => {
+      if (!demoStillActive(run)) return;
+      if (document.visibilityState === "hidden") {
+        onboardingDemoPaused = true;
+        return;
+      }
+      work();
+    }, delay);
+    run.timers.push(id);
+  }
+
+  function paintOverviewCapabilities() {
+    clearList(onboardingCapabilities);
+    const api = onboardingApi();
+    const items = api && api.CAPABILITIES ? api.CAPABILITIES : [];
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "onboarding-capability";
+      const title = document.createElement("p");
+      title.className = "onboarding-capability-title";
+      title.textContent = item.title;
+      const copy = document.createElement("p");
+      copy.className = "onboarding-capability-copy";
+      copy.textContent = item.copy;
+      row.append(title, copy);
+      onboardingCapabilities.appendChild(row);
+    });
+  }
+
+  function demoBadge() {
+    const badge = document.createElement("span");
+    badge.className = "onboarding-demo-badge";
+    badge.textContent = "Example";
+    return badge;
+  }
+
+  function demoInputShell() {
+    const shell = document.createElement("div");
+    shell.className = "onboarding-demo-input";
+    const field = document.createElement("div");
+    field.className = "onboarding-demo-field";
+    const caret = document.createElement("span");
+    caret.className = "onboarding-demo-caret";
+    caret.setAttribute("aria-hidden", "true");
+    field.appendChild(caret);
+    shell.appendChild(field);
+    return { shell: shell, field: field, caret: caret };
+  }
+
+  function setDemoFieldText(field, caret, text, showCaret) {
+    clearList(field);
+    field.appendChild(document.createTextNode(text || ""));
+    if (showCaret) field.appendChild(caret);
+  }
+
+  function demoResultCard(lines) {
+    const cardEl = document.createElement("div");
+    cardEl.className = "onboarding-demo-card";
+    lines.forEach((line, index) => {
+      const row = document.createElement("p");
+      row.className = index === 0 ? "onboarding-demo-card-title" : "onboarding-demo-card-meta";
+      row.textContent = line;
+      cardEl.appendChild(row);
+    });
+    return cardEl;
+  }
+
+  function typeDemoText(run, field, caret, text, onDone) {
+    if (prefersReducedMotion()) {
+      setDemoFieldText(field, caret, text, false);
+      onDone();
+      return;
+    }
+    let index = 0;
+    const stepMs = Math.max(28, Math.min(55, Math.floor(2200 / Math.max(text.length, 1))));
+    function tick() {
+      if (!demoStillActive(run)) return;
+      index += 1;
+      setDemoFieldText(field, caret, text.slice(0, index), index < text.length);
+      if (index >= text.length) {
+        onDone();
+        return;
+      }
+      scheduleDemo(run, stepMs, tick);
+    }
+    tick();
+  }
+
+  function playEventDemo(run, demo) {
+    clearList(onboardingStage);
+    onboardingStage.appendChild(demoBadge());
+    const input = demoInputShell();
+    onboardingStage.appendChild(input.shell);
+    const status = document.createElement("p");
+    status.className = "onboarding-demo-status";
+    status.hidden = true;
+    onboardingStage.appendChild(status);
+    typeDemoText(run, input.field, input.caret, demo.prompt, () => {
+      scheduleDemo(run, 350, () => {
+        input.shell.classList.add("submitted");
+        status.hidden = false;
+        status.textContent = "Creating event…";
+        scheduleDemo(run, 900, () => {
+          status.hidden = true;
+          onboardingStage.appendChild(
+            demoResultCard(["Meeting with Joe", "Thursday, March 12, 2026", "8:00–9:00 AM"])
+          );
+        });
+      });
+    });
+  }
+
+  function playAvailabilityDemo(run, demo) {
+    clearList(onboardingStage);
+    onboardingStage.appendChild(demoBadge());
+    const input = demoInputShell();
+    onboardingStage.appendChild(input.shell);
+    const status = document.createElement("p");
+    status.className = "onboarding-demo-status";
+    status.hidden = true;
+    onboardingStage.appendChild(status);
+    const slots = document.createElement("div");
+    slots.className = "onboarding-demo-slots";
+    slots.hidden = true;
+    const choices = [
+      { label: "1:00–1:30 PM", pick: false },
+      { label: "2:00–2:30 PM", pick: true },
+      { label: "3:30–4:00 PM", pick: false },
+    ];
+    const buttons = choices.map((choice) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "onboarding-demo-slot";
+      button.tabIndex = -1;
+      button.textContent = choice.label;
+      button.setAttribute("aria-hidden", "true");
+      slots.appendChild(button);
+      return { button: button, pick: choice.pick };
+    });
+    onboardingStage.appendChild(slots);
+    typeDemoText(run, input.field, input.caret, demo.prompt, () => {
+      scheduleDemo(run, 300, () => {
+        status.hidden = false;
+        status.textContent = "Searching Wednesday afternoon…";
+        scheduleDemo(run, 900, () => {
+          status.hidden = true;
+          slots.hidden = false;
+          const chosen = buttons.find((item) => item.pick);
+          scheduleDemo(run, prefersReducedMotion() ? 0 : 700, () => {
+            if (chosen) chosen.button.classList.add("selected");
+            scheduleDemo(run, prefersReducedMotion() ? 0 : 500, () => {
+              slots.hidden = true;
+              onboardingStage.appendChild(
+                demoResultCard([
+                  demo.eventTitle || "Project sync",
+                  "Wednesday, March 11, 2026",
+                  "2:00–2:30 PM",
+                ])
+              );
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function playTaskDemo(run, demo) {
+    clearList(onboardingStage);
+    onboardingStage.appendChild(demoBadge());
+    const input = demoInputShell();
+    onboardingStage.appendChild(input.shell);
+    const status = document.createElement("p");
+    status.className = "onboarding-demo-status";
+    status.hidden = true;
+    onboardingStage.appendChild(status);
+    typeDemoText(run, input.field, input.caret, demo.prompt, () => {
+      scheduleDemo(run, 350, () => {
+        input.shell.classList.add("submitted");
+        status.hidden = false;
+        status.textContent = "Creating task…";
+        scheduleDemo(run, 900, () => {
+          status.hidden = true;
+          onboardingStage.appendChild(
+            demoResultCard(["Call Joe", "Due Thursday, March 12, 2026"])
+          );
+        });
+      });
+    });
+  }
+
+  function playDocumentsDemo(run, demo) {
+    clearList(onboardingStage);
+    onboardingStage.appendChild(demoBadge());
+    const drop = document.createElement("div");
+    drop.className = "onboarding-demo-drop";
+    const dropTitle = document.createElement("p");
+    dropTitle.className = "onboarding-demo-drop-title";
+    dropTitle.textContent = "Drag and drop a file here";
+    drop.appendChild(dropTitle);
+    onboardingStage.appendChild(drop);
+    const fileChip = document.createElement("div");
+    fileChip.className = "onboarding-demo-file";
+    fileChip.hidden = true;
+    fileChip.textContent = demo.fileName || "Course syllabus.pdf";
+    onboardingStage.appendChild(fileChip);
+    const input = demoInputShell();
+    input.shell.hidden = true;
+    onboardingStage.appendChild(input.shell);
+    const status = document.createElement("p");
+    status.className = "onboarding-demo-status";
+    status.hidden = true;
+    onboardingStage.appendChild(status);
+    const list = document.createElement("div");
+    list.className = "onboarding-demo-review";
+    list.hidden = true;
+    const checks = [];
+    (demo.items || []).forEach((item, index) => {
+      const row = document.createElement("label");
+      row.className = "onboarding-demo-review-item";
+      const box = document.createElement("span");
+      box.className = "onboarding-demo-check";
+      box.setAttribute("aria-hidden", "true");
+      const body = document.createElement("span");
+      body.className = "onboarding-demo-review-copy";
+      const title = document.createElement("span");
+      title.className = "onboarding-demo-review-title";
+      title.textContent = item.title;
+      const meta = document.createElement("span");
+      meta.className = "onboarding-demo-review-meta";
+      meta.textContent = item.dateText + " · " + item.timeText;
+      body.append(title, meta);
+      row.append(box, body);
+      list.appendChild(row);
+      checks.push({ box: box, selected: index < 2 });
+    });
+    const addButton = document.createElement("button");
+    addButton.type = "button";
+    addButton.className = "onboarding-demo-add";
+    addButton.tabIndex = -1;
+    addButton.setAttribute("aria-hidden", "true");
+    addButton.textContent = "Create 2 Approved Events";
+    addButton.hidden = true;
+    list.appendChild(addButton);
+    onboardingStage.appendChild(list);
+    const summary = document.createElement("p");
+    summary.className = "onboarding-demo-summary";
+    summary.hidden = true;
+    onboardingStage.appendChild(summary);
+
+    function afterFile() {
+      drop.hidden = true;
+      fileChip.hidden = false;
+      input.shell.hidden = false;
+      typeDemoText(run, input.field, input.caret, demo.prompt, () => {
+        scheduleDemo(run, 300, () => {
+          status.hidden = false;
+          status.textContent = "Finding exams…";
+          scheduleDemo(run, 900, () => {
+            status.hidden = true;
+            list.hidden = false;
+            scheduleDemo(run, prefersReducedMotion() ? 0 : 500, () => {
+              checks.forEach((item) => {
+                if (item.selected) item.box.classList.add("checked");
+              });
+              addButton.hidden = false;
+              scheduleDemo(run, prefersReducedMotion() ? 0 : 700, () => {
+                addButton.classList.add("pressed");
+                scheduleDemo(run, prefersReducedMotion() ? 0 : 450, () => {
+                  list.hidden = true;
+                  summary.hidden = false;
+                  summary.textContent = "Saved 2 events from Course syllabus.pdf. One exam left unselected.";
+                });
+              });
+            });
+          });
+        });
+      });
+    }
+
+    if (prefersReducedMotion()) {
+      afterFile();
+      return;
+    }
+    scheduleDemo(run, 400, () => {
+      drop.classList.add("dragging");
+      const ghost = document.createElement("div");
+      ghost.className = "onboarding-demo-ghost";
+      ghost.textContent = demo.fileName || "Course syllabus.pdf";
+      onboardingStage.appendChild(ghost);
+      scheduleDemo(run, 700, () => {
+        ghost.remove();
+        drop.classList.remove("dragging");
+        afterFile();
+      });
+    });
+  }
+
+  function startOnboardingDemo(step, force) {
+    const api = onboardingApi();
+    const demos = api && api.DEMOS ? api.DEMOS : {};
+    const demo = demos[step];
+    if (!demo) {
+      stopOnboardingDemo();
+      onboardingStage.hidden = true;
+      return;
+    }
+    const key = step;
+    if (!force && onboardingDemoKey === key && onboardingDemoRun) return;
+    stopOnboardingDemo();
+    onboardingDemoKey = key;
+    onboardingStage.hidden = false;
+    onboardingSr.textContent = demo.description || "";
+    const run = { generation: 1, timers: [], step: step };
+    onboardingDemoRun = run;
+    if (step === "demo-event") playEventDemo(run, demo);
+    else if (step === "demo-availability") playAvailabilityDemo(run, demo);
+    else if (step === "demo-task") playTaskDemo(run, demo);
+    else if (step === "demo-documents") playDocumentsDemo(run, demo);
+  }
+
+  function resumeOnboardingDemoIfNeeded() {
+    if (!onboardingState || !onboardingState.active) return;
+    const step = onboardingState.step || "";
+    if (String(step).indexOf("demo-") !== 0) return;
+    if (!onboardingDemoPaused && onboardingDemoRun) return;
+    onboardingDemoPaused = false;
+    startOnboardingDemo(step, true);
+  }
+
+  function showOnboarding(view) {
+    if (!view || !view.active) {
+      hideOnboarding();
+      return;
+    }
+    const api = onboardingApi();
+    const step = api && api.normalizeStep ? api.normalizeStep(view.step) : view.step || "overview";
+    const previousStep = onboardingState && onboardingState.step;
+    onboardingState = Object.assign({}, view, { step: step });
+    mode = "onboarding";
+    host.dataset.mode = "onboarding";
+    card.hidden = true;
+    docs.hidden = true;
+    onboarding.hidden = false;
+    selectionChoice.hidden = true;
+    connectRoute.hidden = true;
+    healthRetry.hidden = true;
+    clearStatus();
+
+    const isDemo = String(step).indexOf("demo-") === 0;
+    const demo = api && api.DEMOS ? api.DEMOS[step] : null;
+    onboardingCapabilities.hidden = step !== "overview";
+    onboardingStage.hidden = !isDemo;
+    onboardingProgress.hidden = !isDemo;
+    onboardingReplay.hidden = !isDemo;
+    onboardingBack.hidden = step === "overview";
+    onboardingSkip.hidden = step === "connect";
+    onboardingDetail.hidden = true;
+    onboardingDetail.textContent = "";
+    onboardingDetail.className = "onboarding-detail";
+    onboardingPrimary.disabled = onboardingBusy || (step === "connect" && view.connectState === "connecting");
+    onboardingBack.disabled = onboardingBusy;
+    onboardingSkip.disabled = onboardingBusy;
+    onboardingReplay.disabled = onboardingBusy;
+
+    if (step === "overview") {
+      stopOnboardingDemo();
+      onboardingDemoKey = "";
+      onboardingTitle.textContent = "Welcome to QuickCalAI";
+      onboardingCopy.textContent =
+        "Create calendar events and Google Tasks with natural language from any webpage.";
+      onboardingPrimary.textContent = "See how it works";
+      onboardingSr.textContent =
+        "QuickCalAI can create events, find a time, create tasks, and import dates from documents.";
+      paintOverviewCapabilities();
+    } else if (isDemo && demo) {
+      onboardingTitle.textContent = demo.title;
+      onboardingProgress.textContent = demo.progress || "";
+      onboardingCopy.textContent = "Local example only. Nothing is sent or saved.";
+      onboardingPrimary.textContent = "Next";
+      if (previousStep !== step || onboardingDemoKey !== step) {
+        startOnboardingDemo(step, true);
+      }
+    } else {
+      stopOnboardingDemo();
+      onboardingDemoKey = "";
+      onboardingTitle.textContent = "Connect Google";
+      onboardingCopy.textContent =
+        "QuickCal needs Calendar access to create and update events you own, read your calendar list for conflicts, and Tasks access to create to-dos. Typed text, selections, and uploads are processed by AI; voice audio is transcribed remotely.";
+      onboardingPrimary.textContent =
+        view.connectState === "ready" ? "Start using QuickCal" : "Connect Google";
+      onboardingSr.textContent =
+        view.connectState === "ready"
+          ? "QuickCalAI is connected and ready."
+          : "Connect Google Calendar and Tasks to finish setup.";
+      if (view.connectState === "connecting") {
+        onboardingDetail.hidden = false;
+        onboardingDetail.textContent = "Connecting to Google…";
+        onboardingPrimary.disabled = true;
+      } else if (view.connectState === "ready") {
+        onboardingDetail.hidden = false;
+        onboardingDetail.className = "onboarding-detail ready";
+        onboardingDetail.textContent = "QuickCalAI is ready.";
+      } else if (view.connectMessage) {
+        onboardingDetail.hidden = false;
+        onboardingDetail.textContent = view.connectMessage;
+      }
+    }
+  }
+
+  function sendOnboarding(action, payload) {
+    if (onboardingBusy && action !== "complete") return Promise.resolve(null);
+    onboardingBusy = true;
+    paintOnboardingBusy();
+    return chrome.runtime
+      .sendMessage(Object.assign({ type: "quickcal-onboarding", action: action }, payload || {}))
+      .then((result) => {
+        onboardingBusy = false;
+        if (result && result.session) {
+          applyRemote(result.session, true);
+          if (result.session.visible && !(result.session.onboarding && result.session.onboarding.active)) {
+            prepareOpenTab();
+          }
+        } else if (result && result.result && onboardingState) {
+          showOnboarding(onboardingState);
+        } else if (onboardingState) showOnboarding(onboardingState);
+        return result;
+      })
+      .catch(() => {
+        onboardingBusy = false;
+        if (onboardingState) {
+          onboardingDetail.hidden = false;
+          onboardingDetail.textContent = "QuickCalAI could not update onboarding.";
+          showOnboarding(onboardingState);
+        }
+        return null;
+      });
+  }
+
+  function paintOnboardingBusy() {
+    if (!onboardingState) return;
+    onboardingPrimary.disabled = true;
+    onboardingBack.disabled = true;
+    onboardingSkip.disabled = true;
+    onboardingReplay.disabled = true;
   }
 
   function draftLabel(draft) {
@@ -2049,6 +2599,10 @@
     people.hidden = mode !== "saved" || !savedRecord || !inviteEventId;
     paintHost(host, styled && open, mode !== "input");
     if (!docs.hidden) placeDocs();
+    if (allowFocus && styled && open && mode === "onboarding" && !onboardingBusy) {
+      onboardingPrimary.focus();
+      return;
+    }
     if (allowFocus && styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
   }
 
@@ -2111,6 +2665,7 @@
   }
 
   function prepareOpenTab() {
+    if (onboardingState && onboardingState.active) return;
     if (session.phase() !== "ready") {
       const step = session.begin(Date.now());
       if (step.status && !input.value.trim() && mode === "input" && !selectionHold) showStatus(step.status, false);
@@ -2137,6 +2692,41 @@
     }
     setOpen(false);
   }
+
+  onboardingBack.addEventListener("click", () => {
+    if (!onboardingState || onboardingBusy) return;
+    const api = onboardingApi();
+    const step = onboardingState.step || "overview";
+    const previous = api && api.previousStep ? api.previousStep(step) : "overview";
+    const exampleIndex = api && api.demoIndex ? Math.max(0, api.demoIndex(previous)) : 0;
+    sendOnboarding("step", { step: previous, exampleIndex: exampleIndex });
+  });
+  onboardingSkip.addEventListener("click", () => {
+    if (!onboardingState || onboardingBusy) return;
+    sendOnboarding("step", { step: "connect", exampleIndex: onboardingState.exampleIndex || 0 });
+  });
+  onboardingReplay.addEventListener("click", () => {
+    if (!onboardingState || onboardingBusy) return;
+    const step = onboardingState.step || "";
+    if (String(step).indexOf("demo-") !== 0) return;
+    startOnboardingDemo(step, true);
+  });
+  onboardingPrimary.addEventListener("click", () => {
+    if (!onboardingState || onboardingBusy) return;
+    const api = onboardingApi();
+    const step = onboardingState.step || "overview";
+    if (step === "connect") {
+      if (onboardingState.connectState === "ready") {
+        sendOnboarding("complete", {});
+        return;
+      }
+      sendOnboarding("connect", {});
+      return;
+    }
+    const next = api && api.nextStep ? api.nextStep(step) : "connect";
+    const exampleIndex = api && api.demoIndex ? Math.max(0, api.demoIndex(next)) : 0;
+    sendOnboarding("step", { step: next, exampleIndex: exampleIndex });
+  });
 
   function savedSchedule() {
     return {
@@ -2706,6 +3296,13 @@
         return;
       }
       open = true;
+      if (state.onboarding && state.onboarding.active) {
+        showOnboarding(state.onboarding);
+        if (typeof state.input === "string" && state.input && !inputDirty) input.value = state.input;
+        render();
+        return;
+      }
+      if (onboardingState) hideOnboarding();
       const focused = shadow.activeElement === input;
       const typedValue = input.value;
       const keepTyped = focused && inputDirty && typedValue !== (state.input || "");
@@ -3295,18 +3892,26 @@
 
   function onVisible() {
     if (!alive || !open) return;
-    if (document.visibilityState === "visible") {
-      checkConnection();
-      if (shared) {
-        claimLeader().then(() => {
-          if (inputDirty) publishInput(0);
-        });
+    if (document.visibilityState === "hidden") {
+      if (onboardingDemoRun) {
+        onboardingDemoPaused = true;
+        (onboardingDemoRun.timers || []).forEach((id) => clearTimeout(id));
+        onboardingDemoRun.timers = [];
       }
+      return;
+    }
+    checkConnection();
+    resumeOnboardingDemoIfNeeded();
+    if (shared) {
+      claimLeader().then(() => {
+        if (inputDirty) publishInput(0);
+      });
     }
   }
 
   function destroy() {
     resetInvitations();
+    stopOnboardingDemo();
     if (!alive) return;
     alive = false;
     requestGeneration += 1;

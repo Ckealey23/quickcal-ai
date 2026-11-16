@@ -9,25 +9,8 @@
     <main class="card">
       <h1>QuickCalAI</h1>
       <p id="lead" class="lead">
-        Add calendar events and tasks from any webpage by typing, speaking, or selecting text.
+        Manage your Google connection and replay the welcome tour.
       </p>
-
-      <section id="intro" class="intro" aria-label="Before you connect">
-        <p>
-          QuickCal reads what you type or select, uses AI to turn it into a calendar event or Google
-          Task, and can save it for you.
-        </p>
-        <p>
-          Connect Google so QuickCal can create and update events on calendars you own, create tasks
-          in your default Google Tasks list, see which calendars are available, and check for
-          conflicts. Google’s permission prompt starts only after you click Connect.
-        </p>
-        <p>
-          Typed and selected text is sent to QuickCal’s AI parser. Uploaded documents are analyzed
-          remotely. If you use voice, recorded audio is sent for transcription. QuickCal does not
-          keep all of that processing on your device.
-        </p>
-      </section>
 
       <p id="status" class="status connecting" role="status" aria-live="polite">
         Checking your QuickCal connection…
@@ -35,30 +18,14 @@
       <p id="detail" class="detail" hidden></p>
       <button id="connect" type="button" disabled>Connect Google Calendar</button>
       <button id="disconnect" type="button" hidden disabled>Disconnect</button>
+      <button id="replay" type="button" disabled>Replay welcome tour</button>
 
       <section id="ready" hidden>
-        <h2>QuickCal is ready</h2>
+        <h2>Connection</h2>
         <p>
-          Pin QuickCalAI from the Chrome toolbar puzzle icon, then click the QuickCalAI icon on a
-          normal webpage to open the input bar.
+          Pin QuickCalAI from the Chrome toolbar, then open it on a normal webpage. Disconnect does
+          not erase the welcome tour; reconnect when permissions are missing.
         </p>
-        <ul class="examples">
-          <li>
-            <strong>Type:</strong> “Coffee with Alex tomorrow from 10 to 10:30 AM” and press Enter.
-          </li>
-          <li>
-            <strong>Tasks:</strong> “Remind me to submit my report tomorrow” creates a Google Task.
-          </li>
-          <li><strong>Voice:</strong> use the microphone in the bar, then submit the recording.</li>
-          <li>
-            <strong>Highlight:</strong> select event text on a page, then choose “Add to QuickCal”.
-          </li>
-        </ul>
-        <p>
-          A complete single-event or task request can create it automatically. Multi-event
-          selections and document analysis open a review list first so you can choose what to save.
-        </p>
-        <button id="try" type="button">Try QuickCal</button>
       </section>
     </main>
     <script src="options.js"></script>

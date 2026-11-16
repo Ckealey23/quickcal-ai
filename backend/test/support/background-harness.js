@@ -85,7 +85,25 @@ export function loadBackground(options) {
       storage: {
         local: {
           async get(key) {
-            return { [key]: local[key] };
+            if (!local.quickcalOnboarding) {
+              local.quickcalOnboarding = {
+                version: 1,
+                completed: true,
+                step: "connect",
+                migrated: true,
+                pendingSelection: "",
+                exampleIndex: 0,
+              };
+            }
+            if (Array.isArray(key)) {
+              const out = {};
+              key.forEach((name) => {
+                out[name] = local[name];
+              });
+              return out;
+            }
+            if (typeof key === "string") return { [key]: local[key] };
+            return Object.assign({}, local);
           },
           async set(value) {
             Object.assign(local, plain(value));
@@ -96,7 +114,17 @@ export function loadBackground(options) {
         },
         session: settings.noSession ? undefined : {
           async get(key) {
-            return { [key]: session[key] === undefined ? undefined : plain(session[key]) };
+            if (Array.isArray(key)) {
+              const out = {};
+              key.forEach((name) => {
+                out[name] = session[name] === undefined ? undefined : plain(session[name]);
+              });
+              return out;
+            }
+            if (typeof key === "string") {
+              return { [key]: session[key] === undefined ? undefined : plain(session[key]) };
+            }
+            return plain(session);
           },
           async set(value) {
             Object.assign(session, plain(value));

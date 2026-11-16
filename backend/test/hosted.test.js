@@ -18,8 +18,27 @@ function loadStartup() {
   return sandbox.QuickCalStartup;
 }
 
+function storageGet(store, key) {
+  if (Array.isArray(key)) {
+    const out = {};
+    key.forEach((name) => {
+      out[name] = store[name];
+    });
+    return out;
+  }
+  if (key && typeof key === "object") {
+    const out = {};
+    Object.keys(key).forEach((name) => {
+      out[name] = store[name] !== undefined ? store[name] : key[name];
+    });
+    return out;
+  }
+  if (typeof key === "string") return { [key]: store[key] };
+  return Object.assign({}, store);
+}
+
 function loadBackground(hooks) {
-  const store = {};
+  const store = Object.assign({}, (hooks && hooks.store) || {});
   const fetches = [];
   const tokenCalls = [];
   const removed = [];
@@ -43,6 +62,11 @@ function loadBackground(hooks) {
         onInstalled: {
           addListener(listener) {
             listeners.installed = listener;
+          },
+        },
+        onStartup: {
+          addListener(listener) {
+            listeners.startup = listener;
           },
         },
         async openOptionsPage() {
@@ -87,7 +111,7 @@ function loadBackground(hooks) {
       storage: {
         local: {
           async get(key) {
-            return { [key]: store[key] };
+            return storageGet(store, key);
           },
           async set(value) {
             stored.push(JSON.stringify(value));
@@ -99,7 +123,7 @@ function loadBackground(hooks) {
         },
         session: {
           async get(key) {
-            return { [key]: store[key] };
+            return storageGet(store, key);
           },
           async set(value) {
             Object.assign(store, value);
@@ -295,23 +319,21 @@ describe("hosted startup", () => {
 });
 
 describe("hosted extension access", () => {
-  it("opens the welcome page once for a new install and once for an existing update", async () => {
+  it("does not open the options page on install or update and migrates established users", async () => {
     const installed = {};
     const loaded = loadBackground(installed);
     await loaded.listeners.installed({ reason: "install" });
-    await loaded.listeners.installed({ reason: "update" });
-    await loaded.listeners.installed({ reason: "update" });
-    assert.equal(installed.opened, 1);
+    assert.equal(installed.opened || 0, 0);
     assert.equal(loaded.tokenCalls.length, 0);
-    assert.equal(loaded.store.quickcalWelcomeSeen, true);
+    assert.equal(loaded.store.quickcalOnboarding.completed, false);
+    assert.equal(loaded.store.quickcalOnboarding.migrated, true);
 
-    const updated = {};
+    const updated = { store: { quickcalWelcomeSeen: true } };
     const existing = loadBackground(updated);
     await existing.listeners.installed({ reason: "update" });
-    await existing.listeners.installed({ reason: "update" });
-    assert.equal(updated.opened, 1);
+    assert.equal(updated.opened || 0, 0);
+    assert.equal(existing.store.quickcalOnboarding.completed, true);
     assert.equal(existing.tokenCalls.length, 0);
-    assert.equal(existing.store.quickcalWelcomeSeen, true);
   });
 
   it("sends the Google token only to the hosted parser and checks health without it", async () => {

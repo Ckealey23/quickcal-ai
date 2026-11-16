@@ -75,25 +75,21 @@ After `manifest.json` changes, reload the extension and confirm the ID:
 
 The manifest `oauth2.client_id` is the Chrome extension OAuth client for Google Calendar. In Google Cloud, that client must be the Chrome extension type and must allow extension ID `mkihiedalmccmhoebiiikpdoafhdfglf`. The project uses that client ID directly. Do not download, import, or commit a credentials JSON file or a client secret.
 
-The toolbar icon still only shows or hides the input bar. A new installation opens this welcome page once. Google’s prompt starts only after **Connect Google Calendar** is clicked.
+The toolbar icon shows or hides the floating widget. A new installation does **not** open the options tab. First-use onboarding runs inside the widget the first time QuickCal opens on a supported webpage. Google’s prompt starts only after **Connect Google** is clicked on the Connect step.
 
 1. Open `chrome://extensions`.
-2. Find QuickCalAI and click **Details**, then **Extension options**. You can also right-click the QuickCalAI toolbar icon and choose **Options**.
+2. Find QuickCalAI and click **Details**, then **Extension options** for connection management or **Replay welcome tour**. You can also right-click the QuickCalAI toolbar icon and choose **Options**.
 
 Reload the extension from `chrome://extensions` after these manifest changes, then use this checklist:
 
-- [ ] On a fresh install, the welcome page opens by itself. No Google prompt appears until **Connect Google Calendar** is clicked.
-- [ ] The welcome page explains Calendar and Tasks permissions, that typed/selected text and uploaded documents are processed by AI, and that voice audio is transcribed remotely. It does not claim data stays on-device.
-- [ ] Approve the prompt. The page says **QuickCalAI is ready.** only after both Calendar and the hosted `/access` check succeed, then explains pinning/opening, typing/tasks/voice/highlight examples, and single-item auto-create versus multi-event or document review.
-- [ ] **Try QuickCal** opens `https://example.com/` and shows the widget without creating an event.
-- [ ] Cancel the Google prompt. The page says the connection was cancelled and does not say QuickCalAI is ready.
-- [ ] If Calendar connects but invite-only mode rejects the account, the page says **Google Calendar connected** and shows that this account is not approved. Public mode must not show a waitlist or email-approval message for a valid Google user.
-- [ ] Click **Disconnect**. Reopening the page does not connect again until **Connect Google Calendar** is clicked.
-- [ ] On a normal webpage, the toolbar icon still toggles the input bar. The welcome page does not show a backend address, an API key, or a test-event control.
-
-## Welcome page
-
-The options page is the customer welcome screen. It connects Google Calendar and checks that the hosted parser accepts the account. It does not create a test event. Returning from onboarding keeps any existing draft and refreshes the widget connection state when that tab becomes visible again.
+- [ ] On a fresh install, no options tab opens by itself. Opening QuickCal on a normal webpage shows the in-widget tour.
+- [ ] Examples are local demos only (no AI, Calendar/Tasks writes, recordings, or uploads).
+- [ ] Connect Google explains Calendar and Tasks permissions and AI processing; the prompt starts only after that deliberate click.
+- [ ] **Start using QuickCal** appears only after connection and `/access` succeed, then enters the normal input.
+- [ ] Dismiss (X/Escape) hides the tour without completing it; reopening resumes the same step.
+- [ ] Established users (prior welcome flag, prior connect, or draft) are not forced through the tour after update.
+- [ ] **Replay welcome tour** from options opens the widget tour without disconnecting or clearing completion.
+- [ ] Disconnect does not erase onboarding completion; missing scopes use reconnect, not a full tour reset.
 
 ## Local event extraction
 
@@ -291,14 +287,20 @@ Do not enable public access until deliberately ready.
 
 ## Manual onboarding checklist
 
-- [ ] Fresh install opens welcome once; relaunching Chrome does not reopen it every time.
-- [ ] Connect Google Calendar starts Google’s prompt; cancel leaves the page not ready and keeps any draft.
-- [ ] Missing Calendar permission shows a clear permission error, not a backend/OpenAI mislabel.
-- [ ] Invite-only unapproved account: Calendar connected, not ready, not-approved message.
-- [ ] After ready: pin/open instructions, examples, Try QuickCal opens HTTPS example page and reveals the widget without creating an event.
-- [ ] Disconnect stays disconnected until Connect is chosen again.
-- [ ] Cold start / unreachable backend: bounded retry messaging; draft preserved; not labeled as Connect Google Calendar.
-- [ ] OpenAI quota exhaustion: useful error; draft preserved.
+### Fresh Chrome profile
+- [ ] Install/load unpacked: no options tab opens automatically.
+- [ ] Toolbar open on `https://example.com` shows Welcome → Examples → Connect Google.
+- [ ] Example clicks do not call AI or write Calendar/Tasks.
+- [ ] Connect Google starts Google’s prompt only after that click; cancel stays on Connect without completing.
+- [ ] After ready, **Start using QuickCal** enters the normal input; later opens skip the tour.
+- [ ] Highlight “Add to QuickCal” during the tour preserves text; after setup it is restored without auto-create.
+- [ ] X/Escape dismisses without completing; reopen resumes the same step across tabs.
+
+### Replay welcome tour
+- [ ] Options → **Replay welcome tour** opens the widget tour on a supported page.
+- [ ] Google stays connected; Connect is not forced again when already ready.
+- [ ] Dismissing replay leaves completion intact (next toolbar open is normal input).
+- [ ] An active draft/busy conversation blocks replay with a clear message instead of wiping work.
 
 ## Checkpoint 1 manual checklist
 

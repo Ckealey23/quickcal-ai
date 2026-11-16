@@ -57,7 +57,35 @@ function loadBackground(hooks) {
           return Promise.resolve();
         },
       },
-      storage: { local: { async get() { return {}; }, async set() {}, async remove() {} } },
+      storage: {
+        local: {
+          async get(key) {
+            const completed = {
+              version: 1,
+              completed: true,
+              step: "connect",
+              migrated: true,
+              pendingSelection: "",
+              exampleIndex: 0,
+            };
+            if (Array.isArray(key)) {
+              const out = {};
+              key.forEach((name) => {
+                out[name] = name === "quickcalOnboarding" ? completed : undefined;
+              });
+              return out;
+            }
+            if (key === "quickcalOnboarding") return { quickcalOnboarding: completed };
+            return {};
+          },
+          async set() {},
+          async remove() {},
+        },
+        session: {
+          async get() { return {}; },
+          async set() {},
+        },
+      },
       identity: { async getAuthToken() { return ""; }, async removeCachedAuthToken() {}, async clearAllCachedAuthTokens() {} },
       offscreen: { async createDocument() {}, async closeDocument() {}, async getContexts() { return []; } },
     },
@@ -146,6 +174,7 @@ describe("highlighted text delivery", () => {
       "shared/batch.js",
       "shared/time-options.js",
       "shared/documents.js",
+      "shared/onboarding.js",
       "content/widget.js",
     ].join());
     assert.equal(background.delivered.length, 1);

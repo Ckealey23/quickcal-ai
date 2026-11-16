@@ -18,6 +18,7 @@ export function widgetPage(script, options) {
     "shared/lookup.js",
     "shared/time-options.js",
     "shared/documents.js",
+    "shared/onboarding.js",
     "shared/session.js",
   ];
   return `<!DOCTYPE html>
@@ -36,6 +37,7 @@ ${scripts.map((file) => `<script src="${url(file)}"></script>`).join("\n")}
   const changeListeners = [];
   let state = Object.assign(QuickCalSession.create(false), { visible: true, sessionId: "s1", claim: 1, ownerTabId: 1 });
   ${settings.layout ? `state.layout = ${JSON.stringify(settings.layout)};` : ""}
+  ${settings.onboarding ? `state = QuickCalSession.setOnboarding(state, ${JSON.stringify(settings.onboarding)});` : ""}
   const SYLLABUS_ITEMS = [
     { kind: "event", title: "Midterm Exam 1", date: "2026-10-12", startTime: "10:00", endTime: "11:50", allDay: false, description: "Room 204", category: "Exam", sourceQuote: "Midterm Exam 1: Monday, October 12, 2026, 10:00 AM - 11:50 AM", sourcePage: 2, issues: [] },
     { kind: "event", title: "Midterm Exam 2", date: "2026-11-09", startTime: "10:00", endTime: null, allDay: false, description: null, category: "Exam", sourceQuote: "Midterm Exam 2: November 9, 2026 at 10:00 AM", sourcePage: 3, issues: [] },
@@ -51,6 +53,36 @@ ${scripts.map((file) => `<script src="${url(file)}"></script>`).join("\n")}
   function background(message) {
     if (message.type === "quickcal-backend") return { ok: true };
     if (message.type === "quickcal-calendar") return { ok: true, connected: true, quickcalReady: true, event: null };
+    if (message.type === "quickcal-onboarding") {
+      const action = message.action;
+      if (action === "step") {
+        const step = QuickCalOnboarding.normalizeStep(message.step);
+        const exampleIndex = Number.isInteger(message.exampleIndex) ? message.exampleIndex : 0;
+        state = QuickCalSession.setOnboarding(state, Object.assign({}, state.onboarding || {}, {
+          active: true,
+          step: step,
+          exampleIndex: exampleIndex,
+          connectState: step === "connect" ? "ready" : "",
+          connectMessage: "",
+        }));
+        return { ok: true, session: JSON.parse(JSON.stringify(state)) };
+      }
+      if (action === "connect") {
+        state = QuickCalSession.setOnboarding(state, Object.assign({}, state.onboarding || {}, {
+          active: true,
+          step: "connect",
+          connectState: "ready",
+          connectMessage: "",
+        }));
+        return { ok: true, ready: true, session: JSON.parse(JSON.stringify(state)) };
+      }
+      if (action === "complete") {
+        state = QuickCalSession.setOnboarding(state, null);
+        state = Object.assign({}, state, { mode: "input", revision: state.revision + 1 });
+        return { ok: true, session: JSON.parse(JSON.stringify(state)) };
+      }
+      return { ok: true, session: JSON.parse(JSON.stringify(state)) };
+    }
     if (message.type !== "quickcal-widget") return { ok: true };
     const action = message.action;
     if (["snapshot", "show", "claim", "layout"].includes(action)) {

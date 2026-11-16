@@ -161,16 +161,11 @@ button:disabled {
   font-weight: 600;
 }
 
-#try {
-  margin-top: 4px;
-  background: #35322d;
-  border-color: #35322d;
-  color: #ffffff;
-  font-weight: 600;
-}
-
-#try:hover:not(:disabled) {
-  background: #4a463f;
+#replay {
+  margin-top: 10px;
+  background: #ffffff;
+  color: #35322d;
+  font-weight: 400;
 }
 
 .status.ready {

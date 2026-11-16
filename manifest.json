@@ -36,6 +36,7 @@
         "shared/batch.js",
         "shared/time-options.js",
         "shared/documents.js",
+        "shared/onboarding.js",
         "content/widget.js"
       ],
       "run_at": "document_idle"

@@ -29,6 +29,7 @@ const page = `<!DOCTYPE html>
 <script src="${fileUrl(path.join(root, "shared/layout.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/lookup.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/batch.js"))}"></script>
+<script src="${fileUrl(path.join(root, "shared/onboarding.js"))}"></script>
 <script>
   // The browser fixture uses file URLs; emulate the extension resource fetch
   // with the actual bundled font bytes (file URLs are not supported by fetch).

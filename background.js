@@ -22,7 +22,8 @@ importScripts(
   "shared/conflicts.js",
   "shared/availability.js",
   "shared/batch.js",
-  "shared/documents.js"
+  "shared/documents.js",
+  "shared/onboarding.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -60,6 +61,7 @@ const WIDGET_FILES = [
   "shared/batch.js",
   "shared/time-options.js",
   "shared/documents.js",
+  "shared/onboarding.js",
   "content/widget.js",
 ];
 const WIDGET_MESSAGE = "quickcal-widget";
@@ -144,13 +146,14 @@ async function toggleWidget(tab) {
     await focusSharedWidget(tab.id);
     return;
   }
-  const state = await mutateWidgetSession(incognito, (current) => {
-    if (current.visible) return self.QuickCalSession.dismiss(current);
-    return self.QuickCalSession.claim(self.QuickCalSession.show(current), tab.id).state;
-  });
-  const delivered = await deliverSession(tab.id, state);
-  if (delivered === "blocked" || delivered === "failed") return;
-  if (state.visible) await focusSharedWidget(tab.id);
+  if (before.visible) {
+    onboardingAuthEpoch += 1;
+    const state = await mutateWidgetSession(incognito, (current) => self.QuickCalSession.dismiss(current));
+    const delivered = await deliverSession(tab.id, state);
+    if (delivered === "blocked" || delivered === "failed") return;
+    return;
+  }
+  await showWidgetWithOnboarding(tab, { replay: false });
 }
 
 function enqueueSelection(tabId, task) {
@@ -166,6 +169,26 @@ function enqueueSelection(tabId, task) {
   return run;
 }
 
+async function handleSelectionOnboarding(tab, text, tooLong) {
+  const record = await ensureOnboardingMigrated({ reason: "selection" });
+  if (record.completed) return null;
+  const pending = tooLong ? "" : String(text || "").trim().slice(0, 2000);
+  await writeOnboardingRecord(
+    Object.assign({}, record, {
+      pendingSelection: pending,
+      step: record.step || "overview",
+    })
+  );
+  const shown = await showWidgetWithOnboarding(tab, { replay: false });
+  return {
+    ok: true,
+    onboarding: true,
+    injected: false,
+    blocked: !!(shown && shown.blocked),
+    preserved: !!pending,
+  };
+}
+
 function handleSelection(info, tab) {
   if (!info || info.menuItemId !== SELECTION_MENU_ID) return Promise.resolve({ ok: false });
   const text = typeof info.selectionText === "string" ? info.selectionText : "";
@@ -176,13 +199,17 @@ function handleSelection(info, tab) {
   }
   const operationId = createOperationId();
   const tooLong = text.trim().length > self.QuickCalSelection.MAX_TEXT_LENGTH;
-  const message = {
-    type: SELECTION_MESSAGE,
-    operationId: operationId,
-    text: tooLong ? "" : text,
-    tooLong: tooLong,
-  };
-  return enqueueSelection(tab.id, () => deliverSelectionOnce(tab.id, message));
+  return enqueueSelection(tab.id, async () => {
+    const gated = await handleSelectionOnboarding(tab, text, tooLong);
+    if (gated) return gated;
+    const message = {
+      type: SELECTION_MESSAGE,
+      operationId: operationId,
+      text: tooLong ? "" : text,
+      tooLong: tooLong,
+    };
+    return deliverSelectionOnce(tab.id, message);
+  });
 }
 
 function registerSelectionMenu() {
@@ -224,7 +251,7 @@ const CALENDAR_PROBE_URL =
 const TEST_EVENT_KEY = "quickcalTestEvent";
 const CALENDAR_EVENTS_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event", "try"]);
+const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event", "try", "replay-tour"]);
 const BACKEND_MESSAGE = "quickcal-backend";
 const HEALTH_ATTEMPT_MS = 10000;
 const ACCESS_TIMEOUT_MS = 10000;
@@ -233,16 +260,103 @@ const TRY_PAGE_WAIT_MS = 8000;
 
 let healthInFlight = null;
 
-chrome.runtime.onInstalled.addListener((details) => openWelcomeOnce(details).catch(() => {}));
+chrome.runtime.onInstalled.addListener((details) => ensureOnboardingMigrated(details).catch(() => {}));
+if (chrome.runtime.onStartup && chrome.runtime.onStartup.addListener) {
+  chrome.runtime.onStartup.addListener(() => {
+    ensureOnboardingMigrated({ reason: "startup" }).catch(() => {});
+  });
+}
 
-async function openWelcomeOnce(details) {
-  if (!details || (details.reason !== "install" && details.reason !== "update")) return;
-  if (details.reason === "update") {
-    const stored = await chrome.storage.local.get(WELCOME_KEY);
-    if (stored[WELCOME_KEY] === true) return;
+const ONBOARDING_MESSAGE = "quickcal-onboarding";
+let onboardingAuthEpoch = 0;
+
+async function readOnboardingRecord() {
+  const api = self.QuickCalOnboarding;
+  const stored = await chrome.storage.local.get(api.STORAGE_KEY);
+  return api.normalize(stored[api.STORAGE_KEY]);
+}
+
+async function writeOnboardingRecord(record) {
+  const api = self.QuickCalOnboarding;
+  const next = api.normalize(record);
+  await chrome.storage.local.set({ [api.STORAGE_KEY]: next });
+  return next;
+}
+
+async function ensureOnboardingMigrated(details) {
+  const api = self.QuickCalOnboarding;
+  const keys = [api.STORAGE_KEY, api.WELCOME_SEEN_KEY, api.SUPPRESS_KEY, api.DRAFT_KEY];
+  const store = await chrome.storage.local.get(keys);
+  const existing = store[api.STORAGE_KEY] ? api.normalize(store[api.STORAGE_KEY]) : null;
+  if (existing && existing.migrated) return existing;
+  if (api.shouldMigrateAsComplete(store)) {
+    return writeOnboardingRecord({
+      completed: true,
+      step: "connect",
+      migrated: true,
+      pendingSelection: "",
+    });
   }
-  await chrome.storage.local.set({ [WELCOME_KEY]: true });
-  await chrome.runtime.openOptionsPage();
+  // Ordinary updates for installs that predate this key skip the new tour.
+  if (details && details.reason === "update" && !existing) {
+    return writeOnboardingRecord({
+      completed: true,
+      step: "connect",
+      migrated: true,
+      pendingSelection: "",
+    });
+  }
+  return writeOnboardingRecord({
+    completed: false,
+    step: (existing && existing.step) || "overview",
+    migrated: true,
+    pendingSelection: (existing && existing.pendingSelection) || "",
+  });
+}
+
+function onboardingActive(state) {
+  return !!(state && state.onboarding && state.onboarding.active);
+}
+
+async function attachOnboarding(state, extras) {
+  const record = await readOnboardingRecord();
+  const view = self.QuickCalOnboarding.sessionView(record, extras);
+  return self.QuickCalSession.setOnboarding(state, view);
+}
+
+async function showWidgetWithOnboarding(tab, options) {
+  const settings = options || {};
+  const incognito = !!tab.incognito;
+  const record = await ensureOnboardingMigrated({ reason: "open" });
+  const forceTour = settings.replay === true;
+  const needsTour = forceTour || record.completed !== true;
+  const state = await mutateWidgetSession(incognito, (current) => {
+    let next = self.QuickCalSession.claim(self.QuickCalSession.show(current), tab.id).state;
+    if (!needsTour) {
+      if (onboardingActive(next) && next.onboarding.replay) {
+        return self.QuickCalSession.setOnboarding(next, null);
+      }
+      return next;
+    }
+    const startStep = forceTour ? "overview" : record.step;
+    const view = self.QuickCalOnboarding.sessionView(record, {
+      active: true,
+      replay: forceTour,
+      step: startStep,
+      exampleIndex: forceTour ? 0 : record.exampleIndex,
+      connectState: "",
+      connectMessage: "",
+    });
+    return self.QuickCalSession.setOnboarding(next, view);
+  });
+  let shown = state;
+  if (needsTour && state && state.onboarding && state.onboarding.step === "connect") {
+    shown = await probeOnboardingConnect(incognito, tab.id);
+  }
+  const delivered = await deliverSession(tab.id, shown);
+  if (delivered === "blocked" || delivered === "failed") return { ok: false, blocked: true, session: shown };
+  if (shown.visible) await focusSharedWidget(tab.id);
+  return { ok: true, session: shown };
 }
 
 let authChain = Promise.resolve();
@@ -2190,6 +2304,7 @@ function reply(result) {
     needsReconnect: !!(result && result.needsReconnect === true),
     needsTasksScope: !!(result && result.needsTasksScope === true),
   };
+  if (result && result.replay === true) safe.replay = true;
   if (result && result.testEvent && typeof result.testEvent === "object") {
     safe.testEvent = publicTestEvent(result.testEvent);
   }
@@ -2278,6 +2393,223 @@ async function openTryPage() {
   };
 }
 
+async function patchOnboardingSession(incognito, tabId, updater) {
+  const state = await mutateWidgetSession(incognito, (current) => {
+    if (!onboardingActive(current)) return current;
+    const nextView = updater(current.onboarding, current);
+    if (!nextView) return self.QuickCalSession.setOnboarding(current, null);
+    return self.QuickCalSession.setOnboarding(current, nextView);
+  });
+  await broadcastSession(state);
+  if (tabId != null) await deliverSession(tabId, state);
+  return state;
+}
+
+async function persistOnboardingStep(step, exampleIndex) {
+  const record = await readOnboardingRecord();
+  if (record.completed) return record;
+  return writeOnboardingRecord(
+    Object.assign({}, record, {
+      step: self.QuickCalOnboarding.normalizeStep(step),
+      exampleIndex: Number.isInteger(exampleIndex) ? exampleIndex : record.exampleIndex,
+    })
+  );
+}
+
+async function probeOnboardingConnect(incognito, tabId) {
+  let status;
+  try {
+    status = await refreshStatus();
+  } catch (error) {
+    status = null;
+  }
+  const ready = !!(
+    status &&
+    status.state === "ready" &&
+    status.quickcalReady !== false &&
+    !status.needsConflictScopes &&
+    !status.needsTasksScope
+  );
+  return patchOnboardingSession(incognito, tabId, (view) =>
+    Object.assign({}, view, {
+      step: "connect",
+      connectState: ready ? "ready" : "",
+      connectMessage: ready
+        ? ""
+        : status && typeof status.message === "string"
+          ? status.message
+          : "",
+    })
+  );
+}
+
+async function connectDuringOnboarding(incognito, tabId) {
+  const epoch = ++onboardingAuthEpoch;
+  await patchOnboardingSession(incognito, tabId, (view) =>
+    Object.assign({}, view, {
+      step: "connect",
+      connectState: "connecting",
+      connectMessage: "",
+    })
+  );
+  let result;
+  try {
+    result = await connectCalendar();
+  } catch (error) {
+    result = failed("Google Calendar could not be connected.");
+  }
+  if (epoch !== onboardingAuthEpoch) {
+    return { ok: true, ignored: true, result: result };
+  }
+  const visible = await readWidgetSession(incognito);
+  if (!onboardingActive(visible)) {
+    return { ok: true, ignored: true, dismissed: true, result: result };
+  }
+  const ready = !!(result && result.state === "ready" && result.quickcalReady !== false && !result.needsConflictScopes && !result.needsTasksScope);
+  const connectState = ready
+    ? "ready"
+    : result && result.state === "connected"
+      ? "connected"
+      : result && result.state === "disconnected"
+        ? "disconnected"
+        : "error";
+  await patchOnboardingSession(incognito, tabId, (view) =>
+    Object.assign({}, view, {
+      step: "connect",
+      connectState: connectState,
+      connectMessage: result && typeof result.message === "string" ? result.message : "",
+    })
+  );
+  return { ok: true, result: result, ready: ready };
+}
+
+async function completeOnboarding(incognito, tabId, replay) {
+  const record = await readOnboardingRecord();
+  const pending = record.pendingSelection || "";
+  if (!replay) {
+    await writeOnboardingRecord({
+      completed: true,
+      step: "connect",
+      migrated: true,
+      pendingSelection: "",
+      exampleIndex: 0,
+    });
+  } else {
+    await writeOnboardingRecord(
+      Object.assign({}, record, {
+        pendingSelection: "",
+      })
+    );
+  }
+  const state = await mutateWidgetSession(incognito, (current) => {
+    let next = self.QuickCalSession.setOnboarding(current, null);
+    next = Object.assign({}, next, {
+      mode: "input",
+      input: pending || next.input || "",
+      statusText: pending
+        ? "Your highlighted text is ready. Press Enter when you want QuickCal to continue."
+        : "",
+      statusError: false,
+      revision: next.revision + 1,
+    });
+    return self.QuickCalSession.claim(next, tabId).state;
+  });
+  await broadcastSession(state);
+  await deliverSession(tabId, state);
+  if (state.visible) await focusSharedWidget(tabId);
+  return { ok: true, session: state, pendingSelection: pending };
+}
+
+async function replayOnboardingTour() {
+  const record = await ensureOnboardingMigrated({ reason: "replay" });
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  } catch (error) {
+    tabs = [];
+  }
+  let tab = (tabs || []).find((item) => item && item.id != null && canInject(item.url));
+  if (!tab) {
+    try {
+      tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+    } catch (error) {
+      tabs = [];
+    }
+    tab = (tabs || []).find((item) => item && item.id != null && canInject(item.url));
+  }
+  if (!tab) {
+    try {
+      tab = await chrome.tabs.create({ url: TRY_PAGE_URL, active: true });
+      await waitForTabComplete(tab.id, TRY_PAGE_WAIT_MS);
+    } catch (error) {
+      return failed("Open a normal webpage, then choose Replay welcome tour again.");
+    }
+  }
+  const current = await readWidgetSession(!!tab.incognito);
+  if (self.QuickCalOnboarding.isBusyConversation(current)) {
+    return failed("Finish or close the current QuickCal conversation before replaying the welcome tour.");
+  }
+  const shown = await showWidgetWithOnboarding(tab, { replay: true });
+  if (shown && shown.blocked) {
+    return failed("QuickCalAI could not show the welcome tour on that page.");
+  }
+  return {
+    state: "ready",
+    message: "",
+    googleConnected: true,
+    quickcalReady: record.completed === true,
+    replay: true,
+  };
+}
+
+async function handleOnboardingMessage(message, sender) {
+  const action = message && message.action;
+  const incognito = !!(sender.tab && sender.tab.incognito);
+  const tabId = sender.tab && sender.tab.id;
+  if (action === "status") {
+    const record = await ensureOnboardingMigrated({ reason: "status" });
+    return { ok: true, onboarding: record };
+  }
+  if (action === "step") {
+    const step = self.QuickCalOnboarding.normalizeStep(message.step);
+    const exampleIndex = Number.isInteger(message.exampleIndex) ? message.exampleIndex : 0;
+    const record = await readOnboardingRecord();
+    if (!record.completed) await persistOnboardingStep(step, exampleIndex);
+    let state = await patchOnboardingSession(incognito, tabId, (view) =>
+      Object.assign({}, view, {
+        active: true,
+        step: step,
+        exampleIndex: exampleIndex,
+        connectState: step === "connect" ? view.connectState : "",
+        connectMessage: step === "connect" ? view.connectMessage : "",
+        selectedExample: typeof message.selectedExample === "string" ? message.selectedExample : view.selectedExample,
+      })
+    );
+    if (step === "connect") {
+      state = await probeOnboardingConnect(incognito, tabId);
+    }
+    return { ok: true, session: state };
+  }
+  if (action === "select-example") {
+    const text = typeof message.text === "string" ? message.text.slice(0, 200) : "";
+    const state = await patchOnboardingSession(incognito, tabId, (view) =>
+      Object.assign({}, view, {
+        selectedExample: text,
+      })
+    );
+    return { ok: true, session: state };
+  }
+  if (action === "connect") {
+    return connectDuringOnboarding(incognito, tabId);
+  }
+  if (action === "complete") {
+    const visible = await readWidgetSession(incognito);
+    const replay = !!(visible && visible.onboarding && visible.onboarding.replay);
+    return completeOnboarding(incognito, tabId, replay);
+  }
+  return { ok: false, error: "QuickCalAI could not update onboarding." };
+}
+
 function performAuth(message) {
   const action = message && message.action;
   if (action === "status") return refreshStatus();
@@ -2285,6 +2617,7 @@ function performAuth(message) {
   if (action === "disconnect") return disconnectCalendar();
   if (action === "create-test-event") return createTestEvent(message.event);
   if (action === "try") return openTryPage();
+  if (action === "replay-tour") return replayOnboardingTour();
   return Promise.resolve(failed("QuickCalAI could not complete that request."));
 }
 
@@ -4973,6 +5306,7 @@ function handleWidgetMessage(message, sender) {
     }).then((state) => ({ ok: true, session: state }));
   }
   if (action === "dismiss") {
+    onboardingAuthEpoch += 1;
     const snap = voice.snapshot();
     if (snap.phase !== "idle" && !!snap.incognito === !!incognito) {
       cancelVoice(snap.sessionId, tabId, incognito).catch(() => {});
@@ -5248,6 +5582,13 @@ function handleWidgetMessage(message, sender) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === ONBOARDING_MESSAGE) {
+    if (!isParseSender(sender) && !isOptionsSender(sender)) return false;
+    handleOnboardingMessage(message, sender)
+      .then((result) => sendResponse(result || { ok: false }))
+      .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not update onboarding." }));
+    return true;
+  }
   if (message && message.type === WIDGET_MESSAGE) {
     if (!isParseSender(sender)) return false;
     handleWidgetMessage(message, sender)
