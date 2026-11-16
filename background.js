@@ -224,10 +224,12 @@ const CALENDAR_PROBE_URL =
 const TEST_EVENT_KEY = "quickcalTestEvent";
 const CALENDAR_EVENTS_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events";
-const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event"]);
+const AUTH_ACTIONS = new Set(["status", "connect", "disconnect", "create-test-event", "try"]);
 const BACKEND_MESSAGE = "quickcal-backend";
 const HEALTH_ATTEMPT_MS = 10000;
 const ACCESS_TIMEOUT_MS = 10000;
+const TRY_PAGE_URL = "https://example.com/";
+const TRY_PAGE_WAIT_MS = 8000;
 
 let healthInFlight = null;
 
@@ -2193,12 +2195,95 @@ function reply(result) {
   return safe;
 }
 
+async function showWidgetOnTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab || tab.id == null || !canInject(tab.url)) {
+    reportBlocked();
+    return false;
+  }
+  if (!sessionStore()) {
+    console.info("QuickCalAI: chrome.storage.session is unavailable, so QuickCal cannot share one conversation across tabs.");
+    return false;
+  }
+  const state = await mutateWidgetSession(!!tab.incognito, (current) => {
+    return self.QuickCalSession.claim(self.QuickCalSession.show(current), tab.id).state;
+  });
+  const delivered = await deliverSession(tab.id, state);
+  if (delivered === "blocked" || delivered === "failed") return false;
+  await focusSharedWidget(tab.id);
+  return true;
+}
+
+function waitForTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      if (chrome.tabs && chrome.tabs.onUpdated) {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+      }
+      try {
+        clearTimeout(timer);
+      } catch (error) {
+        // Some test sandboxes omit timers; the wait still settles.
+      }
+      resolve(ok);
+    };
+    const onUpdated = (id, info) => {
+      if (id === tabId && info && info.status === "complete") finish(true);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    if (chrome.tabs && chrome.tabs.onUpdated) {
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    }
+    chrome.tabs
+      .get(tabId)
+      .then((tab) => {
+        if (tab && tab.status === "complete") finish(true);
+      })
+      .catch(() => {});
+  });
+}
+
+async function openTryPage() {
+  const status = await refreshStatus();
+  if (!status || status.state !== "ready" || status.needsConflictScopes) {
+    return status && status.state
+      ? status
+      : failed("Connect Google Calendar before trying QuickCalAI.");
+  }
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url: TRY_PAGE_URL, active: true });
+  } catch (error) {
+    return failed("QuickCalAI could not open a practice page.");
+  }
+  if (!tab || tab.id == null) {
+    return failed("QuickCalAI could not open a practice page.");
+  }
+  await waitForTabComplete(tab.id, TRY_PAGE_WAIT_MS);
+  const shown = await showWidgetOnTab(tab.id);
+  if (!shown) {
+    return failed(
+      "QuickCalAI opened the practice page, but could not show the input bar. Click the QuickCalAI toolbar icon on that page."
+    );
+  }
+  return {
+    state: "ready",
+    message: "",
+    googleConnected: true,
+    quickcalReady: true,
+  };
+}
+
 function performAuth(message) {
   const action = message && message.action;
   if (action === "status") return refreshStatus();
   if (action === "connect") return connectCalendar();
   if (action === "disconnect") return disconnectCalendar();
   if (action === "create-test-event") return createTestEvent(message.event);
+  if (action === "try") return openTryPage();
   return Promise.resolve(failed("QuickCalAI could not complete that request."));
 }
 

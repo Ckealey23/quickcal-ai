@@ -1,9 +1,16 @@
 const connectButton = document.querySelector("#connect");
 const disconnectButton = document.querySelector("#disconnect");
+const tryButton = document.querySelector("#try");
 const statusNode = document.querySelector("#status");
 const detailNode = document.querySelector("#detail");
 const leadNode = document.querySelector("#lead");
+const introNode = document.querySelector("#intro");
 const readyNode = document.querySelector("#ready");
+
+const LEAD_DISCONNECTED =
+  "Add calendar events and tasks from any webpage by typing, speaking, or selecting text.";
+const LEAD_READY =
+  "QuickCalAI can add events and tasks from any normal webpage.";
 
 let pending = false;
 let currentAction = "status";
@@ -21,15 +28,17 @@ function render(result) {
   const needsTasksScope = !!(result && result.needsTasksScope);
   const needsConflictScopes = !!(result && result.needsConflictScopes) || needsTasksScope;
   const needsReconnect = !!(result && result.needsReconnect) || needsTasksScope;
+  const noticeWhileReady = !!(result && result.noticeWhileReady && message);
   statusNode.className = "status " + (busy ? "connecting" : ready && !needsConflictScopes ? "ready" : state);
   if (ready && !busy && !needsConflictScopes) statusNode.textContent = "QuickCalAI is ready.";
   else if (googleConnected && !busy) statusNode.textContent = "Google Calendar connected";
   else if (currentAction === "disconnect" && busy) statusNode.textContent = "Disconnecting Google Calendar…";
+  else if (currentAction === "try" && busy) statusNode.textContent = "Opening a practice page…";
   else if (currentAction === "connect" && busy) statusNode.textContent = "Connecting to Google Calendar…";
   else if (currentAction === "status" && busy) statusNode.textContent = "Checking your QuickCal connection…";
   else statusNode.textContent = "Google Calendar is not connected.";
 
-  if (!busy && message && (!ready || needsConflictScopes)) {
+  if (!busy && message && (!ready || needsConflictScopes || noticeWhileReady)) {
     detailNode.hidden = false;
     detailNode.textContent = message;
   } else {
@@ -38,7 +47,7 @@ function render(result) {
   }
 
   if (ready && !busy && !needsConflictScopes) {
-    leadNode.textContent = "QuickCalAI can add events to your calendar.";
+    leadNode.textContent = LEAD_READY;
   } else if (googleConnected && needsReconnect && !busy) {
     leadNode.textContent = needsTasksScope
       ? "Reconnect so QuickCalAI can create Google Tasks. Your draft stays in place."
@@ -48,15 +57,18 @@ function render(result) {
   } else if (googleConnected && !busy) {
     leadNode.textContent = "Google Calendar is connected.";
   } else {
-    leadNode.textContent = "Connect Google Calendar to start adding events from any webpage.";
+    leadNode.textContent = LEAD_DISCONNECTED;
   }
 
-  readyNode.hidden = !(ready && !busy && !needsConflictScopes);
+  const showReady = ready && !busy && !needsConflictScopes;
+  introNode.hidden = showReady;
+  readyNode.hidden = !showReady;
   const disconnecting = busy && currentAction === "disconnect";
-  connectButton.hidden = (ready && !busy && !needsConflictScopes) || disconnecting;
+  connectButton.hidden = showReady || disconnecting;
   disconnectButton.hidden = !(googleConnected || disconnecting);
   connectButton.disabled = busy;
   disconnectButton.disabled = busy;
+  tryButton.disabled = busy;
 
   if (needsReconnect || needsConflictScopes) connectButton.textContent = "Reconnect Google Calendar";
   else if (googleConnected && !ready) connectButton.textContent = "Try again";
@@ -67,11 +79,31 @@ async function callAuth(action) {
   if (pending) return;
   pending = true;
   currentAction = action;
-  render({ state: "connecting", googleConnected: action === "disconnect" });
+  const keepConnected = action === "disconnect" || action === "try";
+  render({
+    state: "connecting",
+    googleConnected: keepConnected,
+    quickcalReady: action === "try",
+  });
 
   try {
     const result = await chrome.runtime.sendMessage({ type: "quickcal-auth", action: action });
     pending = false;
+    if (action === "try") {
+      const status = await chrome.runtime.sendMessage({ type: "quickcal-auth", action: "status" });
+      const next = status || { state: "error", message: "QuickCalAI could not check Google Calendar." };
+      if (result && result.state === "error" && result.message) {
+        render(
+          Object.assign({}, next, {
+            noticeWhileReady: true,
+            message: result.message,
+          })
+        );
+        return;
+      }
+      render(next);
+      return;
+    }
     render(result || { state: "error", message: "QuickCalAI could not check Google Calendar." });
   } catch (error) {
     pending = false;
@@ -86,6 +118,10 @@ connectButton.addEventListener("click", () => {
 
 disconnectButton.addEventListener("click", () => {
   callAuth("disconnect");
+});
+
+tryButton.addEventListener("click", () => {
+  callAuth("try");
 });
 
 callAuth("status");

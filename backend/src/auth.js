@@ -26,12 +26,21 @@ function audienceMatches(payload, clientId) {
   return true;
 }
 
-function accountProblem(payload, allowed) {
-  const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
+function identityEmail(payload) {
+  return typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
+}
+
+function identityProblem(payload) {
+  const email = identityEmail(payload);
   const verified = payload.email_verified === true || payload.email_verified === "true";
   if (!email || !verified) {
     return "Google did not confirm an email for this sign-in. Connect again so QuickCalAI can check your account.";
   }
+  return "";
+}
+
+function allowlistProblem(payload, allowed) {
+  const email = identityEmail(payload);
   if (!allowed.has(email)) return "This Google account is not approved for QuickCalAI.";
   return "";
 }
@@ -39,15 +48,20 @@ function accountProblem(payload, allowed) {
 export function createGoogleVerifier({
   clientId,
   allowedEmails,
+  accessMode = "invite-only",
   fetchImpl,
   timeoutMs = TOKENINFO_TIMEOUT_MS,
   now = () => Date.now(),
 } = {}) {
+  const inviteOnly = accessMode !== "public";
   const allowed = new Set(
     Array.isArray(allowedEmails) ? allowedEmails.map((email) => String(email).trim().toLowerCase()) : []
   );
   return async function verify(authorization) {
-    if (!clientId || allowed.size === 0 || typeof fetchImpl !== "function") {
+    if (!clientId || typeof fetchImpl !== "function") {
+      return failed(503, "QuickCalAI is not available.");
+    }
+    if (inviteOnly && allowed.size === 0) {
       return failed(503, "QuickCalAI is not available.");
     }
     const token = bearerToken(authorization);
@@ -81,8 +95,12 @@ export function createGoogleVerifier({
     if (!audienceMatches(payload, clientId)) {
       return failed(403, "This Google sign-in is for a different app.");
     }
-    const problem = accountProblem(payload, allowed);
-    if (problem) return failed(403, problem);
+    const identity = identityProblem(payload);
+    if (identity) return failed(403, identity);
+    if (inviteOnly) {
+      const approval = allowlistProblem(payload, allowed);
+      if (approval) return failed(403, approval);
+    }
     const sub = typeof payload.sub === "string" ? payload.sub.trim() : "";
     if (!sub || sub.length > 255 || /\s/.test(sub)) {
       return failed(403, "Google did not confirm this account.");

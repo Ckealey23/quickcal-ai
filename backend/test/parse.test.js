@@ -442,6 +442,16 @@ describe("model errors", () => {
       [{ name: "AuthenticationError", status: 401, message: "bad " + secret }, 401, /API key/],
       [{ name: "NotFoundError", status: 404, message: secret }, 404, /did not substitute/],
       [{ name: "RateLimitError", status: 429, message: secret }, 429, /rate-limited/],
+      [
+        {
+          name: "RateLimitError",
+          status: 429,
+          code: "insufficient_quota",
+          message: "You exceeded your current quota " + secret,
+        },
+        429,
+        /quota is exhausted/,
+      ],
       [{ name: "APIConnectionTimeoutError", message: secret }, 504, /timed out/],
       [{ name: "BadRequestError", status: 400, message: secret }, 400, /did not retry/],
     ];

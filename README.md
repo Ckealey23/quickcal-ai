@@ -83,15 +83,17 @@ The toolbar icon still only shows or hides the input bar. A new installation ope
 Reload the extension from `chrome://extensions` after these manifest changes, then use this checklist:
 
 - [ ] On a fresh install, the welcome page opens by itself. No Google prompt appears until **Connect Google Calendar** is clicked.
-- [ ] Approve the prompt. The page says **QuickCalAI is ready.** only after both Calendar and the hosted parser accept the account, and it explains the Chrome toolbar icon.
+- [ ] The welcome page explains Calendar and Tasks permissions, that typed/selected text and uploaded documents are processed by AI, and that voice audio is transcribed remotely. It does not claim data stays on-device.
+- [ ] Approve the prompt. The page says **QuickCalAI is ready.** only after both Calendar and the hosted `/access` check succeed, then explains pinning/opening, typing/tasks/voice/highlight examples, and single-item auto-create versus multi-event or document review.
+- [ ] **Try QuickCal** opens `https://example.com/` and shows the widget without creating an event.
 - [ ] Cancel the Google prompt. The page says the connection was cancelled and does not say QuickCalAI is ready.
-- [ ] If Calendar connects but the account is not approved, the page says **Google Calendar connected** and shows that this account is not approved.
+- [ ] If Calendar connects but invite-only mode rejects the account, the page says **Google Calendar connected** and shows that this account is not approved. Public mode must not show a waitlist or email-approval message for a valid Google user.
 - [ ] Click **Disconnect**. Reopening the page does not connect again until **Connect Google Calendar** is clicked.
 - [ ] On a normal webpage, the toolbar icon still toggles the input bar. The welcome page does not show a backend address, an API key, or a test-event control.
 
 ## Welcome page
 
-The options page is the customer welcome screen. It connects Google Calendar and checks that the hosted parser accepts the account. It does not create a test event.
+The options page is the customer welcome screen. It connects Google Calendar and checks that the hosted parser accepts the account. It does not create a test event. Returning from onboarding keeps any existing draft and refreshes the widget connection state when that tab becomes visible again.
 
 ## Local event extraction
 
@@ -164,9 +166,20 @@ Create a Render Web Service:
 
 `GET /health` returns health, parser API version, public deployment revision, and supported capabilities without calling OpenAI. `apiKeyConfigured` is true only when `OPENAI_API_KEY` is set. The response never includes the key, the allowlist, or a Google token. Use one instance. The per-user rate limit is stored in process memory, so it is not shared by more than one instance and it resets whenever the service restarts, redeploys, or spins down.
 
-Render sets `PORT` and `RENDER=true`. With `RENDER=true`, the server binds `0.0.0.0` and that port. Local `npm start` binds `127.0.0.1:3000` when `PORT` is unset, and it stays on `127.0.0.1` if `PORT` is set. `NODE_ENV=production` or `RENDER=true` turns authentication on, and a value of `QUICKCAL_REQUIRE_AUTH=false` does not turn it off. If `GOOGLE_CLIENT_ID` or `ALLOWED_EMAILS` is missing, the process exits before it listens.
+Render sets `PORT` and `RENDER=true`. With `RENDER=true`, the server binds `0.0.0.0` and that port. Local `npm start` binds `127.0.0.1:3000` when `PORT` is unset, and it stays on `127.0.0.1` if `PORT` is set. `NODE_ENV=production` or `RENDER=true` turns authentication on, and a value of `QUICKCAL_REQUIRE_AUTH=false` does not turn it off. Access policy is controlled by `QUICKCAL_ACCESS_MODE`:
 
-Set these environment variables in Render. Mark the key and the allowlist as secret. Use placeholders here; do not commit real values.
+| `QUICKCAL_ACCESS_MODE` | Behavior |
+| --- | --- |
+| unset | Same as invite-only. Current production default. |
+| `invite-only` | Requires `GOOGLE_CLIENT_ID` and `ALLOWED_EMAILS`. Only allowlisted verified Google accounts are approved. |
+| `public` | Requires `GOOGLE_CLIENT_ID`. Any valid Google-authenticated user with a verified email and stable account id is approved. `ALLOWED_EMAILS` is not required and is not used for approval. |
+| any other nonempty value | Startup fails with a clear error. |
+
+An empty `ALLOWED_EMAILS` list never implies public mode. Public mode does not write emails into environment variables or a database.
+
+If invite-only production is missing `GOOGLE_CLIENT_ID` or `ALLOWED_EMAILS`, or public mode is missing `GOOGLE_CLIENT_ID`, the process exits before it listens.
+
+Set these environment variables in Render. Mark the key and the allowlist as secret. Use placeholders here; do not commit real values. Keep live Render invite-only until you deliberately flip public mode.
 
 | Variable | Value |
 | --- | --- |
@@ -175,6 +188,9 @@ Set these environment variables in Render. Mark the key and the allowlist as sec
 | `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` |
 | `GOOGLE_CLIENT_ID` | the `oauth2.client_id` already in `manifest.json` |
 | `ALLOWED_EMAILS` | `reference.customer@example.com,second.customer@example.com` |
+| `QUICKCAL_ACCESS_MODE` | leave unset or `invite-only` for current production |
+
+Later, to enable self-service onboarding without changing code: set `QUICKCAL_ACCESS_MODE=public` on Render and redeploy/restart. You may clear or leave `ALLOWED_EMAILS`; it is ignored for approval in public mode.
 
 Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Parsing, transcription, document reading, and document analysis share that per-account limit. Do not put the OpenAI key, the allowlist, or any shared password in the extension. Audio is kept only in memory for the request. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
 
@@ -193,11 +209,17 @@ On the OAuth consent screen, keep these scopes and add the conflict-check scopes
 
 In the same Google Cloud project, open **APIs & Services → Library** and enable the **Google Tasks API**. The Calendar API is already enabled. Without the Tasks API, task requests fail with a message that says to enable it; calendar events keep working. Google Tasks has no narrower write scope than `tasks`, and QuickCalAI only creates tasks in the default list.
 
-Do not add `https://www.googleapis.com/auth/calendar` or a broader write scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser.
+Do not add `https://www.googleapis.com/auth/calendar` or a broader write scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. In invite-only mode, `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser. In public mode, Google still must issue a valid token for this client, but the allowlist is not checked.
+
+Google Calendar and Tasks scopes used here are sensitive. Publishing status **Testing** limits access to listed test users (with warnings and short-lived grants). Moving the OAuth consent screen to **In production** and completing Google’s verification is a separate process from paying the Chrome Web Store developer registration fee. The Store fee does not make Google OAuth public or verified. See Google’s docs on [app audience / Testing vs Production](https://support.google.com/cloud/answer/15549945), [sensitive scope verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification), and [Chrome extension OAuth ownership](https://developers.google.com/identity/protocols/oauth2/native-app).
 
 After these scopes are added to the Chrome OAuth client and consent screen, each tester must choose **Reconnect Google Calendar** once so the token includes them. Existing drafts and the shared conversation stay in place. The options page detects a token without Tasks access and offers **Reconnect** for that case too. Depending on Chrome, an existing connection may instead show **Connect Google Calendar** after the extension updates; connecting again grants every scope at once.
 
-The token Google returns must be for this extension’s client ID and must include a verified email. The server rejects tokens issued to another client, unverified emails, and emails that are not on `ALLOWED_EMAILS`. It does not accept an email, extension origin, or shared secret sent by the client.
+The token Google returns must be for this extension’s client ID and must include a verified email and stable account id (`sub`). The server rejects tokens issued to another client, unverified emails, expired tokens, and—when invite-only—emails that are not on `ALLOWED_EMAILS`. It does not accept an email, extension origin, or shared secret sent by the client.
+
+### Chrome Web Store item ID
+
+The unpacked development ID `mkihiedalmccmhoebiiikpdoafhdfglf` comes from the public `key` in `manifest.json`. A Chrome Web Store upload can receive a different item ID. After upload, read the item ID from the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole). If it differs from the development ID, update the Google Cloud OAuth Chrome-extension client’s allowed extension ID and any backend/`GOOGLE_CLIENT_ID` coordination before enabling broad access. Do not assume the current manifest key guarantees the same ID after store upload.
 
 Post-save conflict checking runs in the service worker after Google confirms a create, edit, or move. It never blocks or undoes the save. Recurring series are checked for **90 days** from the saved start; the success card shows that bounded range and does not claim the whole series is clear.
 
@@ -248,6 +270,35 @@ Customer use does not need a local server. Reload the extension, connect Calenda
 - [ ] After the Friday series is saved, type `Move it to 7 PM`. The card asks before changing the series. Type `Change the entire series to 7 PM` to move that same series. **New event**, then a one-time sentence such as `Move it to 11 AM` on a non-repeating event, still changes only that event.
 
 These browser steps use your real parser and your real calendar. The automated checks stub both and do not.
+
+## Invite-only deploy (stay closed)
+
+Do not enable public access until deliberately ready.
+
+1. Deploy the backend to Render with the existing free instance and current OpenAI env vars.
+2. Keep `QUICKCAL_ACCESS_MODE` unset or set to `invite-only`.
+3. Keep `GOOGLE_CLIENT_ID` matching `manifest.json` `oauth2.client_id`.
+4. Keep `ALLOWED_EMAILS` populated with approved tester emails.
+5. Reload the unpacked extension (or ship the extension ZIP). Do not change live Google OAuth publishing status unless you intend to.
+
+## Later: enable public mode
+
+1. Confirm OAuth Testing vs Production / verification needs for your audience (Store fee alone is not enough).
+2. Confirm privacy-policy and homepage URLs required by Google/Chrome for broader publishing.
+3. Confirm the Chrome Web Store item ID (if published) matches the OAuth extension client configuration.
+4. On Render only: set `QUICKCAL_ACCESS_MODE=public`, then restart/redeploy.
+5. Smoke-test: fresh Google account not in `ALLOWED_EMAILS` can Connect → ready → parse.
+
+## Manual onboarding checklist
+
+- [ ] Fresh install opens welcome once; relaunching Chrome does not reopen it every time.
+- [ ] Connect Google Calendar starts Google’s prompt; cancel leaves the page not ready and keeps any draft.
+- [ ] Missing Calendar permission shows a clear permission error, not a backend/OpenAI mislabel.
+- [ ] Invite-only unapproved account: Calendar connected, not ready, not-approved message.
+- [ ] After ready: pin/open instructions, examples, Try QuickCal opens HTTPS example page and reveals the widget without creating an event.
+- [ ] Disconnect stays disconnected until Connect is chosen again.
+- [ ] Cold start / unreachable backend: bounded retry messaging; draft preserved; not labeled as Connect Google Calendar.
+- [ ] OpenAI quota exhaustion: useful error; draft preserved.
 
 ## Checkpoint 1 manual checklist
 

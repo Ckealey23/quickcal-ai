@@ -50,6 +50,17 @@ export function describeModelFailure(error) {
     };
   }
   if (isOpenAIError(error, "RateLimitError") || error?.status === 429) {
+    const detail = String(error?.code || error?.error?.code || error?.message || "").toLowerCase();
+    if (
+      detail.includes("insufficient_quota") ||
+      detail.includes("billing") ||
+      detail.includes("exceeded your current quota")
+    ) {
+      return {
+        status: 429,
+        error: "OpenAI quota is exhausted. Add billing or wait for quota to reset, then try again.",
+      };
+    }
     return { status: 429, error: "OpenAI rate-limited this request. Wait and try again." };
   }
   if (isOpenAIError(error, "BadRequestError")) {

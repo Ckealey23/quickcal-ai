@@ -49,7 +49,15 @@ function transcriptionFailure(error) {
       error: "The configured transcription model is unavailable. QuickCalAI did not substitute another model.",
     };
   }
-  if (mapped.status === 429) return { status: 429, error: "OpenAI rate-limited this request. Wait and try again." };
+  if (mapped.status === 429) {
+    if (/quota|billing/i.test(mapped.error || "")) {
+      return {
+        status: 429,
+        error: "OpenAI quota is exhausted. Add billing or wait for quota to reset, then try again.",
+      };
+    }
+    return { status: 429, error: "OpenAI rate-limited this request. Wait and try again." };
+  }
   if (mapped.status === 400) return { status: 422, error: "QuickCalAI could not transcribe that recording." };
   return { status: 502, error: "QuickCalAI could not transcribe that recording." };
 }

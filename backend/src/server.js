@@ -37,6 +37,7 @@ export async function main() {
     ? createGoogleVerifier({
         clientId: auth.clientId,
         allowedEmails: auth.allowedEmails,
+        accessMode: auth.accessMode || "invite-only",
         fetchImpl: globalThis.fetch,
       })
     : null;

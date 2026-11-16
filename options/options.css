@@ -15,7 +15,7 @@ body {
 
 .card {
   box-sizing: border-box;
-  width: min(420px, 100%);
+  width: min(460px, 100%);
   margin: 0;
   padding: 28px 24px 24px;
   border: 1px solid #dce8f7;
@@ -37,13 +37,28 @@ h1 {
 
 .lead,
 .status,
-.detail {
+.detail,
+.intro p,
+#ready p {
   margin: 0;
 }
 
 .lead {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   color: #7a7f8a;
+}
+
+.intro {
+  margin: 0 0 20px;
+}
+
+.intro p {
+  margin: 0 0 10px;
+  color: #7a7f8a;
+}
+
+.intro p:last-child {
+  margin-bottom: 0;
 }
 
 .status {
@@ -123,8 +138,39 @@ button:disabled {
 }
 
 #ready p {
-  margin: 0;
+  margin: 0 0 12px;
   color: #7a7f8a;
+}
+
+.examples {
+  margin: 0 0 12px;
+  padding-left: 1.2em;
+  color: #7a7f8a;
+}
+
+.examples li {
+  margin: 0 0 8px;
+}
+
+.examples li:last-child {
+  margin-bottom: 0;
+}
+
+.examples strong {
+  color: #35322d;
+  font-weight: 600;
+}
+
+#try {
+  margin-top: 4px;
+  background: #35322d;
+  border-color: #35322d;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+#try:hover:not(:disabled) {
+  background: #4a463f;
 }
 
 .status.ready {

@@ -22,12 +22,14 @@ const ENV_KEYS = [
   "OPENAI_TRANSCRIPTION_MODEL",
   "GOOGLE_CLIENT_ID",
   "ALLOWED_EMAILS",
+  "QUICKCAL_ACCESS_MODE",
   "QUICKCAL_REQUIRE_AUTH",
   "QUICKCAL_RATE_LIMIT_MAX",
   "QUICKCAL_RATE_LIMIT_WINDOW_MS",
 ];
 const CLIENT_ID_PATTERN = /^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ACCESS_MODES = new Set(["invite-only", "public"]);
 
 export function envFilePath(moduleUrl = import.meta.url) {
   return join(dirname(fileURLToPath(moduleUrl)), "..", ".env");
@@ -139,9 +141,23 @@ export function listenConfig(env = process.env) {
   return { host: onRender ? "0.0.0.0" : HOST, port, error: "" };
 }
 
+function accessModeConfig(env = process.env) {
+  const raw = trimmed(env, "QUICKCAL_ACCESS_MODE");
+  if (!raw) return { mode: "invite-only", error: "" };
+  const mode = raw.toLowerCase();
+  if (!ACCESS_MODES.has(mode)) {
+    return {
+      mode: "",
+      error: 'QUICKCAL_ACCESS_MODE must be "invite-only" or "public".',
+    };
+  }
+  return { mode, error: "" };
+}
+
 export function authConfig(env = process.env) {
   const requireAuth =
     env.RENDER === "true" || env.NODE_ENV === "production" || env.QUICKCAL_REQUIRE_AUTH === "true";
+  const access = accessModeConfig(env);
   const clientId = trimmed(env, "GOOGLE_CLIENT_ID");
   const rawEmails = trimmed(env, "ALLOWED_EMAILS");
   const emails = [];
@@ -169,19 +185,25 @@ export function authConfig(env = process.env) {
     DEFAULT_RATE_LIMIT_WINDOW_MS,
     24 * 60 * 60 * 1000
   );
+  const inviteOnly = access.mode !== "public";
+  const authMissing = inviteOnly
+    ? "Production authentication is not configured. Set GOOGLE_CLIENT_ID and ALLOWED_EMAILS."
+    : "Production authentication is not configured. Set GOOGLE_CLIENT_ID.";
   let error = "";
   if (!max.ok) error = "QUICKCAL_RATE_LIMIT_MAX must be an integer from 1 to 1000.";
   else if (!windowMs.ok) error = "QUICKCAL_RATE_LIMIT_WINDOW_MS must be an integer from 1 to 86400000.";
+  else if (access.error) error = access.error;
   else if (requireAuth && !clientId) {
-    error = "Production authentication is not configured. Set GOOGLE_CLIENT_ID and ALLOWED_EMAILS.";
+    error = authMissing;
   } else if (clientId && !CLIENT_ID_PATTERN.test(clientId)) {
     error = "GOOGLE_CLIENT_ID must be the Chrome extension OAuth client ID.";
   } else if (emailError) error = emailError;
-  else if (requireAuth && emails.length === 0) {
-    error = "Production authentication is not configured. Set GOOGLE_CLIENT_ID and ALLOWED_EMAILS.";
+  else if (requireAuth && inviteOnly && emails.length === 0) {
+    error = authMissing;
   }
   return {
     requireAuth,
+    accessMode: error ? "" : access.mode || "invite-only",
     clientId: error ? "" : clientId,
     allowedEmails: error ? [] : emails,
     rateLimitMax: max.ok ? max.value : DEFAULT_RATE_LIMIT_MAX,

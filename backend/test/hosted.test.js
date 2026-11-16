@@ -50,6 +50,40 @@ function loadBackground(hooks) {
         },
       },
       scripting: { executeScript() { return Promise.resolve(); } },
+      tabs: {
+        async create(details) {
+          const tab = {
+            id: 77,
+            url: details && details.url ? details.url : "https://example.com/",
+            active: !!(details && details.active),
+            status: "complete",
+            incognito: false,
+          };
+          hooks.createdTabs = hooks.createdTabs || [];
+          hooks.createdTabs.push(tab);
+          return tab;
+        },
+        async get(id) {
+          return {
+            id,
+            url: "https://example.com/",
+            status: "complete",
+            incognito: false,
+          };
+        },
+        async query() {
+          return hooks.createdTabs || [];
+        },
+        async sendMessage() {
+          return { ok: true, open: true };
+        },
+        onUpdated: {
+          addListener() {},
+          removeListener() {},
+        },
+        onActivated: { addListener() {} },
+        onRemoved: { addListener() {} },
+      },
       storage: {
         local: {
           async get(key) {
@@ -61,6 +95,14 @@ function loadBackground(hooks) {
           },
           async remove(key) {
             delete store[key];
+          },
+        },
+        session: {
+          async get(key) {
+            return { [key]: store[key] };
+          },
+          async set(value) {
+            Object.assign(store, value);
           },
         },
       },
@@ -162,6 +204,8 @@ function loadBackground(hooks) {
     String,
     crypto,
     AbortSignal,
+    setTimeout,
+    clearTimeout,
   };
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
@@ -172,7 +216,17 @@ function loadBackground(hooks) {
     });
   };
   runInContext(readFileSync(path.join(root, "background.js"), "utf8"), context, { filename: "background.js" });
-  return { listeners, fetches, store, tokenCalls, removed, stored, logs, releaseHealth: () => releaseHealth && releaseHealth() };
+  return {
+    listeners,
+    fetches,
+    store,
+    tokenCalls,
+    removed,
+    stored,
+    logs,
+    hooks,
+    releaseHealth: () => releaseHealth && releaseHealth(),
+  };
 }
 
 function contentSender() {
@@ -344,6 +398,27 @@ describe("hosted extension access", () => {
     assert.equal(unapproved.quickcalReady, false);
     assert.match(unapproved.message, /not approved/);
     assert.equal(denied.fetches.some((call) => call.url.endsWith("/parse-event")), false);
+  });
+
+  it("opens a practice page and shows the widget after a ready connection", async () => {
+    const hooks = {};
+    const loaded = loadBackground(hooks);
+    const connected = await ask(
+      loaded.listeners.message,
+      { type: "quickcal-auth", action: "connect" },
+      optionsSender()
+    );
+    assert.equal(connected.state, "ready");
+    const tried = await ask(
+      loaded.listeners.message,
+      { type: "quickcal-auth", action: "try" },
+      optionsSender()
+    );
+    assert.equal(tried.state, "ready");
+    assert.equal(tried.quickcalReady, true);
+    assert.equal(hooks.createdTabs.length, 1);
+    assert.equal(hooks.createdTabs[0].url, "https://example.com/");
+    assert.equal(loaded.fetches.some((call) => call.url.endsWith("/parse-event")), false);
   });
 
   it("keeps a cancelled connection disconnected and does not reconnect after Disconnect", async () => {

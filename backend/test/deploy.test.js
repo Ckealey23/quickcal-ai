@@ -70,9 +70,70 @@ describe("deployment configuration", () => {
     assert.equal(startup.listen.host, "0.0.0.0");
     assert.equal(startup.listen.port, 10000);
     assert.equal(startup.auth.requireAuth, true);
+    assert.equal(startup.auth.accessMode, "invite-only");
     assert.deepEqual(startup.auth.allowedEmails, ["ada@example.com", "guest@example.com"]);
     assert.equal(startup.error.includes(SECRET), false);
     assert.equal(startup.model.apiKey, SECRET);
+  });
+
+  it("keeps invite-only by default and never infers public from an empty allowlist", () => {
+    const unset = startupConfig({
+      RENDER: "true",
+      PORT: "10000",
+      OPENAI_API_KEY: SECRET,
+      OPENAI_MODEL: "gpt-6-luna",
+      GOOGLE_CLIENT_ID: CLIENT_ID,
+      ALLOWED_EMAILS: "ada@example.com",
+    });
+    assert.equal(unset.auth.accessMode, "invite-only");
+
+    const emptyAllowlist = startupConfig({
+      RENDER: "true",
+      PORT: "10000",
+      OPENAI_API_KEY: SECRET,
+      OPENAI_MODEL: "gpt-6-luna",
+      GOOGLE_CLIENT_ID: CLIENT_ID,
+      ALLOWED_EMAILS: "",
+    });
+    assert.match(emptyAllowlist.error, /ALLOWED_EMAILS/);
+    assert.equal(emptyAllowlist.auth.accessMode, "");
+
+    const invalid = startupConfig({
+      RENDER: "true",
+      PORT: "10000",
+      OPENAI_API_KEY: SECRET,
+      OPENAI_MODEL: "gpt-6-luna",
+      GOOGLE_CLIENT_ID: CLIENT_ID,
+      ALLOWED_EMAILS: "ada@example.com",
+      QUICKCAL_ACCESS_MODE: "open-to-all",
+    });
+    assert.match(invalid.error, /QUICKCAL_ACCESS_MODE/);
+    assert.equal(invalid.auth.accessMode, "");
+  });
+
+  it("allows public mode without ALLOWED_EMAILS while still requiring Google client configuration", () => {
+    const publicMode = startupConfig({
+      RENDER: "true",
+      PORT: "10000",
+      OPENAI_API_KEY: SECRET,
+      OPENAI_MODEL: "gpt-6-luna",
+      GOOGLE_CLIENT_ID: CLIENT_ID,
+      QUICKCAL_ACCESS_MODE: "public",
+    });
+    assert.equal(publicMode.error, "");
+    assert.equal(publicMode.auth.accessMode, "public");
+    assert.deepEqual(publicMode.auth.allowedEmails, []);
+    assert.equal(publicMode.auth.requireAuth, true);
+
+    const missingClient = startupConfig({
+      RENDER: "true",
+      PORT: "10000",
+      OPENAI_API_KEY: SECRET,
+      OPENAI_MODEL: "gpt-6-luna",
+      QUICKCAL_ACCESS_MODE: "public",
+    });
+    assert.match(missingClient.error, /GOOGLE_CLIENT_ID/);
+    assert.equal(missingClient.error.includes("ALLOWED_EMAILS"), false);
   });
 
   it("fails closed when production authentication is missing", () => {
@@ -174,6 +235,45 @@ describe("google token verification", () => {
     assert.match(unverified.error, /confirm an email/);
     assert.equal(expired.status, 401);
     assert.equal(await verify("Bearer").then((result) => result.status), 401);
+  });
+
+  it("accepts a verified Google identity in public mode without ALLOWED_EMAILS", async () => {
+    const verify = createGoogleVerifier({
+      clientId: CLIENT_ID,
+      allowedEmails: [],
+      accessMode: "public",
+      fetchImpl: async (url, options) => {
+        const token = new URLSearchParams(options.body).get("access_token");
+        if (token === "ya29.public-account-token") {
+          return googleResponse(200, identity({ email: "new.user@example.com", sub: "google-user-9" }));
+        }
+        if (token === "ya29.wrong-audience-token") {
+          return googleResponse(200, identity({
+            aud: "000000000000-otherapp.apps.googleusercontent.com",
+            azp: "000000000000-otherapp.apps.googleusercontent.com",
+            email: "new.user@example.com",
+            sub: "google-user-9",
+          }));
+        }
+        if (token === "ya29.unverified-account") {
+          return googleResponse(200, identity({
+            email: "new.user@example.com",
+            email_verified: "false",
+            sub: "google-user-9",
+          }));
+        }
+        return googleResponse(400, { error: "invalid_token" });
+      },
+    });
+    const approved = await verify("Bearer ya29.public-account-token");
+    assert.deepEqual(approved, { ok: true, userId: "google-user-9" });
+    const audience = await verify("Bearer ya29.wrong-audience-token");
+    const unverified = await verify("Bearer ya29.unverified-account");
+    const invalid = await verify("Bearer ya29.rejected-google-token");
+    assert.equal(audience.status, 403);
+    assert.equal(unverified.status, 403);
+    assert.match(unverified.error, /confirm an email/);
+    assert.equal(invalid.status, 401);
   });
 });
 
@@ -319,6 +419,114 @@ describe("production parse access", { concurrency: false }, () => {
     assert.equal(approved.text.includes(APPROVED), false);
     assert.equal(approved.text.includes("ada@example.com"), false);
     assert.equal(parserCalls.length, before + 1);
+  });
+});
+
+describe("public mode production access", { concurrency: false }, () => {
+  const parserCalls = [];
+  let server;
+  let base;
+
+  before(async () => {
+    const verify = createGoogleVerifier({
+      clientId: CLIENT_ID,
+      allowedEmails: [],
+      accessMode: "public",
+      fetchImpl: async (url, options) => {
+        const token = new URLSearchParams(options.body).get("access_token");
+        assert.equal(url, TOKENINFO_URL);
+        if (token === "ya29.public-account-token") {
+          return googleResponse(200, identity({ email: "new.user@example.com", sub: "google-user-9" }));
+        }
+        if (token === "ya29.unapproved-account") {
+          return googleResponse(200, identity({ email: "bob@example.com", sub: "google-user-2" }));
+        }
+        return googleResponse(400, { error: "invalid_token" });
+      },
+    });
+    server = await startServer({
+      host: HOST,
+      port: 0,
+      requireAuth: true,
+      authenticate: verify,
+      rateLimit: createRateLimiter({ limit: 2, windowMs: 60_000 }),
+      apiKeyConfigured: true,
+      release: "public-test",
+      parseEvent: async (input) => {
+        parserCalls.push(input);
+        return {
+          title: "Coffee with Alex",
+          date: "2026-10-20",
+          startTime: "10:00",
+          endTime: "10:30",
+          timeZone: input.timeZone,
+          location: null,
+          needsClarification: false,
+          clarificationQuestions: [],
+        };
+      },
+    });
+    base = "http://127.0.0.1:" + server.address().port;
+  });
+
+  after(async () => {
+    server.close();
+    await once(server, "close");
+  });
+
+  it("approves a valid Google user absent from ALLOWED_EMAILS and still rate limits", async () => {
+    const access = await request(base, "/access", {
+      headers: { authorization: "Bearer ya29.public-account-token" },
+    });
+    assert.equal(access.status, 200);
+    assert.deepEqual(access.body, { ok: true, approved: true });
+
+    const stranger = await request(base, "/access", {
+      headers: { authorization: "Bearer ya29.unapproved-account" },
+    });
+    assert.equal(stranger.status, 200);
+    assert.deepEqual(stranger.body, { ok: true, approved: true });
+
+    const parsed = await request(base, "/parse-event", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer ya29.public-account-token",
+      },
+      body: JSON.stringify({
+        text: "Coffee with Alex tomorrow from 10 to 10:30 AM",
+        timeZone: "America/Los_Angeles",
+      }),
+    });
+    assert.equal(parsed.status, 200);
+    assert.equal(parserCalls.length, 1);
+
+    const limited = await request(base, "/parse-event", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer ya29.public-account-token",
+      },
+      body: JSON.stringify({
+        text: "Coffee with Alex tomorrow from 10 to 10:30 AM",
+        timeZone: "America/Los_Angeles",
+      }),
+    });
+    assert.equal(limited.status, 200);
+
+    const blocked = await request(base, "/parse-event", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer ya29.public-account-token",
+      },
+      body: JSON.stringify({
+        text: "Coffee with Alex tomorrow from 10 to 10:30 AM",
+        timeZone: "America/Los_Angeles",
+      }),
+    });
+    assert.equal(blocked.status, 429);
+    assert.equal(parserCalls.length, 2);
   });
 });
 
