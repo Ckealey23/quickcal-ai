@@ -72,7 +72,7 @@
     button.dataset.corner = corner;
     button.setAttribute("aria-label", "Resize QuickCalAI");
     button.title = "Resize QuickCalAI";
-    if (corner === "nw") {
+    if (corner === "nw" || corner === "se") {
       const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       mark.setAttribute("viewBox", "0 0 12 12");
       mark.setAttribute("width", "12");
@@ -455,8 +455,8 @@
     timeDetail.wrap.hidden = !view.time;
     divider.hidden = !(view.date && view.time);
     schedule.hidden = !(view.date || view.time);
-    zoneLine.textContent = view.timeZone || "";
-    zoneLine.hidden = !view.timeZone;
+    zoneLine.textContent = "";
+    zoneLine.hidden = true;
     recurrenceLine.textContent = view.recurrenceText || "";
     recurrenceLine.hidden = !view.recurrenceText;
     seriesLine.textContent = view.seriesEndText || "";
@@ -1259,7 +1259,7 @@
       sharedSessionId = state.sessionId || sharedSessionId;
       sharedClaim = state.claim || 0;
       if (typeof state.inputSeq === "number" && state.inputSeq >= sharedInputSeq) sharedInputSeq = state.inputSeq;
-      if (state.layout) applyLayout(state.layout, true);
+      if (state.layout) applyLayout(state.layout, false);
       const remoteSeq = typeof state.inputSeq === "number" ? state.inputSeq : 0;
       if (remoteSeq > sharedInputSeq) sharedInputSeq = remoteSeq;
       if (state.voice && state.voice.phase && state.voice.phase !== "idle") {
@@ -1417,6 +1417,11 @@
       event.stopPropagation();
       return;
     }
+    // Keep card actions clickable; the input strip retains its existing drag behavior.
+    if (!bar.contains(event.target)) {
+      if (event.target.closest("button, a, input, textarea, select, [contenteditable]")) return;
+      event.preventDefault();
+    }
     dragging = {
       kind: "move",
       pointerId: event.pointerId,
@@ -1438,7 +1443,7 @@
         if (distance < 5) return;
         dragging.moved = true;
         try {
-          bar.setPointerCapture(event.pointerId);
+          card.setPointerCapture(event.pointerId);
         } catch (error) {
           // Window listeners still keep the panel moving without capture.
         }
@@ -1810,6 +1815,9 @@
     alive = false;
     requestGeneration += 1;
     saveGeneration += 1;
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
     document.removeEventListener("keydown", onEscape, true);
     document.removeEventListener("visibilitychange", onVisible);
     chrome.runtime.onMessage.removeListener(onRuntimeMessage);
@@ -1923,14 +1931,15 @@
   });
   input.addEventListener("focus", claimLeader);
   window.addEventListener("focus", claimLeader);
-  bar.addEventListener("pointerdown", onPointerDown);
-  bar.addEventListener("click", onBarClick, true);
+  card.addEventListener("pointerdown", onPointerDown);
+  card.addEventListener("click", onBarClick, true);
   [resizeNw, resizeNe, resizeSw, resizeSe].forEach((button) => {
     button.addEventListener("pointerdown", onPointerDown);
     button.addEventListener("keydown", onResizeKey);
   });
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
   window.addEventListener("resize", () => {
     const api = globalThis.QuickCalLayout;
     if (!api || !styled) return;

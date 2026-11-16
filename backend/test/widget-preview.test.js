@@ -234,6 +234,35 @@ const page = `<!DOCTYPE html>
     check("follow-up", field.value === "" && field.placeholder === "Tell me what to change…");
     check("new event", visibleAction("New event") !== null);
     check("card inset", expanded.left >= 8 && expanded.right <= window.innerWidth - 8 && expanded.bottom <= window.innerHeight - 8);
+    check("timezone label hidden", !shadow.textContent.includes("America/Los_Angeles"));
+    check("saved event keeps its timezone", creates()[1].event.timeZone === "America/Los_Angeles");
+    const savedHost = document.getElementById("quickcal-ai-host");
+    const beforeMove = savedHost.getBoundingClientRect();
+    const titleBox = shadow.querySelector(".event-title").getBoundingClientRect();
+    shadow.querySelector(".event-title").dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, clientX: titleBox.left + 20, clientY: titleBox.top + 10, pointerId: 11, button: 0,
+    }));
+    window.dispatchEvent(new PointerEvent("pointermove", {
+      clientX: titleBox.left + 20, clientY: titleBox.top - 40, pointerId: 11,
+    }));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 11 }));
+    check("confirmation card moves from its title", savedHost.getBoundingClientRect().top < beforeMove.top - 20);
+    await settle();
+    const savedResize = shadow.querySelector(".resize-se");
+    const handleBox = savedResize.getBoundingClientRect();
+    check("confirmation resize corner hidden and reachable", Number(getComputedStyle(savedResize).opacity) === 0 &&
+      shadow.elementFromPoint(handleBox.left + handleBox.width / 2, handleBox.top + handleBox.height / 2).closest(".resize") === savedResize);
+    const beforeResize = savedHost.getBoundingClientRect();
+    savedResize.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, clientX: handleBox.left + 8, clientY: handleBox.top + 8, pointerId: 12, button: 0,
+    }));
+    window.dispatchEvent(new PointerEvent("pointermove", {
+      clientX: handleBox.left - 42, clientY: handleBox.top - 42, pointerId: 12,
+    }));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 12 }));
+    check("confirmation card resizes", savedHost.getBoundingClientRect().width < beforeResize.width - 5);
+    check("layout changes keep saved event", shadow.querySelector(".success").hidden === false && creates().length === 2);
+
 
     field.value = "Move it";
     nextResult = {
@@ -352,7 +381,9 @@ const page = `<!DOCTYPE html>
     check("right resize hit areas are compact", [".resize-ne", ".resize-se"].every((selector) => {
       const control = shadow.querySelector(selector);
       const style = getComputedStyle(control);
-      return style.width === "16px" && style.height === "16px";
+      const size = selector === ".resize-se" && shadow.querySelector(".card").classList.contains("expanded") ? "28px" : "16px";
+      check("resize size " + selector + ": " + style.width + " x " + style.height + " expected " + size, Math.abs(parseFloat(style.width) - parseFloat(size)) < 0.1 && Math.abs(parseFloat(style.height) - parseFloat(size)) < 0.1);
+      return Math.abs(parseFloat(style.width) - parseFloat(size)) < 0.1 && Math.abs(parseFloat(style.height) - parseFloat(size)) < 0.1;
     }));
     function curveAligned(label) {
       const card = shadow.querySelector(".card");
@@ -578,7 +609,7 @@ const page = `<!DOCTYPE html>
     };
     release();
     await settle();
-    check("weekly saved", shadow.textContent.includes("Event successfully created") && shadow.textContent.includes("Every Friday") && shadow.textContent.includes("No end date") && shadow.textContent.includes("America/Los_Angeles"));
+    check("weekly saved", shadow.textContent.includes("Event successfully created") && shadow.textContent.includes("Every Friday") && shadow.textContent.includes("No end date") && !shadow.textContent.includes("America/Los_Angeles"));
     check("weekly edit link", shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/weekly");
     const updatesBeforeSeries = updates().length;
     field.value = "Move it to 7 PM";
