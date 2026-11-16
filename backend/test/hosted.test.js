@@ -130,6 +130,15 @@ function loadBackground(hooks) {
           },
         };
       }
+      if (String(url).includes("/users/me/calendarList")) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { items: [{ id: "primary", summary: "Primary", primary: true, accessRole: "owner" }] };
+          },
+        };
+      }
       if (String(url).includes("maxResults=1")) {
         return { ok: true, status: 200, async json() { return { kind: "calendar#events" }; } };
       }
@@ -144,6 +153,7 @@ function loadBackground(hooks) {
       error(...parts) { logs.push(parts.join(" ")); },
     },
     URL,
+    URLSearchParams,
     Intl,
     Date,
     JSON,
@@ -197,6 +207,9 @@ describe("customer manifest", () => {
     );
     assert.deepEqual(manifest.oauth2.scopes, [
       "https://www.googleapis.com/auth/calendar.events.owned",
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
       "https://www.googleapis.com/auth/userinfo.email",
     ]);
     assert.equal(manifest.host_permissions.includes("https://quickcal-ai.onrender.com/*"), true);
@@ -303,7 +316,8 @@ describe("hosted extension access", () => {
     assert.equal(status.quickcalReady, false);
     assert.equal(status.needsReconnect, true);
     assert.match(status.message, /confirm an email/);
-    assert.deepEqual(loaded.tokenCalls, [false]);
+    assert.equal(loaded.tokenCalls.length >= 1, true);
+    assert.equal(loaded.tokenCalls.every((interactive) => interactive === false), true);
 
     loaded.fetches.length = 0;
     const reconnect = await ask(

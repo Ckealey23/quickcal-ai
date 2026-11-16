@@ -68,6 +68,18 @@ function loadBackground(hooks) {
         const body = hooks.accessBody || { ok: true, approved: true };
         return { ok: status === 200, status: status, async json() { return body; } };
       }
+      if (String(url).includes("/users/me/calendarList")) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { items: [{ id: "primary", summary: "Primary", primary: true, accessRole: "owner" }] };
+          },
+        };
+      }
+      if (String(url).includes("singleEvents=true") && String(url).includes("transparency")) {
+        return { ok: true, status: 200, async json() { return { items: [] }; } };
+      }
       if (String(url).includes("maxResults=1")) {
         if (hooks.calendarNetwork) throw new TypeError("Failed to fetch");
         if (hooks.calendarStatus) {
@@ -141,14 +153,20 @@ function loadBackground(hooks) {
     },
     console,
     URL,
+    URLSearchParams,
     Intl,
     Date,
     JSON,
     Math,
     Number,
     String,
+    Object,
+    Array,
+    Promise,
     crypto,
     AbortSignal,
+    encodeURIComponent,
+    decodeURIComponent,
   };
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
@@ -519,7 +537,7 @@ describe("widget calendar save", () => {
     assert.match(hooks.patches[0], new RegExp("/" + hooks.ids[0] + "\\?"));
     assert.equal(updated.startTime, "11:00");
     assert.equal(updated.endTime, "11:30");
-    assert.equal(Object.hasOwn(updated, "id"), false);
+    assert.equal(updated.id, hooks.ids[0]);
 
     hooks.failPatch = true;
     const rejected = draft();
@@ -540,7 +558,7 @@ describe("widget calendar save", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     assert.equal(active.event.startTime, "11:00");
     assert.equal(active.event.endTime, "11:30");
-    assert.equal(Object.hasOwn(active.event, "id"), false);
+    assert.equal(active.event.id, hooks.ids[0]);
   });
 
   it("clears the editable event when Calendar is disconnected", async () => {

@@ -614,7 +614,34 @@
     }
   }
 
-  function showSaved(result) {
+  function presentConflictNotice(notice) {
+    if (!notice || notice.status === "clear") {
+      if (notice && notice.horizonText) {
+        showStatus(notice.horizonText, false);
+        fillList(questionList, notice.lines && notice.lines.length ? notice.lines : [notice.horizonText]);
+      } else {
+        fillList(questionList, []);
+      }
+      connectButton.hidden = true;
+      return;
+    }
+    if (notice.status === "checking") {
+      showStatus(notice.statusText || "Checking for conflicts\u2026", false);
+      fillList(questionList, []);
+      connectButton.hidden = true;
+      return;
+    }
+    if (notice.statusText) showStatus(notice.statusText, false);
+    fillList(questionList, notice.lines || []);
+    if (notice.needsScopes || notice.status === "needsScopes") {
+      connectButton.hidden = false;
+      connectButton.textContent = "Reconnect Google Calendar";
+      rule.hidden = false;
+      actions.hidden = false;
+    }
+  }
+
+  function showSaved(result, notice) {
     activeLookup = null;
     deleteArmed = false;
     mode = "saved";
@@ -652,6 +679,7 @@
     input.setAttribute("aria-label", "Event description");
     cancelButton.hidden = true;
     host.dataset.mode = "saved";
+    if (notice) presentConflictNotice(notice);
     if (allowFocus) input.focus();
   }
 
@@ -1239,28 +1267,34 @@
         showLookup(state.lookup);
         input.value = keepTyped ? typedValue : (state.input || "");
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
+        syncConnectFromSession(state);
       } else if (state.mode === "clarifying" && state.event) {
         clarification = state.clarification;
         showClarifying(state.event, state.clarification && state.clarification.originalText);
         input.value = keepTyped ? typedValue : (state.input || "");
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
+        syncConnectFromSession(state);
       } else if (state.mode === "failed") {
         draftEvent = state.draftEvent || state.event;
-        showFailed(state.statusText || "QuickCalAI could not save this event.", false);
+        showFailed(state.statusText || "QuickCalAI could not save this event.", /Connect Google Calendar/i.test(state.statusText || ""));
         if (!keepTyped) input.value = state.input || "";
+        syncConnectFromSession(state);
       } else if (state.mode === "creating" && state.event) {
         showCreating(state.event);
         if (!keepTyped) input.value = state.input || "";
       } else if (state.mode === "saved" && state.savedRecord) {
-        showSaved(state.savedRecord);
+        showSaved(state.savedRecord, state.conflictNotice);
         if (state.event && state.event.needsClarification) showEditQuestion(state.event);
         if (!keepTyped) input.value = state.input || "";
         if (state.statusError) showSaveError(state.statusText);
+        else if (state.conflictNotice) presentConflictNotice(state.conflictNotice);
         else if (state.statusText) showStatus(state.statusText, false);
+        syncConnectFromSession(state);
       } else {
         showInputMode();
         if (!keepTyped) input.value = state.input || "";
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
+        syncConnectFromSession(state);
       }
       if (!keepTyped) inputDirty = false;
       render();
@@ -1798,16 +1832,15 @@
     deleteArmed = false;
     confirmLookup();
   });
-  connectButton.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" });
-  });
-  connectRoute.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" });
-  });
+  function openCalendarSettings(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "open-settings" }).catch(() => {});
+  }
+  connectButton.addEventListener("click", openCalendarSettings);
+  connectRoute.addEventListener("click", openCalendarSettings);
   micButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1910,6 +1943,60 @@
     if (result && result.event && safeCalendarLink(result.event.htmlLink)) showSaved(result.event);
   }
 
+  function presentConnectRoute(kind, message) {
+    connectRoute.hidden = false;
+    connectRoute.disabled = false;
+    connectRoute.textContent =
+      kind === "reconnect" ? "Reconnect Google Calendar" : "Connect Google Calendar";
+    if (message && session.phase() !== "waking" && !selectionHold) {
+      showStatus(message, true);
+    }
+  }
+
+  function syncConnectFromStatus(result) {
+    if (!result) return;
+    const needsAccount = result.connected === false;
+    const needsScopes = result.needsConflictScopes === true || result.needsReconnect === true;
+    const needsApproval =
+      result.connected === true && result.quickcalReady === false && !!result.message && !needsScopes;
+    if (needsAccount) {
+      presentConnectRoute("connect", "Connect Google Calendar to use QuickCalAI.");
+      return;
+    }
+    if (needsScopes) {
+      presentConnectRoute(
+        "reconnect",
+        result.message ||
+          "Reconnect Google Calendar so QuickCalAI can check other calendars for conflicts."
+      );
+      return;
+    }
+    if (needsApproval) {
+      presentConnectRoute("reconnect", result.message);
+      return;
+    }
+    connectRoute.hidden = true;
+    connectRoute.textContent = "Connect Google Calendar";
+    if (
+      status.textContent === "Connect Google Calendar to use QuickCalAI." ||
+      /Reconnect Google Calendar so QuickCalAI can check/i.test(status.textContent)
+    ) {
+      clearStatus();
+    }
+  }
+
+  function syncConnectFromSession(state) {
+    const text = state && typeof state.statusText === "string" ? state.statusText : "";
+    if (!text) return;
+    if (/Connect Google Calendar/i.test(text) || /before using QuickCalAI/i.test(text)) {
+      presentConnectRoute("connect", null);
+      return;
+    }
+    if (/Reconnect Google Calendar/i.test(text) || /check other calendars for conflicts/i.test(text)) {
+      presentConnectRoute("reconnect", null);
+    }
+  }
+
   async function checkConnection() {
     let result;
     try {
@@ -1919,18 +2006,8 @@
     }
     if (!alive || !open) return;
     connection = result;
-    const needsAccount = result && result.connected === false;
-    const needsApproval = result && result.connected === true && result.quickcalReady === false && result.message;
-    connectRoute.hidden = !(needsAccount || needsApproval);
-    if ((needsAccount || needsApproval) && session.phase() !== "waking" && !selectionHold) {
-      showStatus(
-        needsAccount ? "Connect Google Calendar to use QuickCalAI." : result.message,
-        true
-      );
-    } else if (!needsAccount && !needsApproval && status.textContent === "Connect Google Calendar to use QuickCalAI.") {
-      clearStatus();
-    }
-    if (mode === "failed" && !saving && draftEvent && !connectButton.hidden && result && result.connected === true) {
+    syncConnectFromStatus(result);
+    if (mode === "failed" && !saving && draftEvent && !connectButton.hidden && result && result.connected === true && !result.needsConflictScopes) {
       showSaveError("");
       connectButton.hidden = true;
       retryButton.hidden = false;

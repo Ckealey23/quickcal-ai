@@ -7,6 +7,61 @@ import { describe, it } from "node:test";
 const root = path.resolve(import.meta.dirname, "../..");
 const zone = "America/Los_Angeles";
 
+function localParts(date) {
+  const parts = {};
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: zone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(date).forEach((part) => {
+    if (part.type !== "literal") parts[part.type] = part.value;
+  });
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return {
+    date: parts.year + "-" + parts.month + "-" + parts.day,
+    time: hour + ":" + parts.minute,
+  };
+}
+
+function localInstant(date, time) {
+  const sandbox = { Intl, Date, Math, Number, String, Object, Array, JSON };
+  sandbox.globalThis = sandbox;
+  const context = createContext(sandbox);
+  runInContext(readFileSync(path.join(root, "shared/schedule.js"), "utf8"), context, {
+    filename: "shared/schedule.js",
+  });
+  const resolved = sandbox.QuickCalSchedule.resolveLocal(date, time, zone);
+  assert.equal(resolved.ok, true);
+  return new Date(resolved.epoch).toISOString();
+}
+
+function addLocalDays(date, days) {
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return (
+    String(next.getUTCFullYear()) +
+    "-" +
+    String(next.getUTCMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(next.getUTCDate()).padStart(2, "0")
+  );
+}
+
+const today = localParts(new Date()).date;
+const nextTuesdayDelta = (() => {
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short" }).format(new Date());
+  const index = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[weekday] || 0;
+  const delta = (2 - index + 7) % 7;
+  return delta === 0 ? 7 : delta;
+})();
+const nextTuesday = addLocalDays(today, nextTuesdayDelta);
+
 function eventItem(id, summary, start, end, extra) {
   return Object.assign({
     id: id,
@@ -19,10 +74,19 @@ function eventItem(id, summary, start, end, extra) {
   }, extra || {});
 }
 
-const steveEarly = eventItem("series_20261029T000000Z", "Meeting with Steve", "2026-10-29T00:00:00.000Z", "2026-10-29T01:00:00.000Z", {
-  recurringEventId: "series",
-});
-const steveLater = eventItem("other", "Meeting with Steve", "2026-10-29T02:00:00.000Z", "2026-10-29T03:00:00.000Z");
+const steveEarly = eventItem(
+  "series_todayT000000Z",
+  "Meeting with Steve",
+  localInstant(today, "17:00"),
+  localInstant(today, "18:00"),
+  { recurringEventId: "series" }
+);
+const steveLater = eventItem(
+  "other",
+  "Meeting with Steve",
+  localInstant(today, "19:00"),
+  localInstant(today, "20:00")
+);
 
 function loadBackground(hooks) {
   // The fixtures are on October 28 locally; do not let the real date change lookup results.
@@ -93,6 +157,40 @@ function loadBackground(hooks) {
         };
       }
       if (hooks.fail === "network" && method !== "GET" && method !== "PATCH") throw new TypeError("Failed to fetch");
+      if (target.includes("/users/me/calendarList")) {
+        if (hooks.conflictScopesDenied) {
+          return { ok: false, status: 403, async json() { return { error: { message: "Request had insufficient authentication scopes." } }; } };
+        }
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              items: hooks.calendars || [
+                { id: "primary", summary: "Primary", primary: true, accessRole: "owner" },
+              ],
+            };
+          },
+        };
+      }
+      if (target.includes("/freeBusy")) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { calendars: hooks.freeBusy || {} };
+          },
+        };
+      }
+      if (target.includes("singleEvents=true") && target.includes("transparency")) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { items: hooks.conflictItems || [] };
+          },
+        };
+      }
       if (target.includes("singleEvents=true")) {
         return { ok: true, status: 200, async json() { return { items: hooks.items || [] }; } };
       }
@@ -236,10 +334,10 @@ describe("calendar lookup through the service worker", () => {
     assert.equal(moved.session.mode, "saved");
     assert.equal(moved.session.savedRecord.changeText, "Moved from 5:00–6:00 PM to 7:00–8:00 PM");
     assert.equal(hooks.patches.length, 1);
-    assert.equal(hooks.patches[0].id, "series_20261029T000000Z");
+    assert.equal(hooks.patches[0].id, "series_todayT000000Z");
     assert.equal(hooks.patches[0].body.summary, undefined);
     assert.equal(hooks.posts.length, 0);
-    assert.equal(hooks.patches[0].body.start.dateTime.includes("2026-10-29T02:00:00"), true);
+    assert.equal(hooks.patches[0].body.start.dateTime, localInstant(today, "19:00"));
     const before = hooks.calls.length;
     const snapshot = await send(background.listener, { type: "quickcal-widget", action: "snapshot" }, 9);
     assert.equal(snapshot.session.savedRecord.summary, "Meeting with Steve");
@@ -266,7 +364,7 @@ describe("calendar lookup through the service worker", () => {
       sessionId: ambiguous.session.sessionId,
     }, 9);
     assert.equal(hooks.patches.length, 2);
-    assert.equal([].join.call(hooks.patches.map((item) => item.id)), "series_20261029T000000Z,other");
+    assert.equal([].join.call(hooks.patches.map((item) => item.id)), "series_todayT000000Z,other");
 
     hooks.deletes.length = 0;
     const asked = await send(background.listener, {
@@ -298,11 +396,11 @@ describe("calendar lookup through the service worker", () => {
     const deleted = await firstConfirm;
     assert.match(deleted.session.statusText, /Deleted Meeting with Steve/);
     assert.equal(hooks.deletes.length, 1);
-    assert.equal(hooks.deletes[0], "series_20261029T000000Z");
+    assert.equal(hooks.deletes[0], "series_todayT000000Z");
   });
 
   it("does not patch an event whose details changed", async () => {
-    const changed = eventItem("series_20261029T000000Z", "Meeting with Steve", "2026-10-29T02:00:00.000Z", "2026-10-29T03:00:00.000Z", {
+    const changed = eventItem("series_todayT000000Z", "Meeting with Steve", localInstant(today, "19:00"), localInstant(today, "20:00"), {
       recurringEventId: "series",
     });
     const hooks = { calls: [], patches: [], deletes: [], posts: [], items: [steveEarly], changed: changed };
@@ -322,7 +420,7 @@ describe("calendar lookup through the service worker", () => {
   });
 
   it("asks for a date when today has no match and reconciles a lost patch response", async () => {
-    const moved = eventItem("series_20261029T000000Z", "Meeting with Steve", "2026-10-29T02:00:00.000Z", "2026-10-29T03:00:00.000Z", {
+    const moved = eventItem("series_todayT000000Z", "Meeting with Steve", localInstant(today, "19:00"), localInstant(today, "20:00"), {
       recurringEventId: "series",
     });
     const hooks = { calls: [], patches: [], deletes: [], posts: [], items: [moved] };
@@ -409,35 +507,47 @@ describe("calendar lookup through the service worker", () => {
   });
 
   it("keeps a move and searches the date the model supplies", async () => {
-    const tuesday = eventItem("tuesday-steve", "Catch-up with Steve", "2026-11-04T01:00:00.000Z", "2026-11-04T02:00:00.000Z");
-    const past = eventItem("past-steve", "Catch-up with Steve", "2026-10-21T00:00:00.000Z", "2026-10-21T01:00:00.000Z");
+    const wednesday = addLocalDays(nextTuesday, 1);
+    const pastDate = addLocalDays(today, -14);
+    const tuesday = eventItem(
+      "tuesday-steve",
+      "Catch-up with Steve",
+      localInstant(nextTuesday, "17:00"),
+      localInstant(nextTuesday, "18:00")
+    );
+    const past = eventItem(
+      "past-steve",
+      "Catch-up with Steve",
+      localInstant(pastDate, "17:00"),
+      localInstant(pastDate, "18:00")
+    );
     const hooks = { calls: [], patches: [], deletes: [], posts: [], items: [tuesday, past] };
     hooks.interpret = (request) => {
       const text = request.text;
       if (text === "Next Tuesday") {
-        return interpreted("move", { searchDate: "2026-11-03" });
+        return interpreted("move", { searchDate: nextTuesday });
       }
       if (text === "Actually, I meant Wednesday.") {
-        return interpreted("move", { searchDate: "2026-11-04" });
+        return interpreted("move", { searchDate: wednesday });
       }
       if (text === "the second one") return interpreted("move", { selection: ["c2"] });
       if (text === "Can you push Tuesday's catch-up with Steve back to seven?") {
-        return interpreted("move", { target: "Steve", searchDate: "2026-11-03", destinationTime: "19:00" });
+        return interpreted("move", { target: "Steve", searchDate: nextTuesday, destinationTime: "19:00" });
       }
       if (text === "Move Tuesday's 5 PM meeting to Wednesday at 7 PM") {
         return interpreted("move", {
           target: "Steve",
-          searchDate: "2026-11-03",
+          searchDate: nextTuesday,
           searchTime: "17:00",
-          destinationDate: "2026-11-04",
+          destinationDate: wednesday,
           destinationTime: "19:00",
         });
       }
       if (text === "Cancel my dentist appointment this Friday") {
         return interpreted("delete", { target: "Dentist" });
       }
-      if (text === "Next Friday") return interpreted("delete", { searchDate: "2026-10-30" });
-      if (text === "last Tuesday") return interpreted("find", { target: "Steve", searchDate: "2026-10-20" });
+      if (text === "Next Friday") return interpreted("delete", { searchDate: addLocalDays(today, ((5 - new Date().getDay() + 7) % 7) || 7) });
+      if (text === "last Tuesday") return interpreted("find", { target: "Steve", searchDate: pastDate });
       return interpreted("move", { target: "Steve", destinationTime: "19:00" });
     };
     const background = loadBackground(hooks);
@@ -467,10 +577,11 @@ describe("calendar lookup through the service worker", () => {
     assert.equal(JSON.stringify(hooks.parses[1]).includes("tuesday-steve"), false);
     assert.equal(hooks.patches.length, 1);
     assert.equal(hooks.patches[0].id, "tuesday-steve");
-    assert.equal(hooks.patches[0].body.start.dateTime.includes("2026-11-04T03:00:00"), true);
+    assert.equal(hooks.patches[0].body.start.dateTime, localInstant(nextTuesday, "19:00"));
     assert.equal(hooks.posts.length, 0);
-    const lists = hooks.calls.filter((call) => call.url.includes("singleEvents=true"));
-    assert.equal(decodeURIComponent(lists[lists.length - 1].url).includes("timeMin=2026-11-03T08:00:00.000Z"), true);
+    const lists = hooks.calls.filter((call) => call.url.includes("singleEvents=true") && !call.url.includes("transparency"));
+    const expectedMin = localInstant(nextTuesday, "00:00");
+    assert.equal(decodeURIComponent(lists[lists.length - 1].url).includes("timeMin=" + expectedMin), true);
 
     hooks.patches.length = 0;
     hooks.items = [tuesday];
@@ -496,8 +607,8 @@ describe("calendar lookup through the service worker", () => {
       sessionId: varied.session.sessionId,
     });
     assert.equal(hooks.patches.length, 1);
-    assert.equal(hooks.patches[0].body.start.dateTime.includes("2026-11-05T03:00:00"), true);
-    assert.equal(shifted.session.savedRecord.date, "2026-11-04");
+    assert.equal(hooks.patches[0].body.start.dateTime, localInstant(wednesday, "19:00"));
+    assert.equal(shifted.session.savedRecord.date, wednesday);
 
     hooks.patches.length = 0;
     hooks.items = [past];
@@ -509,7 +620,8 @@ describe("calendar lookup through the service worker", () => {
       operationId: "past",
       sessionId: shifted.session.sessionId,
     });
-    const pastList = hooks.calls.filter((call) => decodeURIComponent(call.url).includes("timeMin=2026-10-20T07:00:00.000Z"));
+    const pastMin = localInstant(pastDate, "00:00");
+    const pastList = hooks.calls.filter((call) => decodeURIComponent(call.url).includes("timeMin=" + pastMin));
     assert.equal(pastList.length > 0, true);
     assert.equal(hooks.patches.length, 0);
     assert.match(older.session.lookup.lines[0], /Catch-up with Steve/);
@@ -521,7 +633,9 @@ describe("calendar lookup through the service worker", () => {
   });
 
   it("confirms deletion only after the date answer, and edits the saved event on a follow-up", async () => {
-    const friday = eventItem("dentist", "Dentist", "2026-10-30T22:00:00.000Z", "2026-10-30T23:00:00.000Z");
+    const fridayDelta = ((5 - ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short" }).format(new Date())] || 0) + 7) % 7) || 7;
+    const fridayDate = addLocalDays(today, fridayDelta);
+    const friday = eventItem("dentist", "Dentist", localInstant(fridayDate, "14:00"), localInstant(fridayDate, "15:00"));
     const hooks = { calls: [], patches: [], deletes: [], posts: [], items: [steveEarly] };
     hooks.interpret = (request) => {
       if (request.text === "make it 7 PM") {
@@ -529,7 +643,8 @@ describe("calendar lookup through the service worker", () => {
           quickcalApiVersion: 3,
           intent: "edit",
           title: "Meeting with Steve",
-          date: "2026-10-28",
+          date: today,
+          endDate: today,
           startTime: "19:00",
           endTime: "20:00",
           timeZone: zone,
@@ -538,12 +653,13 @@ describe("calendar lookup through the service worker", () => {
           needsClarification: false,
           clarificationQuestions: [],
           durationDefaulted: false,
+          operation: operationFields(),
         };
       }
       if (request.text === "Cancel my dentist appointment this Friday") {
-        return interpreted("delete", { target: "Dentist", searchDate: "2026-10-30" });
+        return interpreted("delete", { target: "Dentist", searchDate: fridayDate });
       }
-      if (request.text === "Next Friday") return interpreted("delete", { searchDate: "2026-10-30" });
+      if (request.text === "Next Friday") return interpreted("delete", { searchDate: fridayDate });
       if (request.text === "the second one") return interpreted(request.operation.intent, { selection: ["c2"] });
       if (request.text === "both") return interpreted(request.operation.intent, { selection: ["all"] });
       return interpreted("move", { target: "Steve", searchTime: "17:00", destinationTime: "19:00" });

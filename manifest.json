@@ -41,6 +41,9 @@
     "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/calendar.events.owned",
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
       "https://www.googleapis.com/auth/userinfo.email"
     ]
   },

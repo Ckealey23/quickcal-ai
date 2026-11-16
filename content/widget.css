@@ -259,6 +259,7 @@
   font-weight: 500;
   line-height: 1.4;
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .connect-route:focus-visible,

@@ -182,9 +182,21 @@ Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WIND
 
 Keep the existing Chrome-extension OAuth client. Do not create a web client, and do not download a client secret. The Render URL is not an OAuth redirect or JavaScript origin. The extension still obtains the access token with `chrome.identity.getAuthToken`, and the server checks that token with Google.
 
-On the OAuth consent screen, add the non-sensitive scope `https://www.googleapis.com/auth/userinfo.email`. Leave the Calendar scope at `https://www.googleapis.com/auth/calendar.events.owned`. Do not add `https://www.googleapis.com/auth/calendar` or a broader events scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser.
+On the OAuth consent screen, keep these scopes and add the conflict-check scopes:
+
+- `https://www.googleapis.com/auth/calendar.events.owned` — create, edit, and delete events on calendars you own
+- `https://www.googleapis.com/auth/calendar.calendarlist.readonly` — discover calendars available to the account
+- `https://www.googleapis.com/auth/calendar.events.readonly` — read event details on accessible calendars for conflict notices
+- `https://www.googleapis.com/auth/calendar.events.freebusy` — read busy/free blocks when event details are not available
+- `https://www.googleapis.com/auth/userinfo.email` — verify the connected Google account for the hosted parser
+
+Do not add `https://www.googleapis.com/auth/calendar` or a broader write scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser.
+
+After these scopes are added to the Chrome OAuth client and consent screen, each tester must choose **Reconnect Google Calendar** once so the token includes them. Existing drafts and the shared conversation stay in place.
 
 The token Google returns must be for this extension’s client ID and must include a verified email. The server rejects tokens issued to another client, unverified emails, and emails that are not on `ALLOWED_EMAILS`. It does not accept an email, extension origin, or shared secret sent by the client.
+
+Post-save conflict checking runs in the service worker after Google confirms a create, edit, or move. It never blocks or undoes the save. Recurring series are checked for **90 days** from the saved start; the success card shows that bounded range and does not claim the whole series is clear.
 
 ### Extension changes for the hosted service
 

@@ -18,7 +18,8 @@ importScripts(
   "shared/selection.js",
   "shared/layout.js",
   "shared/session.js",
-  "shared/lookup.js"
+  "shared/lookup.js",
+  "shared/conflicts.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -624,6 +625,27 @@ function accessResult(calendar, access) {
   };
 }
 
+async function probeConflictScopes() {
+  const listed = await calendarCall(calendarListUrl(""), { method: "GET" });
+  if (listed.authError || listed.unauthorized) return { ok: false, disconnected: true };
+  if (listed.network) return { ok: false, network: true };
+  if (scopeDenied(listed)) return { ok: false, needsScopes: true };
+  if (!listed.ok) return { ok: false };
+  return { ok: true };
+}
+
+function withConflictScopeHint(result, probe) {
+  if (!result || !probe || !probe.needsScopes) return result;
+  if (result.state !== "ready" && result.state !== "connected") return result;
+  return Object.assign({}, result, {
+    needsReconnect: true,
+    needsConflictScopes: true,
+    message:
+      result.message ||
+      "Reconnect Google Calendar so QuickCalAI can check other calendars for conflicts.",
+  });
+}
+
 async function refreshStatus() {
   if (await isSuppressed()) return disconnected();
 
@@ -636,7 +658,13 @@ async function refreshStatus() {
   if (!token) return disconnected();
   const calendar = await verifyCalendar(token);
   if (!calendar || calendar.state !== "connected") return calendar;
-  return accessResult(calendar, await verifyAccess(token));
+  const access = accessResult(calendar, await verifyAccess(token));
+  if (!access || (access.state !== "ready" && access.state !== "connected")) return access;
+  try {
+    return withConflictScopeHint(access, await probeConflictScopes());
+  } catch (error) {
+    return access;
+  }
 }
 
 async function connectCalendar() {
@@ -663,7 +691,13 @@ async function connectCalendar() {
   } catch (error) {
     return failed("QuickCalAI could not save the Calendar connection.");
   }
-  return accessResult(calendar, await verifyAccess(token));
+  const access = accessResult(calendar, await verifyAccess(token));
+  if (!access || (access.state !== "ready" && access.state !== "connected")) return access;
+  try {
+    return withConflictScopeHint(access, await probeConflictScopes());
+  } catch (error) {
+    return access;
+  }
 }
 
 async function disconnectCalendar() {
@@ -1078,6 +1112,8 @@ function applyScheduleFields(target, source) {
 function publicSavedEvent(record) {
   return {
     ok: true,
+    id: record.id || "",
+    calendarId: record.calendarId || "primary",
     summary: record.summary,
     dateText: record.dateText,
     timeText: record.timeText,
@@ -1088,9 +1124,12 @@ function publicSavedEvent(record) {
     endDate: record.endDate,
     startTime: record.startTime,
     endTime: record.endTime,
+    startDateTime: record.startDateTime || "",
+    endDateTime: record.endDateTime || "",
     location: record.location || null,
     durationDefaulted: false,
     recurrence: record.recurrence || null,
+    recurrenceRule: record.recurrenceRule || "",
     recurrenceText: record.recurrenceText || "",
     seriesEndText: record.seriesEndText || "",
     reminders: record.reminders || { useDefault: false, overrides: [] },
@@ -1397,11 +1436,14 @@ async function widgetCalendarStatus() {
     status &&
     (status.state === "connected" || status.state === "ready" || status.googleConnected === true)
   );
+  const needsConflictScopes = !!(status && status.needsConflictScopes);
   return {
     ok: true,
     connected: googleConnected,
-    quickcalReady: !!(status && status.quickcalReady === true),
+    quickcalReady: !!(status && status.quickcalReady === true) && !needsConflictScopes,
     message: status && typeof status.message === "string" ? status.message : "",
+    needsReconnect: !!(status && (status.needsReconnect || needsConflictScopes)),
+    needsConflictScopes: needsConflictScopes,
   };
 }
 
@@ -1990,6 +2032,12 @@ function savedPayload(record) {
 
 const LOOKUP_LIST_FIELDS = "items(id,summary,status,htmlLink,recurringEventId,start,end,attendees(email,displayName)),nextPageToken";
 const LOOKUP_ITEM_FIELDS = "id,summary,status,htmlLink,recurringEventId,start,end,attendees(email,displayName)";
+const CALENDAR_LIST_URL = "https://www.googleapis.com/calendar/v3/users/me/calendarList";
+const FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy";
+const CONFLICT_EVENT_FIELDS =
+  "items(id,iCalUID,summary,status,transparency,htmlLink,recurringEventId,start,end,attendees(self,responseStatus)),nextPageToken";
+const CONFLICT_LIST_FIELDS = "items(id,summary,primary,accessRole,selected),nextPageToken";
+const CONFLICT_SCOPE_HINT = /insufficientPermissions|accessNotConfigured|Required "|PERMISSION_DENIED|Daily Limit/i;
 
 function lookupListUrl(window, pageToken) {
   const params = new URLSearchParams({
@@ -2096,11 +2144,14 @@ function movedRecord(candidate, plan, body) {
     timeZone: candidate.timeZone || "",
     htmlLink: link,
     id: candidate.id,
+    calendarId: candidate.calendarId || "primary",
     title: candidate.summary,
     date: plan.date,
     endDate: plan.endDate,
     startTime: plan.startTime,
     endTime: plan.endTime,
+    startDateTime: plan.startDateTime || "",
+    endDateTime: plan.endDateTime || "",
     location: null,
     changeText: "Moved from " + previous + " to " + next,
     recurrence: null,
@@ -2108,6 +2159,318 @@ function movedRecord(candidate, plan, body) {
     seriesEndText: "",
     remindersText: "",
   };
+}
+
+function conflictCheckId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "conflict-" + String(Date.now()) + "-" + String(Math.floor(Math.random() * 1000));
+}
+
+function calendarListUrl(pageToken) {
+  const params = new URLSearchParams({
+    maxResults: "250",
+    fields: CONFLICT_LIST_FIELDS,
+  });
+  if (pageToken) params.set("pageToken", pageToken);
+  return CALENDAR_LIST_URL + "?" + params.toString();
+}
+
+function conflictEventsUrl(calendarId, window, pageToken) {
+  const params = new URLSearchParams({
+    singleEvents: "true",
+    orderBy: "startTime",
+    timeMin: window.timeMin,
+    timeMax: window.timeMax,
+    maxResults: "250",
+    eventTypes: "default",
+    fields: CONFLICT_EVENT_FIELDS,
+  });
+  if (pageToken) params.set("pageToken", pageToken);
+  return (
+    "https://www.googleapis.com/calendar/v3/calendars/" +
+    encodeURIComponent(calendarId) +
+    "/events?" +
+    params.toString()
+  );
+}
+
+function scopeDenied(result) {
+  if (!result || result.ok) return false;
+  if (result.status === 401 || result.unauthorized) return false;
+  if (result.status === 403) return true;
+  const message =
+    result.body && result.body.error && typeof result.body.error.message === "string"
+      ? result.body.error.message
+      : "";
+  return CONFLICT_SCOPE_HINT.test(message);
+}
+
+async function listConflictCalendars() {
+  const calendars = [];
+  let pageToken = "";
+  for (let page = 0; page < 8; page += 1) {
+    const listed = await calendarCall(calendarListUrl(pageToken), { method: "GET" });
+    if (listed.authError || listed.unauthorized) {
+      return { ok: false, needsScopes: false, disconnected: true, error: "Connect Google Calendar before checking conflicts." };
+    }
+    if (listed.network) {
+      return { ok: false, needsScopes: false, error: "network" };
+    }
+    if (scopeDenied(listed)) {
+      return { ok: false, needsScopes: true, error: "scopes" };
+    }
+    if (!listed.ok) {
+      return { ok: false, needsScopes: false, error: "calendarList:" + (listed.status || "unknown") };
+    }
+    const batch = listed.body && Array.isArray(listed.body.items) ? listed.body.items : [];
+    batch.forEach((item) => {
+      if (!item || !item.id) return;
+      calendars.push({
+        id: item.id,
+        summary: item.summary || item.id,
+        primary: !!item.primary,
+        accessRole: item.accessRole || "",
+      });
+    });
+    pageToken = listed.body && listed.body.nextPageToken || "";
+    if (!pageToken) break;
+    if (page === 7 && pageToken) {
+      return { ok: true, calendars: calendars, truncated: true };
+    }
+  }
+  if (!calendars.length) {
+    calendars.push({ id: "primary", summary: "Primary", primary: true, accessRole: "owner" });
+  }
+  return { ok: true, calendars: calendars, truncated: false };
+}
+
+async function listConflictEvents(calendar, window) {
+  const items = [];
+  let pageToken = "";
+  for (let page = 0; page < 8; page += 1) {
+    const listed = await calendarCall(conflictEventsUrl(calendar.id, window, pageToken), { method: "GET" });
+    if (listed.authError || listed.unauthorized) return { ok: false, disconnected: true };
+    if (listed.network) return { ok: false, network: true };
+    if (listed.status === 403 || listed.status === 404) return { ok: false, inaccessible: true };
+    if (!listed.ok) return { ok: false, status: listed.status || 0 };
+    const batch = listed.body && Array.isArray(listed.body.items) ? listed.body.items : [];
+    batch.forEach((item) => items.push(item));
+    pageToken = listed.body && listed.body.nextPageToken || "";
+    if (!pageToken) break;
+    if (page === 7 && pageToken) return { ok: true, items: items, truncated: true };
+  }
+  return { ok: true, items: items, truncated: false };
+}
+
+async function freeBusyCalendars(calendars, window, timeZone) {
+  const body = {
+    timeMin: window.timeMin,
+    timeMax: window.timeMax,
+    timeZone: timeZone || "UTC",
+    items: calendars.map((calendar) => ({ id: calendar.id })),
+  };
+  const result = await calendarCall(FREEBUSY_URL, { method: "POST", body: JSON.stringify(body) });
+  if (result.authError || result.unauthorized) return { ok: false, disconnected: true };
+  if (result.network) return { ok: false, network: true };
+  if (scopeDenied(result)) return { ok: false, needsScopes: true };
+  if (!result.ok || !result.body || !result.body.calendars) {
+    return { ok: false, status: result.status || 0 };
+  }
+  return { ok: true, calendars: result.body.calendars };
+}
+
+async function evaluateScheduleConflicts(saved) {
+  const api = self.QuickCalConflicts;
+  if (!api || !saved) {
+    return api
+      ? api.buildNotice({
+          saved: saved,
+          incompleteReasons: ["Conflict checking is unavailable."],
+        })
+      : null;
+  }
+  const window = api.checkWindow(saved);
+  if (!window) {
+    return api.buildNotice({
+      saved: saved,
+      incompleteReasons: ["QuickCal could not determine the saved event time."],
+    });
+  }
+  const listed = await listConflictCalendars();
+  if (listed.disconnected) {
+    return api.buildNotice({
+      saved: saved,
+      window: window,
+      incompleteReasons: [listed.error || "Google Calendar sign-in is required."],
+    });
+  }
+  if (listed.needsScopes) {
+    return api.buildNotice({ saved: saved, window: window, needsScopes: true });
+  }
+  if (!listed.ok) {
+    return api.buildNotice({
+      saved: saved,
+      window: window,
+      incompleteReasons: [
+        listed.error === "network"
+          ? "QuickCalAI could not reach Google Calendar while checking conflicts."
+          : "QuickCalAI could not list calendars for conflict checking.",
+      ],
+    });
+  }
+
+  const incompleteReasons = [];
+  if (listed.truncated) incompleteReasons.push("Not every calendar could be listed.");
+  const entries = [];
+  const ourIntervals = [];
+  const savedCalendar = saved.calendarId || "primary";
+  const freeBusyFallback = [];
+
+  for (let index = 0; index < listed.calendars.length; index += 1) {
+    const calendar = listed.calendars[index];
+    const events = await listConflictEvents(calendar, window);
+    if (events.disconnected) {
+      incompleteReasons.push("Google Calendar sign-in expired while checking conflicts.");
+      break;
+    }
+    if (events.needsScopes) {
+      return api.buildNotice({ saved: saved, window: window, needsScopes: true });
+    }
+    if (events.network) {
+      incompleteReasons.push("Could not reach " + (calendar.summary || calendar.id) + ".");
+      continue;
+    }
+    if (events.inaccessible || !events.ok) {
+      freeBusyFallback.push(calendar);
+      continue;
+    }
+    if (events.truncated) {
+      incompleteReasons.push("Not every event on " + (calendar.summary || calendar.id) + " could be checked.");
+    }
+    events.items.forEach((item) => {
+      if (!api.isBusyCandidate(item)) return;
+      if (api.isSavedEvent(item, saved, calendar.id)) {
+        const interval = api.intervalFromGoogleTimes(item.start, item.end);
+        if (interval && (calendar.id === savedCalendar || calendar.primary)) {
+          ourIntervals.push(interval);
+        }
+        return;
+      }
+      const entry = api.entryFromEvent(item, calendar);
+      if (entry) entries.push(entry);
+    });
+  }
+
+  if (!ourIntervals.length) {
+    const own = api.intervalFromSaved(saved);
+    if (own) ourIntervals.push(own);
+  }
+
+  if (freeBusyFallback.length) {
+    const busy = await freeBusyCalendars(freeBusyFallback, window, saved.timeZone);
+    if (busy.needsScopes) {
+      return api.buildNotice({ saved: saved, window: window, needsScopes: true });
+    }
+    if (busy.ok && busy.calendars) {
+      freeBusyFallback.forEach((calendar) => {
+        const block = busy.calendars[calendar.id];
+        if (!block) {
+          incompleteReasons.push(
+            "Could not check " + (calendar.summary || calendar.id) + "."
+          );
+          return;
+        }
+        if (Array.isArray(block.errors) && block.errors.length) {
+          incompleteReasons.push(
+            "Google does not allow conflict checks on " + (calendar.summary || calendar.id) + "."
+          );
+          return;
+        }
+        (block.busy || []).forEach((slot) => {
+          const entry = api.entryFromBusy(slot, calendar);
+          if (!entry) return;
+          let selfSlot = false;
+          for (let i = 0; i < ourIntervals.length; i += 1) {
+            const mine = ourIntervals[i];
+            if (mine.startMs === entry.startMs && mine.endMs === entry.endMs) selfSlot = true;
+          }
+          if (!selfSlot) entries.push(entry);
+        });
+      });
+    } else {
+      freeBusyFallback.forEach((calendar) => {
+        incompleteReasons.push(
+          "Could not check " + (calendar.summary || calendar.id) + "."
+        );
+      });
+    }
+  }
+
+  return api.buildNotice({
+    checkId: "",
+    saved: saved,
+    window: window,
+    timeZone: saved.timeZone,
+    ourIntervals: ourIntervals,
+    entries: entries,
+    calendarCount: listed.calendars.length,
+    incompleteReasons: incompleteReasons,
+  });
+}
+
+async function applyConflictNotice(incognito, checkId, saved, notice) {
+  const api = self.QuickCalConflicts;
+  if (!api || !notice) return null;
+  notice.checkId = checkId;
+  notice.savedEventId = saved && saved.id ? saved.id : notice.savedEventId || "";
+  return mutateWidgetSession(incognito, (latest) => {
+    if (!api.noticeStillCurrent(latest, notice)) return latest;
+    if (latest.conflictNotice && latest.conflictNotice.checkId && latest.conflictNotice.checkId !== checkId) {
+      return latest;
+    }
+    const statusText = notice.status === "clear" && !notice.horizonText ? "" : notice.statusText;
+    return Object.assign({}, latest, {
+      conflictNotice: notice,
+      statusText: statusText,
+      statusError: false,
+      revision: latest.revision + 1,
+    });
+  });
+}
+
+async function scheduleConflictCheck(incognito, saved) {
+  const api = self.QuickCalConflicts;
+  if (!api || !saved || !saved.htmlLink) return null;
+  const checkId = conflictCheckId();
+  const checking = api.checkingNotice(checkId, saved);
+  await mutateWidgetSession(incognito, (latest) => {
+    if (latest.mode !== "saved" || !latest.savedRecord) return latest;
+    if (saved.id && latest.savedRecord.id && saved.id !== latest.savedRecord.id) return latest;
+    return Object.assign({}, latest, {
+      conflictNotice: checking,
+      statusText: checking.statusText,
+      statusError: false,
+      revision: latest.revision + 1,
+    });
+  });
+  let notice;
+  try {
+    notice = await evaluateScheduleConflicts(saved);
+  } catch (error) {
+    notice = api.buildNotice({
+      checkId: checkId,
+      saved: saved,
+      incompleteReasons: ["Conflict checking failed unexpectedly."],
+    });
+  }
+  if (!notice) {
+    notice = api.buildNotice({
+      checkId: checkId,
+      saved: saved,
+      incompleteReasons: ["Conflict checking failed unexpectedly."],
+    });
+  }
+  return applyConflictNotice(incognito, checkId, saved, notice);
 }
 
 async function readLookupItem(id) {
@@ -2317,7 +2680,10 @@ async function performMoves(incognito, operation, query, zone, candidates) {
   const record = movedRecord(first.candidate, first.plan, first.body);
   record.timeZone = zone;
   const failures = pending.map((item) => item.summary).join(", ");
-  return settleLookup(incognito, operation, async () => ({
+  const checking = self.QuickCalConflicts
+    ? self.QuickCalConflicts.checkingNotice("pending", record)
+    : null;
+  const settled = await settleLookup(incognito, operation, async () => ({
     mode: "saved",
     savedRecord: record,
     event: null,
@@ -2325,9 +2691,18 @@ async function performMoves(incognito, operation, query, zone, candidates) {
     clarification: null,
     lookup: pending.length ? lookupState("move", "confirm", query, zone, pending, "Still need to move: " + failures) : null,
     input: "",
-    statusText: pending.length ? "Moved " + first.candidate.summary + ". Could not move " + failures + "." : "",
+    statusText: pending.length
+      ? "Moved " + first.candidate.summary + ". Could not move " + failures + "."
+      : checking
+        ? checking.statusText
+        : "",
     statusError: false,
+    conflictNotice: pending.length ? null : checking,
   }));
+  if (!pending.length) {
+    return scheduleConflictCheck(incognito, record);
+  }
+  return settled;
 }
 
 async function performDeletes(incognito, operation, query, zone, candidates) {
@@ -2569,9 +2944,12 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
   const saveResult = editing
     ? await updateWidgetEvent(pendingState.event)
     : await saveWidgetEvent(pendingState.event);
-  return mutateWidgetSession(incognito, (after) => {
+  const finished = await mutateWidgetSession(incognito, (after) => {
     if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
     if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+      const checking = self.QuickCalConflicts
+        ? self.QuickCalConflicts.checkingNotice("pending", saveResult)
+        : null;
       const saved = self.QuickCalSession.finishOperation(after, operation, {
         mode: "saved",
         savedRecord: saveResult,
@@ -2580,8 +2958,9 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
         clarification: null,
         lookup: null,
         input: "",
-        statusText: "",
+        statusText: checking ? checking.statusText : "",
         statusError: false,
+        conflictNotice: checking,
       });
       return saved.accepted ? saved.state : after;
     }
@@ -2591,10 +2970,15 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
       event: pendingState.event,
       statusText: saveResult && saveResult.error ? saveResult.error : "QuickCalAI could not save this event.",
       statusError: true,
+      conflictNotice: null,
       input: text,
     });
     return kept.accepted ? kept.state : after;
   });
+  if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+    return scheduleConflictCheck(incognito, saveResult);
+  }
+  return finished;
 }
 
 function handleWidgetMessage(message, sender) {
@@ -2654,6 +3038,7 @@ function handleWidgetMessage(message, sender) {
         input: "",
         statusText: "",
         statusError: false,
+        conflictNotice: state.savedRecord ? state.conflictNotice : null,
         revision: state.revision + 1,
       });
     }).then((session) => ({ ok: true, session: session }));

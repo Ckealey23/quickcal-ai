@@ -25,6 +25,7 @@
       event: null,
       statusText: "",
       statusError: false,
+      conflictNotice: null,
       operation: null,
       voice: null,
       lookup: null,
@@ -42,6 +43,7 @@
       event: null,
       statusText: "",
       statusError: false,
+      conflictNotice: null,
       operation: null,
       voice: null,
       lookup: null,
@@ -171,6 +173,7 @@
       input: "",
       statusText: "",
       statusError: false,
+      conflictNotice: null,
       operation: null,
     });
   }
@@ -189,6 +192,7 @@
       input: "",
       statusText: "",
       statusError: false,
+      conflictNotice: null,
       operation: null,
     });
   }
