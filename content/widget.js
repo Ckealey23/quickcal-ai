@@ -365,8 +365,19 @@
   deleteButton.textContent = "Delete event";
   deleteButton.hidden = true;
 
-  actions.append(retryButton, connectButton, viewLink, newButton, deleteButton, cancelButton);
-  body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, saveError, rule, actions);
+  const addSelectedButton = document.createElement("button");
+  addSelectedButton.type = "button";
+  addSelectedButton.className = "action";
+  addSelectedButton.textContent = "Add selected events";
+  addSelectedButton.hidden = true;
+
+  const batchList = document.createElement("div");
+  batchList.className = "batch-list";
+  batchList.hidden = true;
+  batchList.setAttribute("role", "list");
+
+  actions.append(retryButton, connectButton, viewLink, newButton, deleteButton, addSelectedButton, cancelButton);
+  body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, batchList, saveError, rule, actions);
 
   function svgIcon(size, paths, viewBox) {
     const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -575,6 +586,9 @@
   let enterDown = false;
   let deleteArmed = false;
   let activeLookup = null;
+  let activeBatch = null;
+  let suppressBatchConfirm = false;
+  let pendingBatchSelection = false;
   const seenSelections = new Set();
   let docState = null;
   let docLocalError = "";
@@ -796,6 +810,7 @@
     viewLink.hidden = true;
     newButton.hidden = true;
     deleteButton.hidden = true;
+    addSelectedButton.hidden = true;
     cancelButton.hidden = true;
     viewLink.removeAttribute("href");
     rule.hidden = true;
@@ -806,8 +821,11 @@
     closeTimeMenu(false);
     mode = "input";
     activeLookup = null;
+    activeBatch = null;
     deleteArmed = false;
     draftEvent = null;
+    batchList.hidden = true;
+    clearList(batchList);
     body.hidden = true;
     card.classList.remove("expanded");
     card.classList.remove("clarifying");
@@ -817,11 +835,213 @@
     host.dataset.mode = "input";
   }
 
+  function draftLabel(draft) {
+    const event = draft && draft.event ? draft.event : {};
+    const view = previewApi.previewModel(event);
+    const parts = [];
+    parts.push(view.title || event.title || "Untitled event");
+    if (view.dateText) parts.push(view.dateText);
+    if (view.timeText) parts.push(view.timeText);
+    if (event.location) parts.push(event.location);
+    if (event.durationDefaulted) parts.push("1 hour default");
+    if (view.recurrenceText) parts.push(view.recurrenceText);
+    return parts.join(", ");
+  }
+
+  function paintBatchList(batch) {
+    clearList(batchList);
+    activeBatch = batch;
+    if (!batch || !batch.drafts || !batch.drafts.length) {
+      batchList.hidden = true;
+      return;
+    }
+    batchList.hidden = false;
+    batch.drafts.forEach((draft) => {
+      const row = document.createElement("div");
+      row.className = "batch-item";
+      row.setAttribute("role", "listitem");
+      const label = document.createElement("label");
+      label.className = "batch-label";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "batch-check";
+      checkbox.checked = !!draft.selected && draft.complete && draft.saveStatus !== "saved";
+      checkbox.disabled = !draft.complete || draft.saveStatus === "saved" || draft.saveStatus === "saving" || !!(batch && batch.saving);
+      checkbox.setAttribute("aria-label", "Include " + draftLabel(draft));
+      checkbox.addEventListener("change", () => {
+        if (!shared || !activeBatch) return;
+        chrome.runtime.sendMessage({
+          type: "quickcal-widget",
+          action: "batch-toggle",
+          sessionId: sharedSessionId,
+          ref: draft.ref,
+          selected: checkbox.checked,
+        }).then((result) => {
+          if (result && result.session) applyRemote(result.session, false);
+        }).catch(() => {});
+      });
+      const copy = document.createElement("div");
+      copy.className = "batch-copy";
+      const title = document.createElement("p");
+      title.className = "batch-title";
+      const view = previewApi.previewModel(draft.event);
+      title.textContent = view.title || draft.event.title || "Untitled event";
+      const meta = document.createElement("p");
+      meta.className = "batch-meta";
+      const bits = [];
+      if (view.dateText) bits.push(view.dateText);
+      if (view.timeText) bits.push(view.timeText);
+      if (draft.event.location) bits.push(draft.event.location);
+      if (draft.event.durationDefaulted) bits.push("Defaults to 1 hour");
+      if (view.recurrenceText) bits.push(view.recurrenceText);
+      meta.textContent = bits.join(" · ");
+      copy.append(title, meta);
+      if (!draft.complete) {
+        const missing = document.createElement("p");
+        missing.className = "batch-missing";
+        missing.textContent = draft.missingText || "Missing details.";
+        copy.appendChild(missing);
+        const complete = document.createElement("button");
+        complete.type = "button";
+        complete.className = "action batch-complete";
+        complete.textContent = "Complete details";
+        complete.addEventListener("click", () => {
+          if (!shared) return;
+          chrome.runtime.sendMessage({
+            type: "quickcal-widget",
+            action: "batch-complete",
+            sessionId: sharedSessionId,
+            ref: draft.ref,
+          }).then((result) => {
+            if (result && result.session) applyRemote(result.session, true);
+          }).catch(() => {});
+        });
+        copy.appendChild(complete);
+      }
+      if (draft.saveStatus === "saved" && draft.savedRecord) {
+        const saved = document.createElement("p");
+        saved.className = "batch-saved";
+        saved.textContent = "Saved";
+        const link = document.createElement("a");
+        link.className = "action";
+        link.textContent = "Edit in Google Calendar";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        const edit = previewApi && previewApi.calendarEditLink
+          ? previewApi.calendarEditLink(draft.savedRecord.htmlLink)
+          : safeCalendarLink(draft.savedRecord.htmlLink);
+        if (edit) {
+          link.href = edit;
+          copy.append(saved, link);
+        } else {
+          copy.appendChild(saved);
+        }
+      } else if (draft.saveStatus === "failed" || draft.saveStatus === "uncertain") {
+        const err = document.createElement("p");
+        err.className = "batch-missing";
+        err.textContent = draft.saveError || "Could not save.";
+        copy.appendChild(err);
+      } else if (draft.saveStatus === "saving") {
+        const wait = document.createElement("p");
+        wait.className = "batch-meta";
+        wait.textContent = "Saving\u2026";
+        copy.appendChild(wait);
+      }
+      if (draft.conflictNotice && draft.conflictNotice.statusText) {
+        const notice = document.createElement("p");
+        notice.className = "batch-meta";
+        notice.textContent = draft.conflictNotice.statusText;
+        copy.appendChild(notice);
+        (draft.conflictNotice.lines || []).forEach((line) => {
+          const item = document.createElement("p");
+          item.className = "batch-missing";
+          item.textContent = line;
+          copy.appendChild(item);
+        });
+      }
+      label.append(checkbox, copy);
+      row.appendChild(label);
+      batchList.appendChild(row);
+    });
+  }
+
+  function showBatchReview(batch, results) {
+    mode = results ? "batch-results" : "reviewing";
+    activeBatch = batch;
+    clarification = null;
+    activeLookup = null;
+    deleteArmed = false;
+    draftEvent = null;
+    clearStatus();
+    successRow.hidden = true;
+    creatingLine.hidden = true;
+    showSaveError("");
+    summary.hidden = true;
+    zoneLine.hidden = true;
+    recurrenceLine.hidden = true;
+    seriesLine.hidden = true;
+    locationLine.hidden = true;
+    remindersLine.hidden = true;
+    noteLine.hidden = true;
+    questionList.hidden = true;
+    clearList(questionList);
+    card.classList.add("expanded");
+    card.classList.remove("clarifying");
+    body.hidden = false;
+    dismissButton.hidden = false;
+    paintBatchList(batch);
+    hideActions();
+    const count = globalThis.QuickCalBatch ? globalThis.QuickCalBatch.selectedCount(batch) : 0;
+    addSelectedButton.hidden = false;
+    addSelectedButton.textContent = "Add selected events (" + count + ")";
+    addSelectedButton.disabled = count < 1 || !!(batch && batch.saving);
+    cancelButton.hidden = false;
+    rule.hidden = false;
+    actions.hidden = false;
+    input.value = "";
+    input.placeholder = results ? "Correct an event, or retry unfinished ones" : "Correct an event, or add selected";
+    input.setAttribute("aria-label", "Batch correction");
+    host.dataset.mode = mode;
+  }
+
+  function showBatchClarifying(batch, event) {
+    activeBatch = batch;
+    const originalText = batch && batch.sourceText ? batch.sourceText : "";
+    clarification = {
+      originalText: originalText,
+      draft: draftFromEvent(event),
+      batchRef: batch && batch.clarifyingRef ? batch.clarifyingRef : "",
+    };
+    draftEvent = null;
+    clearStatus();
+    successRow.hidden = true;
+    creatingLine.hidden = true;
+    showSaveError("");
+    mode = "batch-clarifying";
+    showCard(event);
+    const prompt = clarificationPrompt(event);
+    questionList.hidden = false;
+    fillList(questionList, [prompt.question]);
+    paintBatchList(batch);
+    hideActions();
+    cancelButton.hidden = false;
+    rule.hidden = false;
+    actions.hidden = false;
+    card.classList.add("clarifying");
+    input.value = "";
+    input.placeholder = prompt.placeholder;
+    input.setAttribute("aria-label", "Answer");
+    host.dataset.mode = "batch-clarifying";
+    suppressBatchConfirm = true;
+    if (allowFocus) input.focus();
+  }
+
   function showCard(event) {
     const view = previewApi.previewModel(event);
     card.classList.add("expanded");
     body.hidden = false;
     dismissButton.hidden = false;
+    summary.hidden = false;
     fillDetails(view);
     fillList(questionList, view.questions);
     host.dataset.mode = mode;
@@ -2154,7 +2374,7 @@
   }
 
   function selectionBusy() {
-    return pending || saving || voicePhase !== "idle";
+    return pending || saving || voicePhase !== "idle" || !!(activeBatch && activeBatch.saving);
   }
 
   function discardClarification() {
@@ -2170,15 +2390,17 @@
     render();
   }
 
-  async function beginNewEvent(text) {
+  async function beginNewEvent(text, asBatch) {
     if (docOpen()) closeDocsForEvent();
     dismissSelectionChoice();
     selectionHold = false;
     clarification = null;
     savedRecord = null;
+    activeBatch = null;
     showInputMode();
     input.value = text;
     submitFresh = true;
+    pendingBatchSelection = !!asBatch;
     try {
       await chrome.runtime.sendMessage({ type: "quickcal-calendar", action: "new" });
     } catch (error) {
@@ -2196,7 +2418,12 @@
       maxLength: globalThis.QuickCalSelection.MAX_TEXT_LENGTH,
       seen: seenSelections,
       busy: selectionBusy(),
-      draft: input.value.trim().length > 0 || mode === "clarifying",
+      draft:
+        input.value.trim().length > 0 ||
+        mode === "clarifying" ||
+        mode === "batch-clarifying" ||
+        mode === "reviewing" ||
+        mode === "batch-results",
     });
     if (plan.action === "ignore") return { ok: true, ignored: true };
     rememberSelection(plan.operationId);
@@ -2212,7 +2439,7 @@
         showStatus(plan.message, false);
         return;
       }
-      beginNewEvent(plan.text);
+      beginNewEvent(plan.text, true);
     };
     if (!open) {
       const opening = setOpen(true);
@@ -2377,12 +2604,25 @@
       const keepTyped = focused && inputDirty && typedValue !== (state.input || "");
       if ((state.mode === "choosing" || state.mode === "confirming") && state.lookup) {
         clarification = null;
+        activeBatch = null;
         showLookup(state.lookup);
+        input.value = keepTyped ? typedValue : (state.input || "");
+        if (state.statusText) showStatus(state.statusText, !!state.statusError);
+        syncConnectFromSession(state);
+      } else if (state.mode === "batch-clarifying" && state.batch && state.event) {
+        clarification = state.clarification;
+        showBatchClarifying(state.batch, state.event);
+        input.value = keepTyped ? typedValue : (state.input || "");
+        if (state.statusText) showStatus(state.statusText, !!state.statusError);
+        syncConnectFromSession(state);
+      } else if ((state.mode === "reviewing" || state.mode === "batch-results") && state.batch) {
+        showBatchReview(state.batch, state.mode === "batch-results");
         input.value = keepTyped ? typedValue : (state.input || "");
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
         syncConnectFromSession(state);
       } else if (state.mode === "clarifying" && state.event) {
         clarification = state.clarification;
+        activeBatch = null;
         showClarifying(state.event, state.clarification && state.clarification.originalText);
         input.value = keepTyped ? typedValue : (state.input || "");
         if (state.statusText) showStatus(state.statusText, !!state.statusError);
@@ -2446,14 +2686,24 @@
 
   function submitShared(text, fresh) {
     const operationId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "op-" + Date.now();
+    const asBatch = pendingBatchSelection || mode === "batch-clarifying" || mode === "reviewing" || mode === "batch-results";
+    pendingBatchSelection = false;
     pending = true;
-    showStatus(mode === "saved" ? "Updating event\u2026" : "Reading your event\u2026", false);
+    showStatus(
+      mode === "saved"
+        ? "Updating event\u2026"
+        : asBatch
+          ? "Reading your events\u2026"
+          : "Reading your event\u2026",
+      false
+    );
     render();
     chrome.runtime.sendMessage({
       type: "quickcal-widget",
       action: "submit",
       text: text,
       fresh: !!fresh,
+      batch: !!asBatch && (fresh || mode === "batch-clarifying" || mode === "reviewing" || mode === "batch-results"),
       sessionId: sharedSessionId,
       operationId: operationId,
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
@@ -2465,8 +2715,10 @@
         render();
         return;
       }
-      if (result && result.session) applyRemote(result.session, true);
-      else {
+      if (result && result.session) {
+        if (mode === "batch-clarifying") suppressBatchConfirm = true;
+        applyRemote(result.session, true);
+      } else {
         showStatus(result && result.error ? result.error : "QuickCalAI could not read that event.", true);
         render();
       }
@@ -2474,6 +2726,32 @@
       pending = false;
       if (!alive) return;
       showStatus("QuickCalAI could not reach QuickCal. Try again.", true);
+      render();
+    });
+  }
+
+  function confirmBatch() {
+    if (!shared || !activeBatch || pending || saving || activeBatch.saving) return;
+    if (suppressBatchConfirm) return;
+    const count = globalThis.QuickCalBatch ? globalThis.QuickCalBatch.selectedCount(activeBatch) : 0;
+    if (count < 1) return;
+    const operationId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : "batch-" + Date.now();
+    pending = true;
+    showStatus("Adding selected events\u2026", false);
+    render();
+    chrome.runtime.sendMessage({
+      type: "quickcal-widget",
+      action: "batch-confirm",
+      sessionId: sharedSessionId,
+      operationId: operationId,
+    }).then((result) => {
+      pending = false;
+      if (!alive) return;
+      if (result && result.session) applyRemote(result.session, false);
+      else render();
+    }).catch(() => {
+      pending = false;
+      showStatus("QuickCalAI could not save the selected events.", true);
       render();
     });
   }
@@ -2505,8 +2783,9 @@
       return;
     }
     // Keep card actions clickable; the input strip retains its existing drag behavior.
+    // Include labels so batch checkboxes still toggle from their accessible label text.
     if (!bar.contains(event.target)) {
-      if (event.target.closest("button, a, input, textarea, select, [contenteditable]")) return;
+      if (event.target.closest("button, a, input, textarea, select, label, [contenteditable]")) return;
       event.preventDefault();
     }
     dragging = {
@@ -2661,6 +2940,24 @@
   function onInputKeyDown(event) {
     if (event.key === "Enter") enterDown = true;
     if (event.key !== "Enter") return;
+    if (mode === "batch-clarifying" || mode === "reviewing" || mode === "batch-results") {
+      if (event.repeat || event.isComposing || event.keyCode === 229) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (pending || saving || voicePhase === "recording" || voicePhase === "review" || voicePhase === "transcribing" || voicePhase === "permission") return;
+      const text = input.value.trim();
+      if (text) {
+        suppressBatchConfirm = true;
+        submit(text);
+        return;
+      }
+      // Empty Enter never confirms a batch; only the Add selected button does.
+      return;
+    }
     const lookupApi = globalThis.QuickCalLookup;
     const action = lookupApi ? lookupApi.enterAction({
       repeat: event.repeat,
@@ -2693,6 +2990,9 @@
     if (event.key !== "Enter") return;
     enterDown = false;
     if (mode === "confirming") deleteArmed = true;
+    if (mode === "batch-clarifying" || suppressBatchConfirm) {
+      suppressBatchConfirm = false;
+    }
   }
 
   function formatElapsed(ms) {
@@ -3018,6 +3318,11 @@
     event.stopPropagation();
     discardClarification();
   });
+  addSelectedButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    confirmBatch();
+  });
   cancelButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3032,6 +3337,22 @@
       }
       showInputMode();
       render();
+      return;
+    }
+    if (mode === "batch-clarifying" && activeBatch) {
+      if (shared) {
+        chrome.runtime.sendMessage({
+          type: "quickcal-widget",
+          action: "batch-cancel-clarify",
+          sessionId: sharedSessionId,
+        }).then((result) => {
+          if (result && result.session) applyRemote(result.session, false);
+        }).catch(() => {});
+        return;
+      }
+    }
+    if (mode === "reviewing" || mode === "batch-results") {
+      setOpen(false);
       return;
     }
     discardClarification();

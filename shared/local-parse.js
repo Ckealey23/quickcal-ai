@@ -72,7 +72,86 @@
     if (operation.operation && (currentEvent || clarification)) {
       return { ok: false, error: "A calendar follow-up cannot also edit another event." };
     }
-    return { ok: true, text: text, timeZone: timeZone, currentEvent: currentEvent, clarification: clarification, operation: operation.operation };
+    const batch = message.batch === true;
+    const batchContext = normalizeBatchContext(message.batchContext, timeZone);
+    if (!batchContext.ok) return batchContext;
+    if (batch && batchContext.batchContext) {
+      return { ok: false, error: "A batch extraction cannot also include batch follow-up context." };
+    }
+    if (batch || batchContext.batchContext) {
+      if (currentEvent || clarification || operation.operation) {
+        return { ok: false, error: "A batch request cannot also edit another event." };
+      }
+      return {
+        ok: true,
+        text: text,
+        timeZone: timeZone,
+        currentEvent: null,
+        clarification: null,
+        operation: null,
+        batch: batch,
+        batchContext: batchContext.batchContext,
+      };
+    }
+    return {
+      ok: true,
+      text: text,
+      timeZone: timeZone,
+      currentEvent: currentEvent,
+      clarification: clarification,
+      operation: operation.operation,
+      batch: false,
+      batchContext: null,
+    };
+  }
+
+  function normalizeBatchContext(value, timeZone) {
+    if (value == null) return { ok: true, batchContext: null };
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    if (typeof value.sourceText !== "string" || !value.sourceText.trim() || value.sourceText.length > MAX_TEXT_LENGTH) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    if (value.targetRef != null && (typeof value.targetRef !== "string" || !/^e([1-9]|10)$/.test(value.targetRef))) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    if (!Array.isArray(value.drafts) || value.drafts.length === 0 || value.drafts.length > 10) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    const drafts = [];
+    for (let index = 0; index < value.drafts.length; index += 1) {
+      const draft = value.drafts[index];
+      if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+        return { ok: false, error: "Batch context is not valid." };
+      }
+      if (typeof draft.ref !== "string" || !/^e([1-9]|10)$/.test(draft.ref)) {
+        return { ok: false, error: "Batch context is not valid." };
+      }
+      if (typeof draft.selected !== "boolean" || typeof draft.complete !== "boolean") {
+        return { ok: false, error: "Batch context is not valid." };
+      }
+      drafts.push({
+        ref: draft.ref,
+        title: draft.title == null ? null : String(draft.title).trim() || null,
+        date: draft.date == null ? null : draft.date,
+        startTime: draft.startTime == null ? null : draft.startTime,
+        endTime: draft.endTime == null ? null : draft.endTime,
+        location: draft.location == null ? null : String(draft.location).trim() || null,
+        selected: draft.selected,
+        complete: draft.complete,
+        missingText: draft.missingText == null ? "" : String(draft.missingText).trim(),
+      });
+    }
+    return {
+      ok: true,
+      batchContext: {
+        sourceText: value.sourceText.trim(),
+        targetRef: value.targetRef || null,
+        drafts: drafts,
+        timeZone: timeZone,
+      },
+    };
   }
 
   function nullableContextText(value, maxLength) {
@@ -348,8 +427,125 @@
     };
   }
 
+  function sanitizeBatchEvent(body, expectedRef) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    if (typeof body.ref !== "string" || body.ref !== expectedRef) return null;
+    const title = optionalText(body.title);
+    const date = optionalDate(body.date);
+    const startTime = optionalTime(body.startTime);
+    const endTime = optionalTime(body.endTime);
+    const location = optionalText(body.location);
+    if (title === undefined || date === undefined || startTime === undefined || endTime === undefined) return null;
+    if (location === undefined) return null;
+    if (typeof body.timeZone !== "string" || !body.timeZone.trim()) return null;
+    if (typeof body.needsClarification !== "boolean") return null;
+    if (body.durationDefaulted != null && typeof body.durationDefaulted !== "boolean") return null;
+    let recurrence = null;
+    if (body.recurrence != null) {
+      const schedule = root.QuickCalSchedule;
+      if (!schedule || !schedule.normalizeRecurrence) return null;
+      const parsed = schedule.normalizeRecurrence(body.recurrence);
+      if (!parsed.ok) return null;
+      recurrence = parsed.recurrence;
+    }
+    const schedule = root.QuickCalSchedule;
+    if (!schedule || !schedule.normalizeReminderSettings) return null;
+    if (!Object.hasOwn(body, "reminders")) return null;
+    const reminderResult = schedule.normalizeReminderSettings(body.reminders);
+    if (!reminderResult.ok) return null;
+    let endDate = null;
+    if (date) {
+      endDate = body.endDate == null ? date : optionalDate(body.endDate);
+      if (!endDate) return null;
+    } else if (body.endDate != null) {
+      return null;
+    }
+    if (!Array.isArray(body.clarificationQuestions)) return null;
+    const questions = [];
+    for (let index = 0; index < body.clarificationQuestions.length; index += 1) {
+      const question = body.clarificationQuestions[index];
+      if (typeof question !== "string") return null;
+      const trimmed = question.trim();
+      if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
+    }
+    return {
+      ref: expectedRef,
+      title: title,
+      date: date,
+      startTime: startTime,
+      endTime: endTime,
+      endDate: endDate,
+      timeZone: body.timeZone.trim(),
+      location: location,
+      recurrence: recurrence,
+      reminders: reminderResult.reminders,
+      remindersText: schedule.reminderSettingsText(reminderResult.reminders),
+      recurrenceText: recurrence && typeof body.recurrenceText === "string" ? body.recurrenceText.trim().slice(0, 120) : "",
+      seriesEndText: recurrence && typeof body.seriesEndText === "string" ? body.seriesEndText.trim().slice(0, 120) : "",
+      needsClarification: body.needsClarification,
+      clarificationQuestions: questions,
+      durationDefaulted: body.durationDefaulted === true,
+      intent: "create",
+    };
+  }
+
+  function sanitizeBatch(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    if (body.kind !== "batch" || typeof body.tooMany !== "boolean") return null;
+    if (body.message != null && (typeof body.message !== "string" || body.message.length > 300)) return null;
+    if (!Array.isArray(body.events)) return null;
+    if (body.tooMany) {
+      return {
+        kind: "batch",
+        tooMany: true,
+        message:
+          typeof body.message === "string" && body.message.trim()
+            ? body.message.trim()
+            : "That selection looks like more than 10 events. Highlight a smaller passage and try again.",
+        events: [],
+      };
+    }
+    if (body.events.length > 10) return null;
+    const events = [];
+    for (let index = 0; index < body.events.length; index += 1) {
+      const expected = "e" + String(index + 1);
+      const item = sanitizeBatchEvent(body.events[index], expected);
+      if (!item) return null;
+      events.push(item);
+    }
+    return {
+      kind: "batch",
+      tooMany: false,
+      message: body.message == null || !String(body.message).trim() ? null : String(body.message).trim(),
+      events: events,
+    };
+  }
+
+  function sanitizeBatchFollowup(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    if (body.kind !== "batch-followup") return null;
+    if (["update", "skip", "ambiguous", "none"].indexOf(body.action) === -1) return null;
+    if (body.ref != null && (typeof body.ref !== "string" || !/^e([1-9]|10)$/.test(body.ref))) return null;
+    if (body.question != null && (typeof body.question !== "string" || body.question.length > 240)) return null;
+    let event = null;
+    if (body.event != null) {
+      if (!body.ref) return null;
+      event = sanitizeBatchEvent(body.event, body.ref);
+      if (!event) return null;
+    }
+    return {
+      kind: "batch-followup",
+      action: body.action,
+      ref: body.ref || null,
+      question: body.question == null || !String(body.question).trim() ? null : String(body.question).trim(),
+      event: event,
+    };
+  }
+
   function sanitizeEvent(body) {
     if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    if (body.kind === "batch") return null;
+    if (body.kind === "batch-followup") return null;
     if (
       body.intent === "move" ||
       body.intent === "delete" ||
@@ -493,6 +689,12 @@
     }
     let response;
     try {
+      const body = { text: input.text, timeZone: input.timeZone };
+      if (input.batchContext) body.batchContext = input.batchContext;
+      else if (input.batch) body.batch = true;
+      else if (input.operation) body.operation = input.operation;
+      else if (input.clarification) body.clarification = input.clarification;
+      else if (input.currentEvent) body.currentEvent = input.currentEvent;
       response = await fetchImpl(PARSE_URL, {
         method: "POST",
         credentials: "omit",
@@ -500,15 +702,7 @@
           "Content-Type": "application/json",
           Authorization: "Bearer " + token,
         },
-        body: JSON.stringify(
-          input.operation
-            ? { text: input.text, timeZone: input.timeZone, operation: input.operation }
-            : input.clarification
-              ? { text: input.text, timeZone: input.timeZone, clarification: input.clarification }
-              : input.currentEvent
-                ? { text: input.text, timeZone: input.timeZone, currentEvent: input.currentEvent }
-                : { text: input.text, timeZone: input.timeZone }
-        ),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
@@ -543,6 +737,16 @@
         error: "QuickCalAI's hosted parser is out of date" + release + ". Deploy the current backend, then reload the extension.",
       };
     }
+    if (input.batchContext) {
+      const followup = sanitizeBatchFollowup(payload);
+      if (!followup) return { ok: false, error: "The event parser returned an unreadable batch follow-up." };
+      return { ok: true, followup: followup };
+    }
+    if (input.batch) {
+      const batch = sanitizeBatch(payload);
+      if (!batch) return { ok: false, error: "The event parser returned an unreadable batch." };
+      return { ok: true, batch: batch };
+    }
     const event = sanitizeEvent(payload);
     if (!event) return { ok: false, error: "The event parser returned an unreadable response." };
     return { ok: true, event: event };
@@ -559,6 +763,8 @@
     MAX_TEXT_LENGTH: MAX_TEXT_LENGTH,
     validateParseRequest: validateParseRequest,
     sanitizeEvent: sanitizeEvent,
+    sanitizeBatch: sanitizeBatch,
+    sanitizeBatchFollowup: sanitizeBatchFollowup,
     requestLocalParse: requestLocalParse,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

@@ -373,8 +373,20 @@
 
   function noticeStillCurrent(session, notice) {
     if (!session || !notice) return false;
-    if (session.mode !== "saved" || !session.savedRecord) return false;
     if (!session.visible) return false;
+    if (session.mode === "reviewing" || session.mode === "batch-results") {
+      if (!session.batch || !Array.isArray(session.batch.drafts) || !notice.savedEventId) return false;
+      const draft = session.batch.drafts.find((item) => {
+        if (!item) return false;
+        if (item.calendarEventId && item.calendarEventId === notice.savedEventId) return true;
+        return !!(item.savedRecord && item.savedRecord.id === notice.savedEventId);
+      });
+      if (!draft || draft.saveStatus !== "saved") return false;
+      const current = draft.conflictNotice;
+      if (current && current.checkId && notice.checkId && current.checkId !== notice.checkId) return false;
+      return true;
+    }
+    if (session.mode !== "saved" || !session.savedRecord) return false;
     if (notice.savedEventId && session.savedRecord.id && notice.savedEventId !== session.savedRecord.id) {
       return false;
     }

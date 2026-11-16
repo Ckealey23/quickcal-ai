@@ -179,6 +179,62 @@ describe("overlap notice lifetime", () => {
     assert.equal(timers.length, 0);
   });
 
+  it("clears the top-level overlap warning after a highlighted batch is saved", async () => {
+    const cal = calendar([OTHER]);
+    const timers = [];
+    let version = 0;
+    const batchEvent = (ref, title, start, end) => ({
+      ref: ref, title: title, date: "2026-11-17", endDate: "2026-11-17", startTime: start, endTime: end,
+      timeZone: ZONE, location: null, recurrence: null, reminders: { useDefault: false, overrides: [] },
+      remindersText: "", recurrenceText: "", seriesEndText: "", needsClarification: false,
+      clarificationQuestions: [], durationDefaulted: false, intent: "create",
+    });
+    const loaded = loadBackground({
+      calendars: CALENDARS,
+      setTimeout(callback, ms) {
+        if (ms === 5000) {
+          timers.push(callback);
+          return 0;
+        }
+        return setTimeout(callback, ms);
+      },
+      route: async (url, init) => {
+        if (url.includes("/parse-event")) {
+          return response(200, {
+            kind: "batch", tooMany: false, message: null, quickcalApiVersion: version, quickcalRelease: "test",
+            events: [batchEvent("e1", "Alpha", "09:00", "10:00"), batchEvent("e2", "Beta", "13:00", "14:00")],
+          });
+        }
+        return cal.route(url, init);
+      },
+    });
+    version = loaded.sandbox.QuickCalLocalParse.API_VERSION;
+    const shown = await loaded.ask({ type: "quickcal-widget", action: "show" });
+    const reviewed = await loaded.ask({
+      type: "quickcal-widget", action: "submit", text: "Alpha at 9 and Beta at 1 tomorrow", fresh: true, batch: true,
+      timeZone: ZONE, operationId: "batch-1", sessionId: shown.session.sessionId,
+    });
+    const saved = await loaded.ask({
+      type: "quickcal-widget", action: "batch-confirm", sessionId: reviewed.session.sessionId, operationId: "batch-2",
+    });
+    assert.equal(saved.ok, true);
+    assert.equal(cal.events.size, 2);
+    let warned = null;
+    for (let attempt = 0; attempt < 50 && !warned; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const current = await loaded.ask({ type: "quickcal-widget", action: "snapshot" });
+      if (/Team standup/.test(current.session.statusText)) warned = current.session;
+    }
+    assert.ok(warned, "the batch conflict check reports the real overlap");
+    assert.ok(timers.length >= 1);
+    timers.forEach((fire) => fire());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const after = await loaded.ask({ type: "quickcal-widget", action: "snapshot" });
+    assert.equal(after.session.conflictNotice, null);
+    assert.equal(after.session.statusText, "");
+    assert.ok(after.session.batch, "the batch results stay listed");
+  });
+
   it("does not let an old timer clear a newer request's state", async () => {
     const { loaded, session, timers } = await createCoffee([OTHER]);
     await loaded.ask({ type: "quickcal-widget", action: "reset", sessionId: session.sessionId });

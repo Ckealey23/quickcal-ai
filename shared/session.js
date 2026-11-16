@@ -30,6 +30,7 @@
       voice: null,
       lookup: null,
       doc: null,
+      batch: null,
     };
   }
 
@@ -48,6 +49,7 @@
       operation: null,
       voice: null,
       lookup: null,
+      batch: null,
     };
   }
 
@@ -192,6 +194,48 @@
       savedRecord: null,
       draftEvent: null,
       lookup: null,
+      batch: null,
+      input: "",
+      statusText: "",
+      statusError: false,
+      conflictNotice: null,
+      operation: null,
+    });
+  }
+
+  function noteBatch(state, batch, statusText) {
+    return Object.assign({}, state, {
+      mode: "reviewing",
+      batch: batch,
+      clarification: null,
+      savedRecord: null,
+      draftEvent: null,
+      draftText: "",
+      event: null,
+      lookup: null,
+      input: "",
+      statusText: statusText || "",
+      statusError: false,
+      conflictNotice: null,
+      operation: null,
+    });
+  }
+
+  function noteBatchClarification(state, batch, ref, event) {
+    const draft = (batch && batch.drafts || []).find((item) => item.ref === ref);
+    const source = batch && batch.sourceText ? batch.sourceText : "";
+    return Object.assign({}, state, {
+      mode: "batch-clarifying",
+      batch: Object.assign({}, batch, { clarifyingRef: ref || "" }),
+      event: event || (draft && draft.event) || null,
+      clarification: {
+        originalText: source,
+        draft: draftFromEvent(event || (draft && draft.event) || {}),
+        batchRef: ref || "",
+      },
+      savedRecord: null,
+      draftEvent: null,
+      lookup: null,
       input: "",
       statusText: "",
       statusError: false,
@@ -217,5 +261,7 @@
     noteClarification: noteClarification,
     draftFromEvent: draftFromEvent,
     noteLookup: noteLookup,
+    noteBatch: noteBatch,
+    noteBatchClarification: noteBatchClarification,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

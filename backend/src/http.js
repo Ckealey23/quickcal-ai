@@ -25,6 +25,7 @@ export const QUICKCAL_CAPABILITIES = [
   "event-notifications",
   "calendar-operations",
   "availability-search",
+  "multi-event-batch",
   "tasks",
   "document-analysis",
 ];
@@ -578,6 +579,8 @@ export function createHandler({
         currentEvent: input.currentEvent,
         clarification: input.clarification,
         operation: input.operation,
+        batch: input.batch,
+        batchContext: input.batchContext,
       }), parseTimeoutMs);
       sendJson(request, response, 200, Object.assign({}, event, {
         quickcalApiVersion: QUICKCAL_API_VERSION,

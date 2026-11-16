@@ -143,6 +143,7 @@ describe("highlighted text delivery", () => {
       "shared/selection.js",
       "shared/layout.js",
       "shared/lookup.js",
+      "shared/batch.js",
       "shared/time-options.js",
       "shared/documents.js",
       "content/widget.js",

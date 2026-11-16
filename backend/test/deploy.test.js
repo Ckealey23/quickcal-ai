@@ -270,7 +270,7 @@ describe("production parse access", { concurrency: false }, () => {
       apiKeyConfigured: true,
       quickcalApiVersion: 5,
       quickcalRelease: "test-revision",
-      capabilities: ["event-notifications", "calendar-operations", "availability-search", "tasks", "document-analysis"],
+      capabilities: ["event-notifications", "calendar-operations", "availability-search", "multi-event-batch", "tasks", "document-analysis"],
     });
     assert.equal(health.text.includes(SECRET), false);
 

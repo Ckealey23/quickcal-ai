@@ -27,6 +27,7 @@ const page = `<!DOCTYPE html>
 <script src="${fileUrl(path.join(root, "shared/selection.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/layout.js"))}"></script>
 <script src="${fileUrl(path.join(root, "shared/lookup.js"))}"></script>
+<script src="${fileUrl(path.join(root, "shared/batch.js"))}"></script>
 <script>
   globalThis.quickcalListeners = [];
   const calls = [];

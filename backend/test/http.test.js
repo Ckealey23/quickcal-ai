@@ -56,7 +56,7 @@ describe("local server", { concurrency: false }, () => {
       apiKeyConfigured: false,
       quickcalApiVersion: 5,
       quickcalRelease: "local",
-      capabilities: ["event-notifications", "calendar-operations", "availability-search", "tasks", "document-analysis"],
+      capabilities: ["event-notifications", "calendar-operations", "availability-search", "multi-event-batch", "tasks", "document-analysis"],
     });
     assert.equal(response.headers.get("access-control-allow-origin"), null);
     assert.equal(calls.length, beforeCount);

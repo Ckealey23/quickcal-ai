@@ -83,12 +83,33 @@ export function validateRequest(body) {
   if (!isValidTimeZone(timeZone)) {
     return { ok: false, error: "Time zone must be a valid IANA time zone." };
   }
+  const batch = body.batch === true;
+  const batchContext = normalizeBatchContext(body.batchContext);
+  if (!batchContext.ok) return batchContext;
+  if (batch && batchContext.batchContext) {
+    return { ok: false, error: "A batch extraction cannot also include batch follow-up context." };
+  }
   const current = normalizeCurrentEvent(body.currentEvent, timeZone);
   if (!current.ok) return current;
   const clarification = normalizeClarification(body.clarification, timeZone);
   if (!clarification.ok) return clarification;
   const operation = normalizeOperationContext(body.operation);
   if (!operation.ok) return operation;
+  if (batch || batchContext.batchContext) {
+    if (current.event || clarification.clarification || operation.operation) {
+      return { ok: false, error: "A batch request cannot also edit another event." };
+    }
+    return {
+      ok: true,
+      text,
+      timeZone,
+      currentEvent: null,
+      clarification: null,
+      operation: null,
+      batch: batch,
+      batchContext: batchContext.batchContext,
+    };
+  }
   if (current.event && clarification.clarification) {
     return { ok: false, error: "A clarification answer cannot edit a saved event." };
   }
@@ -102,6 +123,64 @@ export function validateRequest(body) {
     currentEvent: current.event,
     clarification: clarification.clarification,
     operation: operation.operation,
+    batch: false,
+    batchContext: null,
+  };
+}
+
+function normalizeBatchContext(value) {
+  if (value == null) return { ok: true, batchContext: null };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "Batch context is not valid." };
+  }
+  if (typeof value.sourceText !== "string" || !value.sourceText.trim() || value.sourceText.length > MAX_TEXT_LENGTH) {
+    return { ok: false, error: "Batch context is not valid." };
+  }
+  if (value.targetRef != null && (typeof value.targetRef !== "string" || !/^e([1-9]|10)$/.test(value.targetRef))) {
+    return { ok: false, error: "Batch context is not valid." };
+  }
+  if (!Array.isArray(value.drafts) || value.drafts.length === 0 || value.drafts.length > 10) {
+    return { ok: false, error: "Batch context is not valid." };
+  }
+  const drafts = [];
+  for (const draft of value.drafts) {
+    if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    if (typeof draft.ref !== "string" || !/^e([1-9]|10)$/.test(draft.ref)) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    const title = nullableText(draft.title, 200);
+    const date = optionalDate(draft.date == null ? null : draft.date);
+    const startTime = optionalTime(draft.startTime == null ? null : draft.startTime);
+    const endTime = optionalTime(draft.endTime == null ? null : draft.endTime);
+    const location = nullableText(draft.location, 200);
+    const missingText = nullableText(draft.missingText, 240);
+    if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !missingText.ok) {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    if (typeof draft.selected !== "boolean" || typeof draft.complete !== "boolean") {
+      return { ok: false, error: "Batch context is not valid." };
+    }
+    drafts.push({
+      ref: draft.ref,
+      title: title.value,
+      date: date.value,
+      startTime: startTime.value,
+      endTime: endTime.value,
+      location: location.value,
+      selected: draft.selected,
+      complete: draft.complete,
+      missingText: missingText.value || "",
+    });
+  }
+  return {
+    ok: true,
+    batchContext: {
+      sourceText: value.sourceText.trim(),
+      targetRef: value.targetRef || null,
+      drafts: drafts,
+    },
   };
 }
 
@@ -435,6 +514,152 @@ function validatedTask(raw, title, description, date, dueTime, recurrence, model
       clarificationQuestions: questions,
       intent: raw.intent,
       operation: operation,
+    },
+  };
+}
+
+export function validateBatchEvent(raw, requestedTimeZone, ref) {
+  const failure = { ok: false };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
+  if (typeof raw.ref !== "string" || raw.ref !== ref) return failure;
+  const title = optionalText(raw.title, 200);
+  const date = optionalDate(raw.date);
+  const startTime = optionalTime(raw.startTime);
+  const endTime = optionalTime(raw.endTime);
+  const location = optionalText(raw.location, 200);
+  const recurrence = normalizeRecurrence(raw.recurrence);
+  const notification = normalizeReminderChange(raw.notificationAction, raw.notificationOverrides);
+  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok) {
+    return failure;
+  }
+  if (typeof raw.timeZone !== "string" || !isValidTimeZone(raw.timeZone)) return failure;
+  if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
+  if (typeof raw.needsClarification !== "boolean") return failure;
+  if (!Array.isArray(raw.clarificationQuestions) || raw.clarificationQuestions.length > 8) return failure;
+  const questions = [];
+  for (const question of raw.clarificationQuestions) {
+    if (typeof question !== "string") return failure;
+    const trimmed = question.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > 240) return failure;
+    addQuestion(questions, trimmed);
+  }
+  let needsClarification = raw.needsClarification;
+  if (!date.value) {
+    needsClarification = true;
+    addQuestion(questions, "What date should this event use?");
+  }
+  if (!startTime.value) {
+    needsClarification = true;
+    addQuestion(questions, "What time does this event start?");
+  }
+  if (startTime.value && endTime.value && endTime.value <= startTime.value) {
+    needsClarification = true;
+    addQuestion(questions, "The end time is not later than the start time on the same day. What times should this event use?");
+  }
+  if (needsClarification && questions.length === 0) {
+    addQuestion(questions, "What should be clarified about this event?");
+  }
+  return {
+    ok: true,
+    event: {
+      ref: ref,
+      title: title.value,
+      date: date.value,
+      startTime: startTime.value,
+      endTime: endTime.value,
+      timeZone: raw.timeZone,
+      location: location.value,
+      recurrence: recurrence.recurrence,
+      notificationAction: notification.action,
+      notificationOverrides: notification.overrides,
+      needsClarification,
+      clarificationQuestions: questions,
+      intent: "create",
+      operation: {
+        target: null,
+        searchDate: null,
+        searchTime: null,
+        destinationDate: null,
+        destinationTime: null,
+        destinationEndTime: null,
+        scope: "occurrence",
+        selection: [],
+        durationMinutes: null,
+        windowStart: null,
+        windowEnd: null,
+        preference: null,
+        searchEndDate: null,
+        readOnly: null,
+      },
+    },
+  };
+}
+
+export function validateBatchExtraction(raw, requestedTimeZone) {
+  const failure = { ok: false, error: "The model returned a batch that failed validation." };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
+  if (raw.kind !== "batch" || typeof raw.tooMany !== "boolean") return failure;
+  if (raw.message != null && (typeof raw.message !== "string" || raw.message.length > 300)) return failure;
+  if (!Array.isArray(raw.events)) return failure;
+  if (raw.tooMany) {
+    return {
+      ok: true,
+      batch: {
+        kind: "batch",
+        tooMany: true,
+        message:
+          typeof raw.message === "string" && raw.message.trim()
+            ? raw.message.trim()
+            : "That selection looks like more than 10 events. Highlight a smaller passage and try again.",
+        events: [],
+      },
+    };
+  }
+  if (raw.events.length > 10) return failure;
+  const events = [];
+  const seen = Object.create(null);
+  for (let index = 0; index < raw.events.length; index += 1) {
+    const expected = "e" + String(index + 1);
+    const item = validateBatchEvent(raw.events[index], requestedTimeZone, expected);
+    if (!item.ok) return failure;
+    if (seen[expected]) return failure;
+    seen[expected] = true;
+    events.push(item.event);
+  }
+  return {
+    ok: true,
+    batch: {
+      kind: "batch",
+      tooMany: false,
+      message: raw.message == null || !String(raw.message).trim() ? null : String(raw.message).trim(),
+      events: events,
+    },
+  };
+}
+
+export function validateBatchFollowup(raw, requestedTimeZone) {
+  const failure = { ok: false, error: "The model returned a batch follow-up that failed validation." };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
+  if (raw.kind !== "batch-followup") return failure;
+  if (!["update", "skip", "ambiguous", "none"].includes(raw.action)) return failure;
+  if (raw.ref != null && (typeof raw.ref !== "string" || !/^e([1-9]|10)$/.test(raw.ref))) return failure;
+  if (raw.question != null && (typeof raw.question !== "string" || raw.question.length > 240)) return failure;
+  let event = null;
+  if (raw.event != null) {
+    if (!raw.ref) return failure;
+    const item = validateBatchEvent(raw.event, requestedTimeZone, raw.ref);
+    if (!item.ok) return failure;
+    event = item.event;
+  }
+  return {
+    ok: true,
+    followup: {
+      kind: "batch-followup",
+      action: raw.action,
+      ref: raw.ref || null,
+      question: raw.question == null || !String(raw.question).trim() ? null : String(raw.question).trim(),
+      event: event,
     },
   };
 }
