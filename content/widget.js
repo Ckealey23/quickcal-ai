@@ -74,7 +74,7 @@
     button.dataset.corner = corner;
     button.setAttribute("aria-label", "Resize QuickCalAI");
     button.title = "Resize QuickCalAI";
-    if (corner === "nw") {
+    if (corner === "nw" || corner === "se") {
       const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       mark.setAttribute("viewBox", "0 0 12 12");
       mark.setAttribute("width", "12");
@@ -126,6 +126,27 @@
 
   const bar = document.createElement("div");
   bar.className = "bar";
+
+  // Layer short strokes into a violet-to-cyan tail. Normalized path lengths
+  // keep the orbit smooth around the corners at every widget size.
+  const orbit = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  orbit.setAttribute("class", "border-orbit");
+  orbit.setAttribute("aria-hidden", "true");
+  orbit.setAttribute("focusable", "false");
+  for (let step = 0; step < 24; step += 1) {
+    const progress = step / 23;
+    const length = 24 - progress * 23;
+    const stroke = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    stroke.setAttribute("x", "1");
+    stroke.setAttribute("y", "1");
+    stroke.setAttribute("pathLength", "100");
+    stroke.setAttribute("stroke-dasharray", length + " " + (100 - length));
+    stroke.style.setProperty("--orbit-offset", String(-(24 - length)) + "px");
+    stroke.style.stroke = "hsl(" + (270 - progress * 80) + " 90% " + (65 - 17 * progress * progress) + "%)";
+    stroke.style.strokeWidth = (0.6 + 2.2 * Math.pow(progress, 1.3)) + "px";
+    stroke.style.opacity = String(0.08 + progress * 0.85);
+    orbit.appendChild(stroke);
+  }
 
   const input = document.createElement("input");
   input.id = "quickcal-input";
@@ -373,7 +394,7 @@
   attachButton.setAttribute("aria-expanded", "false");
   attachButton.title = "Upload a document";
   attachButton.appendChild(svgIcon(16, ["M13.5 7.6 8.3 12.8a3.3 3.3 0 0 1-4.7-4.7l5.6-5.6a2.2 2.2 0 0 1 3.1 3.1L6.7 11.2a1.1 1.1 0 0 1-1.6-1.6l5-5"]));
-  bar.append(attachButton, input, listening, dismissButton, micButton);
+  bar.append(attachButton, input, listening, dismissButton, micButton, orbit);
 
   // Document panel. It unfolds from behind the bar and never moves the bar.
   const docs = document.createElement("section");
@@ -607,8 +628,8 @@
     timeDetail.wrap.hidden = !view.time;
     divider.hidden = !(view.date && view.time);
     schedule.hidden = !(view.date || view.time);
-    zoneLine.textContent = view.timeZone || "";
-    zoneLine.hidden = !view.timeZone;
+    zoneLine.textContent = "";
+    zoneLine.hidden = true;
     recurrenceLine.textContent = view.recurrenceText || "";
     recurrenceLine.hidden = !view.recurrenceText;
     seriesLine.textContent = view.seriesEndText || "";
@@ -925,8 +946,6 @@
     showSaveError("");
     fillList(questionList, []);
     showCard(event);
-    // The time zone still drives the saved times; only its raw name is hidden.
-    zoneLine.hidden = true;
     hideActions();
   }
 
@@ -2320,7 +2339,7 @@
       sharedSessionId = state.sessionId || sharedSessionId;
       sharedClaim = state.claim || 0;
       if (typeof state.inputSeq === "number" && state.inputSeq >= sharedInputSeq) sharedInputSeq = state.inputSeq;
-      if (state.layout) applyLayout(state.layout, true);
+      if (state.layout) applyLayout(state.layout, false);
       const remoteSeq = typeof state.inputSeq === "number" ? state.inputSeq : 0;
       if (remoteSeq > sharedInputSeq) sharedInputSeq = remoteSeq;
       if (state.voice && state.voice.phase && state.voice.phase !== "idle") {
@@ -2485,6 +2504,11 @@
       event.stopPropagation();
       return;
     }
+    // Keep card actions clickable; the input strip retains its existing drag behavior.
+    if (!bar.contains(event.target)) {
+      if (event.target.closest("button, a, input, textarea, select, [contenteditable]")) return;
+      event.preventDefault();
+    }
     dragging = {
       kind: "move",
       pointerId: event.pointerId,
@@ -2506,7 +2530,7 @@
         if (distance < 5) return;
         dragging.moved = true;
         try {
-          bar.setPointerCapture(event.pointerId);
+          card.setPointerCapture(event.pointerId);
         } catch (error) {
           // Window listeners still keep the panel moving without capture.
         }
@@ -2879,6 +2903,9 @@
     alive = false;
     requestGeneration += 1;
     saveGeneration += 1;
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
     document.removeEventListener("keydown", onEscape, true);
     document.removeEventListener("pointerdown", onOutsidePointer, true);
     document.removeEventListener("visibilitychange", onVisible);
@@ -3076,14 +3103,15 @@
   });
   input.addEventListener("focus", claimLeader);
   window.addEventListener("focus", claimLeader);
-  bar.addEventListener("pointerdown", onPointerDown);
-  bar.addEventListener("click", onBarClick, true);
+  card.addEventListener("pointerdown", onPointerDown);
+  card.addEventListener("click", onBarClick, true);
   [resizeNw, resizeNe, resizeSw, resizeSe].forEach((button) => {
     button.addEventListener("pointerdown", onPointerDown);
     button.addEventListener("keydown", onResizeKey);
   });
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
   window.addEventListener("resize", () => {
     const api = globalThis.QuickCalLayout;
     if (!api || !styled) return;

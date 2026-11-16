@@ -122,6 +122,20 @@ const page = `<!DOCTYPE html>
     const rect = bar.getBoundingClientRect();
     field.focus({ focusVisible: true });
     const glow = getComputedStyle(bar).boxShadow;
+    const orbitStroke = shadow.querySelector(".border-orbit rect");
+    const orbitAnimation = orbitStroke && orbitStroke.getAnimations()[0];
+    check("border orbit has an animation", !!orbitAnimation);
+    if (orbitAnimation) {
+      orbitAnimation.pause();
+      orbitAnimation.currentTime = 0;
+      const start = parseFloat(getComputedStyle(orbitStroke).strokeDashoffset);
+      orbitAnimation.currentTime = 4500;
+      const halfway = parseFloat(getComputedStyle(orbitStroke).strokeDashoffset);
+      check("border travels half its perimeter in half a lap: " + start + " to " + halfway,
+        Math.abs((start - halfway) - 50) < 0.1);
+      orbitAnimation.currentTime = 0;
+      orbitAnimation.play();
+    }
     const shellStyle = getComputedStyle(shadow.querySelector(".shell"));
     check("mic ready", shadow.querySelector(".mic").disabled === false && shadow.querySelector(".mic").getAttribute("aria-label") === "Start voice input");
     field.value = "typed draft";
@@ -134,7 +148,7 @@ const page = `<!DOCTYPE html>
     check("close", shadow.querySelector(".dismiss").getAttribute("aria-label") === "Close QuickCal" && !!shadow.querySelector(".dismiss svg"));
     check("no external close", shadow.querySelector(".close") === null);
     check("no panel", shellStyle.backgroundColor === "rgba(0, 0, 0, 0)" && (shellStyle.borderTopWidth === "0px" || shellStyle.borderTopStyle === "none"));
-    check("focus glow", glow.indexOf("138, 164, 214") !== -1);
+    check("no blue focus halo", glow.indexOf("138, 164, 214") === -1);
     check("pill inset", rect.left >= 8 && rect.right <= window.innerWidth - 8 && rect.bottom <= window.innerHeight - 8 && rect.top >= 8);
     check("narrow window " + window.innerWidth, window.innerWidth <= 520 && window.innerWidth >= 320);
     check("no horizontal overflow", document.documentElement.scrollWidth <= window.innerWidth + 1);
@@ -212,7 +226,7 @@ const page = `<!DOCTYPE html>
     check("saved title", shadow.querySelector(".event-title").textContent === "Coffee with Alex <script>");
     check("saved notification", shadow.textContent.includes("Popup 1 hour before"));
     check("expanded corners do not clip", expandedStyle.overflow === "visible" && expandedBar.left > expanded.left && expandedBar.right < expanded.right);
-    check("expanded focus visible", expandedFocus.indexOf("138, 164, 214") !== -1);
+    check("no expanded focus halo", expandedFocus === "none");
     check("mic inside input area", micBox.left >= expandedBar.left && micBox.right <= expandedBar.right && micBox.top >= expandedBar.top && micBox.bottom <= expandedBar.bottom);
     check("saved when", shadow.textContent.includes("Oct 17, 2026") && shadow.textContent.includes("10:00–11:00 AM"));
     const createdLink = shadow.querySelector("a.action");
@@ -220,6 +234,35 @@ const page = `<!DOCTYPE html>
     check("follow-up", field.value === "" && field.placeholder === "Tell me what to change…");
     check("new event", visibleAction("New event") !== null);
     check("card inset", expanded.left >= 8 && expanded.right <= window.innerWidth - 8 && expanded.bottom <= window.innerHeight - 8);
+    check("timezone label hidden", !shadow.textContent.includes("America/Los_Angeles"));
+    check("saved event keeps its timezone", creates()[1].event.timeZone === "America/Los_Angeles");
+    const savedHost = document.getElementById("quickcal-ai-host");
+    const beforeMove = savedHost.getBoundingClientRect();
+    const titleBox = shadow.querySelector(".event-title").getBoundingClientRect();
+    shadow.querySelector(".event-title").dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, clientX: titleBox.left + 20, clientY: titleBox.top + 10, pointerId: 11, button: 0,
+    }));
+    window.dispatchEvent(new PointerEvent("pointermove", {
+      clientX: titleBox.left + 20, clientY: titleBox.top - 40, pointerId: 11,
+    }));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 11 }));
+    check("confirmation card moves from its title", savedHost.getBoundingClientRect().top < beforeMove.top - 20);
+    await settle();
+    const savedResize = shadow.querySelector(".resize-se");
+    const handleBox = savedResize.getBoundingClientRect();
+    check("confirmation resize corner hidden and reachable", Number(getComputedStyle(savedResize).opacity) === 0 &&
+      shadow.elementFromPoint(handleBox.left + handleBox.width / 2, handleBox.top + handleBox.height / 2).closest(".resize") === savedResize);
+    const beforeResize = savedHost.getBoundingClientRect();
+    savedResize.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true, cancelable: true, clientX: handleBox.left + 8, clientY: handleBox.top + 8, pointerId: 12, button: 0,
+    }));
+    window.dispatchEvent(new PointerEvent("pointermove", {
+      clientX: handleBox.left - 42, clientY: handleBox.top - 42, pointerId: 12,
+    }));
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 12 }));
+    check("confirmation card resizes", savedHost.getBoundingClientRect().width < beforeResize.width - 5);
+    check("layout changes keep saved event", shadow.querySelector(".success").hidden === false && creates().length === 2);
+
 
     field.value = "Move it";
     nextResult = {
@@ -338,7 +381,9 @@ const page = `<!DOCTYPE html>
     check("right resize hit areas are compact", [".resize-ne", ".resize-se"].every((selector) => {
       const control = shadow.querySelector(selector);
       const style = getComputedStyle(control);
-      return style.width === "16px" && style.height === "16px";
+      const size = selector === ".resize-se" && shadow.querySelector(".card").classList.contains("expanded") ? "28px" : "16px";
+      check("resize size " + selector + ": " + style.width + " x " + style.height + " expected " + size, Math.abs(parseFloat(style.width) - parseFloat(size)) < 0.1 && Math.abs(parseFloat(style.height) - parseFloat(size)) < 0.1);
+      return Math.abs(parseFloat(style.width) - parseFloat(size)) < 0.1 && Math.abs(parseFloat(style.height) - parseFloat(size)) < 0.1;
     }));
     function curveAligned(label) {
       const card = shadow.querySelector(".card");

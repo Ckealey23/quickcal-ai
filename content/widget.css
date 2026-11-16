@@ -42,9 +42,19 @@
 .resize-sw { bottom: -8px; left: -8px; cursor: nesw-resize; }
 .resize-se { right: -8px; bottom: -8px; width: 16px; height: 16px; cursor: nwse-resize; }
 
-.resize-nw:hover,
-.resize-nw:focus-visible {
-  opacity: 1;
+.resize-se svg {
+  transform: rotate(180deg);
+}
+
+.panel:has(.card.expanded) .resize-se {
+  right: -3px;
+  bottom: -3px;
+  width: 28px;
+  height: 28px;
+}
+
+.resize {
+  touch-action: none;
 }
 
 .resize:focus-visible {
@@ -58,6 +68,7 @@
 }
 
 .bar {
+  position: relative;
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -68,20 +79,38 @@
   border: 1px solid rgba(220, 232, 247, 0.95);
   border-radius: 30px;
   background: #f7faff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+  box-shadow: 0 10px 24px -10px rgba(53, 50, 45, 0.08);
   pointer-events: auto;
 }
 
-.bar:has(.input:focus-visible),
-.bar:has(.dismiss:focus-visible) {
-  outline: none;
-  box-shadow:
-    0 0 0 1px rgba(138, 164, 214, 0.4),
-    0 0 0 6px rgba(138, 164, 214, 0.16),
-    0 0 22px 2px rgba(138, 164, 214, 0.32),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+/* Decorative only: the SVG never intercepts typing, dragging, or controls. */
+.border-orbit {
+  position: absolute;
+  inset: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 3px rgba(84, 193, 245, 0.45));
+}
+
+.border-orbit rect {
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  rx: 29px;
+  fill: none;
+  stroke-width: 1.8px;
+  stroke-linecap: round;
+  animation: quickcal-border-orbit 9s linear infinite;
+}
+
+.card.expanded .border-orbit rect {
+  rx: 17px;
+}
+
+@keyframes quickcal-border-orbit {
+  from { stroke-dashoffset: var(--orbit-offset); }
+  to { stroke-dashoffset: calc(var(--orbit-offset) - 100px); }
 }
 
 .input {
@@ -99,7 +128,7 @@
   caret-color: #35322d;
   font-family: Inter, "Segoe UI", sans-serif;
   font-size: 15px;
-  font-style: italic;
+  font-style: normal;
   font-weight: 400;
   line-height: 1.4;
 }
@@ -242,6 +271,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .bar.recording .rec-dot { animation: none; }
+  .border-orbit { display: none; }
 }
 
 .connect-route,
@@ -312,6 +342,8 @@
 }
 
 .card.expanded {
+  cursor: grab;
+  touch-action: none;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -320,9 +352,7 @@
   border: 1px solid #dce8f7;
   border-radius: 30px 30px 20px 20px;
   background: #f7faff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+  box-shadow: 0 10px 24px -10px rgba(53, 50, 45, 0.08);
   pointer-events: auto;
 }
 
@@ -334,12 +364,6 @@
   border-radius: 18px;
   background: #ffffff;
   box-shadow: none;
-}
-
-.card.expanded .bar:has(.input:focus-visible) {
-  box-shadow:
-    0 0 0 2px rgba(138, 164, 214, 0.55),
-    0 0 0 5px rgba(138, 164, 214, 0.14);
 }
 
 .card.clarifying .body {
@@ -575,7 +599,7 @@
   z-index: 2;
 }
 
-.panel.docs-open .bar:not(:has(.input:focus-visible)):not(:has(.dismiss:focus-visible)) {
+.panel.docs-open .bar {
   box-shadow: none;
 }
 
@@ -601,9 +625,7 @@
   box-sizing: border-box;
   border: 1px solid rgba(220, 232, 247, 0.95);
   background: #f7faff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 10px 24px -10px rgba(53, 50, 45, 0.08);
+  box-shadow: 0 10px 24px -10px rgba(53, 50, 45, 0.08);
   pointer-events: auto;
   transition: clip-path 240ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
@@ -1265,9 +1287,7 @@
   border: 1px solid #dce8f7;
   border-radius: 14px;
   background: #ffffff;
-  box-shadow:
-    0 0 18px 0 rgba(191, 215, 255, 0.2),
-    0 12px 24px -10px rgba(53, 50, 45, 0.18);
+  box-shadow: 0 12px 24px -10px rgba(53, 50, 45, 0.18);
   pointer-events: auto;
 }
 
