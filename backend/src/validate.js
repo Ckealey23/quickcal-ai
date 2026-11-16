@@ -4,6 +4,8 @@ import { normalizeCurrentEvent, normalizeDraft, normalizeRecurrence, normalizeRe
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const EVENT_FIELDS = [
+  "kind",
+  "description",
   "title",
   "date",
   "startTime",
@@ -39,6 +41,11 @@ const OPERATION_FIELDS = [
 ];
 const CONTEXT_FIELDS = OPERATION_FIELDS.concat(["intent", "missing", "prompt", "candidates"]);
 const PREFERENCES = ["morning", "afternoon", "evening", "later"];
+const KINDS = ["event", "task"];
+// A task is due on a date, so questions about an event's schedule do not apply.
+const SCHEDULE_QUESTION = /\b(date|time|when|what day|which day|start|end|duration|how long)\b/i;
+export const RECURRING_TASK_QUESTION =
+  "QuickCalAI can't create repeating Google Tasks yet. Should this be a repeating calendar event instead?";
 
 export function isValidTimeZone(timeZone) {
   if (typeof timeZone !== "string") return false;
@@ -312,10 +319,15 @@ export function validateExtraction(raw, requestedTimeZone) {
   const failure = { ok: false, error: "The model returned an event that failed validation." };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
   const keys = Object.keys(raw);
-  const requiredFields = EVENT_FIELDS.filter((field) => field !== "notificationAction" && field !== "notificationOverrides");
+  const optionalFields = ["kind", "description", "notificationAction", "notificationOverrides"];
+  const requiredFields = EVENT_FIELDS.filter((field) => !optionalFields.includes(field));
   if (requiredFields.some((field) => !Object.hasOwn(raw, field))) return failure;
   if (keys.some((key) => !EVENT_FIELDS.includes(key))) return failure;
 
+  const kind = raw.kind == null ? "event" : raw.kind;
+  if (!KINDS.includes(kind)) return failure;
+  const description = optionalText(raw.description == null ? null : raw.description, 1000);
+  if (!description.ok) return failure;
   const title = optionalText(raw.title, 200);
   const date = optionalDate(raw.date);
   const startTime = optionalTime(raw.startTime);
@@ -343,6 +355,10 @@ export function validateExtraction(raw, requestedTimeZone) {
     if (!trimmed) continue;
     if (trimmed.length > 240) return failure;
     addQuestion(questions, trimmed);
+  }
+
+  if (kind === "task" && (raw.intent === "create" || raw.intent === "edit")) {
+    return validatedTask(raw, title.value, description.value, date.value, startTime.value, recurrence.recurrence, questions, operation.operation);
   }
 
   let needsClarification = raw.needsClarification;
@@ -391,6 +407,34 @@ export function validateExtraction(raw, requestedTimeZone) {
       clarificationQuestions: questions,
       intent: raw.intent,
       operation: operation.operation,
+    },
+  };
+}
+
+// A Google Task has a title and an optional due date. The startTime field holds
+// a due time only when the user stated one; it is never filled in.
+function validatedTask(raw, title, description, date, dueTime, recurrence, modelQuestions, operation) {
+  const questions = modelQuestions.filter((question) => !SCHEDULE_QUESTION.test(question));
+  if (!title) addQuestion(questions, "What should the task be called?");
+  if (recurrence) addQuestion(questions, RECURRING_TASK_QUESTION);
+  return {
+    ok: true,
+    event: {
+      kind: "task",
+      description: description,
+      title: title,
+      date: date,
+      startTime: dueTime,
+      endTime: null,
+      timeZone: raw.timeZone,
+      location: null,
+      recurrence: null,
+      notificationAction: "preserve",
+      notificationOverrides: [],
+      needsClarification: questions.length > 0,
+      clarificationQuestions: questions,
+      intent: raw.intent,
+      operation: operation,
     },
   };
 }

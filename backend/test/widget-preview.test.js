@@ -564,7 +564,7 @@ const page = `<!DOCTYPE html>
     };
     release();
     await settle();
-    check("weekly saved", shadow.textContent.includes("Event successfully created") && shadow.textContent.includes("Every Friday") && shadow.textContent.includes("No end date") && shadow.textContent.includes("America/Los_Angeles"));
+    check("weekly saved", shadow.textContent.includes("Event successfully created") && shadow.textContent.includes("Every Friday") && shadow.textContent.includes("No end date") && !shadow.textContent.includes("America/Los_Angeles"));
     check("weekly edit link", shadow.querySelector("a.action").href === "https://calendar.google.com/calendar/r/eventedit/weekly");
     const updatesBeforeSeries = updates().length;
     field.value = "Move it to 7 PM";

@@ -10,9 +10,25 @@ import { bearerToken } from "./auth.js";
 import { ParseError } from "./parse.js";
 import { MAX_AUDIO_BYTES, TRANSCRIBE_TIMEOUT_MS, audioKind } from "./transcribe.js";
 import { validateRequest } from "./validate.js";
+import {
+  ANALYZE_TIMEOUT_MS,
+  EXTRACT_TIMEOUT_MS,
+  MAX_ANALYZE_BODY_BYTES,
+  MAX_DOCUMENT_BYTES,
+  documentKind,
+  validateAnalyzeRequest,
+} from "./documents.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
-export const QUICKCAL_API_VERSION = 4;
+export const QUICKCAL_API_VERSION = 5;
+export const QUICKCAL_CAPABILITIES = [
+  "event-notifications",
+  "calendar-operations",
+  "availability-search",
+  "tasks",
+  "document-analysis",
+];
+const PREFLIGHT_PATHS = ["/health", "/access", "/parse-event", "/transcribe", "/extract-document", "/analyze-document"];
 
 function publicRelease(value) {
   const release = typeof value === "string" ? value.trim() : "";
@@ -117,6 +133,9 @@ function readBody(request) {
 export function createHandler({
   parseEvent,
   transcribeAudio = null,
+  extractText = null,
+  analyzeDocument = null,
+  documentHeartbeatMs = 10_000,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
@@ -126,6 +145,192 @@ export function createHandler({
 }) {
   const quickcalRelease = publicRelease(release);
   return async function handle(request, response) {
+    // Document routes share the parser's sign-in and per-account rate limit.
+    async function admit(request, response) {
+      if (!requireAuth) return true;
+      if (typeof rateLimit !== "function") {
+        sendJson(request, response, 503, { error: "QuickCalAI is not available." });
+        finishUnread(request);
+        return false;
+      }
+      const identity = await identify(request);
+      if (!identity.ok) {
+        sendJson(request, response, identity.status, { error: identity.error });
+        finishUnread(request);
+        return false;
+      }
+      const limit = rateLimit(identity.userId);
+      if (!limit || !limit.ok) {
+        const status = limit && Number.isInteger(limit.status) ? limit.status : 429;
+        const extra = limit && limit.retryAfterSeconds
+          ? { "Retry-After": String(limit.retryAfterSeconds) }
+          : undefined;
+        sendJson(request, response, status, {
+          error: limit && limit.error ? limit.error : "Too many event requests. Try again later.",
+        }, extra);
+        finishUnread(request);
+        return false;
+      }
+      return true;
+    }
+
+    // The file arrives as raw bytes and is held in memory only while its text
+    // is read. Nothing is written to disk.
+    async function handleExtract(request, response) {
+      if (request.method !== "POST") {
+        sendJson(request, response, 405, { error: "Method not allowed." });
+        return;
+      }
+      const kind = documentKind(request.headers["content-type"]);
+      if (!kind) {
+        sendJson(request, response, 415, { error: "QuickCalAI reads PDF, DOCX, and TXT files." });
+        finishUnread(request);
+        return;
+      }
+      const size = declaredLength(request);
+      if (Number.isNaN(size)) {
+        sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
+        finishUnread(request);
+        return;
+      }
+      if (size != null && size > MAX_DOCUMENT_BYTES) {
+        sendJson(request, response, 413, { error: "This file is larger than 2 MB." });
+        request.destroy();
+        return;
+      }
+      if (typeof extractText !== "function") {
+        sendJson(request, response, 503, { error: "Document reading is not available on this server." });
+        finishUnread(request);
+        return;
+      }
+      if (!(await admit(request, response))) return;
+      let bytes;
+      try {
+        bytes = await readLimited(request, MAX_DOCUMENT_BYTES, "This file is larger than 2 MB.");
+      } catch (error) {
+        if (error instanceof ParseError) {
+          sendJson(request, response, error.status, { error: error.message });
+          return;
+        }
+        sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
+        return;
+      }
+      if (!bytes.length) {
+        sendJson(request, response, 400, { error: "This file is empty." });
+        return;
+      }
+      try {
+        const read = await withDeadline(
+          extractText(bytes, kind),
+          EXTRACT_TIMEOUT_MS + 2_000,
+          "Reading this document took too long. Upload a shorter section."
+        );
+        sendJson(request, response, 200, {
+          ok: true,
+          kind: kind,
+          text: read.text,
+          pages: read.pages == null ? null : read.pages,
+          characters: read.text.length,
+          quickcalApiVersion: QUICKCAL_API_VERSION,
+        });
+      } catch (error) {
+        if (error instanceof ParseError) {
+          sendJson(request, response, error.status, { error: error.message });
+          return;
+        }
+        sendJson(request, response, 500, { error: "QuickCalAI could not read this document." });
+      }
+    }
+
+    // Analysis can outlast the 30 seconds a Chrome extension waits for response
+    // headers, so the 200 status goes out early and spaces keep the response
+    // moving. The JSON body carries the real outcome, including any error.
+    async function handleAnalyze(request, response) {
+      if (request.method !== "POST") {
+        sendJson(request, response, 405, { error: "Method not allowed." });
+        return;
+      }
+      if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+        sendJson(request, response, 415, { error: "Content-Type must be application/json." });
+        finishUnread(request);
+        return;
+      }
+      const size = declaredLength(request);
+      if (Number.isNaN(size)) {
+        sendJson(request, response, 400, { error: "QuickCalAI could not read the request." });
+        finishUnread(request);
+        return;
+      }
+      if (size != null && size > MAX_ANALYZE_BODY_BYTES) {
+        sendJson(request, response, 413, { error: "This document is too long. Upload a shorter section." });
+        request.destroy();
+        return;
+      }
+      if (typeof analyzeDocument !== "function") {
+        sendJson(request, response, 503, { error: "Document analysis is not available on this server." });
+        finishUnread(request);
+        return;
+      }
+      if (!(await admit(request, response))) return;
+      let body;
+      try {
+        const raw = await readLimited(request, MAX_ANALYZE_BODY_BYTES, "This document is too long. Upload a shorter section.");
+        body = JSON.parse(raw.toString("utf8"));
+      } catch (error) {
+        if (error instanceof ParseError) {
+          sendJson(request, response, error.status, { error: error.message });
+          return;
+        }
+        sendJson(request, response, 400, { error: "Request body must be JSON." });
+        return;
+      }
+      const input = validateAnalyzeRequest(body);
+      if (!input.ok) {
+        sendJson(request, response, 400, { error: input.error });
+        return;
+      }
+      const heartbeat = setInterval(() => {
+        if (response.destroyed || response.writableEnded) return;
+        if (!response.headersSent) {
+          response.writeHead(200, Object.assign({
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          }, corsHeaders(request)));
+        }
+        response.write(" ");
+      }, documentHeartbeatMs);
+      const finish = (status, payload) => {
+        if (response.destroyed || response.writableEnded) return;
+        if (!response.headersSent) {
+          sendJson(request, response, status, payload);
+          return;
+        }
+        const safe = status >= 400
+          ? { ok: false, status: status, error: publicMessage(request, payload.error) }
+          : payload;
+        response.end(JSON.stringify(safe));
+      };
+      try {
+        const result = await withDeadline(
+          analyzeDocument(input),
+          ANALYZE_TIMEOUT_MS,
+          "The document analysis timed out. Narrow the request or upload a shorter section."
+        );
+        finish(200, {
+          ok: true,
+          items: result.items,
+          warning: result.warning || null,
+          quickcalApiVersion: QUICKCAL_API_VERSION,
+        });
+      } catch (error) {
+        finish(error instanceof ParseError ? error.status : 500, {
+          error: error instanceof ParseError ? error.message : "QuickCalAI could not analyze this document.",
+        });
+      } finally {
+        clearInterval(heartbeat);
+      }
+    }
+
     async function identify(request) {
       if (!requireAuth) return { ok: true, userId: "" };
       if (typeof authenticate !== "function") {
@@ -151,7 +356,7 @@ export function createHandler({
     }
 
     const url = new URL(request.url || "/", "http://" + HOST);
-    if (request.method === "OPTIONS" && (url.pathname === "/health" || url.pathname === "/access" || url.pathname === "/parse-event" || url.pathname === "/transcribe")) {
+    if (request.method === "OPTIONS" && PREFLIGHT_PATHS.includes(url.pathname)) {
       if (request.headers.origin !== EXTENSION_ORIGIN) {
         sendJson(request, response, 403, { error: "Origin is not allowed." });
         return;
@@ -173,7 +378,7 @@ export function createHandler({
         apiKeyConfigured: Boolean(apiKeyConfigured),
         quickcalApiVersion: QUICKCAL_API_VERSION,
         quickcalRelease: quickcalRelease,
-        capabilities: ["event-notifications", "calendar-operations", "availability-search"],
+        capabilities: QUICKCAL_CAPABILITIES,
       });
       return;
     }
@@ -276,6 +481,14 @@ export function createHandler({
         }
         sendJson(request, response, 500, { error: "QuickCalAI could not complete that request." });
       }
+      return;
+    }
+    if (url.pathname === "/extract-document") {
+      await handleExtract(request, response);
+      return;
+    }
+    if (url.pathname === "/analyze-document") {
+      await handleAnalyze(request, response);
       return;
     }
     if (url.pathname !== "/parse-event") {
@@ -385,6 +598,9 @@ export function startServer({
   port = 0,
   parseEvent,
   transcribeAudio = null,
+  extractText = null,
+  analyzeDocument = null,
+  documentHeartbeatMs = 10_000,
   apiKeyConfigured = false,
   requireAuth = false,
   authenticate = null,
@@ -396,6 +612,9 @@ export function startServer({
     createHandler({
       parseEvent,
       transcribeAudio,
+      extractText,
+      analyzeDocument,
+      documentHeartbeatMs,
       apiKeyConfigured,
       requireAuth,
       authenticate,
@@ -408,7 +627,7 @@ export function startServer({
       }
     });
   });
-  server.requestTimeout = Math.max(SERVER_REQUEST_TIMEOUT_MS, TRANSCRIBE_TIMEOUT_MS + 15_000);
+  server.requestTimeout = Math.max(SERVER_REQUEST_TIMEOUT_MS, TRANSCRIBE_TIMEOUT_MS + 15_000, ANALYZE_TIMEOUT_MS + 15_000);
   server.headersTimeout = HEADER_TIMEOUT_MS;
   server.keepAliveTimeout = 5_000;
   return new Promise((resolve, reject) => {

@@ -53,6 +53,7 @@
       const trimmed = question.trim();
       if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
     });
+    if (event.kind === "task") return taskModel(event, questions);
     const endDate = event.endDate || event.date;
     const recurring = !!event.recurrence;
     const saveable =
@@ -77,6 +78,42 @@
       questions: questions,
       saveable: saveable,
     };
+  }
+
+  function taskDueTime(value) {
+    const clock = formatClock(value);
+    return clock ? "Due " + clock.text + " " + clock.suffix : "";
+  }
+
+  // Google Tasks keeps a due date only, so a stated due time is shown here and
+  // written into the task notes rather than dropped.
+  function taskModel(event, questions) {
+    const schedule = scheduleApi();
+    return {
+      kind: "task",
+      title: event.title || "",
+      date: event.date ? (schedule ? schedule.formatCompactDate(event.date) : formatFullDate(event.date)) : "No due date",
+      time: taskDueTime(event.startTime),
+      timeZone: "",
+      location: "",
+      durationDefaulted: false,
+      recurrenceText: "",
+      seriesEndText: "",
+      remindersText: "",
+      questions: questions,
+      saveable: event.needsClarification !== true && !!event.title && questions.length === 0,
+    };
+  }
+
+  function trustedTasksUrl(value) {
+    if (typeof value !== "string" || !value) return "";
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.hostname !== "tasks.google.com") return "";
+      return url.href;
+    } catch (error) {
+      return "";
+    }
   }
 
   function trustedCalendarUrl(value) {
@@ -125,6 +162,8 @@
     formatFullDate: formatFullDate,
     formatTimeRange: formatTimeRange,
     previewModel: previewModel,
+    taskDueTime: taskDueTime,
+    tasksLink: trustedTasksUrl,
     calendarEditLink: calendarEditLink,
     calendarViewLink: calendarViewLink,
   };

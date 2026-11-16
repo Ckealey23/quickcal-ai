@@ -20,7 +20,8 @@ importScripts(
   "shared/session.js",
   "shared/lookup.js",
   "shared/conflicts.js",
-  "shared/availability.js"
+  "shared/availability.js",
+  "shared/documents.js"
 );
 
 const SUPPORTED_PAGE = /^https?:\/\//i;
@@ -55,6 +56,8 @@ const WIDGET_FILES = [
   "shared/selection.js",
   "shared/layout.js",
   "shared/lookup.js",
+  "shared/time-options.js",
+  "shared/documents.js",
   "content/widget.js",
 ];
 const WIDGET_MESSAGE = "quickcal-widget";
@@ -647,6 +650,32 @@ function withConflictScopeHint(result, probe) {
   });
 }
 
+const TASKS_PROBE_URL = "https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=1&fields=items(id)";
+
+// A token from before Tasks was added lacks that scope. Reconnecting fixes it;
+// a Tasks API that is turned off for the project does not, so it is not flagged.
+async function probeTasksScope() {
+  const probe = await calendarCall(TASKS_PROBE_URL, { method: "GET" });
+  if (probe.ok || probe.status !== 403) return { ok: true };
+  const failure = tasksFailure(probe, "");
+  return { ok: false, needsScope: failure.state === "needsTasksScope" };
+}
+
+async function withTasksScopeHint(result) {
+  if (!result || (result.state !== "ready" && result.state !== "connected")) return result;
+  let probe;
+  try {
+    probe = await probeTasksScope();
+  } catch (error) {
+    return result;
+  }
+  if (!probe.needsScope) return result;
+  return Object.assign({}, result, {
+    needsTasksScope: true,
+    message: result.message || TASKS_SCOPE_MESSAGE,
+  });
+}
+
 async function refreshStatus() {
   if (await isSuppressed()) return disconnected();
 
@@ -661,11 +690,13 @@ async function refreshStatus() {
   if (!calendar || calendar.state !== "connected") return calendar;
   const access = accessResult(calendar, await verifyAccess(token));
   if (!access || (access.state !== "ready" && access.state !== "connected")) return access;
+  let checked = access;
   try {
-    return withConflictScopeHint(access, await probeConflictScopes());
+    checked = withConflictScopeHint(access, await probeConflictScopes());
   } catch (error) {
-    return access;
+    checked = access;
   }
+  return withTasksScopeHint(checked);
 }
 
 async function connectCalendar() {
@@ -694,11 +725,13 @@ async function connectCalendar() {
   }
   const access = accessResult(calendar, await verifyAccess(token));
   if (!access || (access.state !== "ready" && access.state !== "connected")) return access;
+  let checked = access;
   try {
-    return withConflictScopeHint(access, await probeConflictScopes());
+    checked = withConflictScopeHint(access, await probeConflictScopes());
   } catch (error) {
-    return access;
+    checked = access;
   }
+  return withTasksScopeHint(checked);
 }
 
 async function disconnectCalendar() {
@@ -1347,6 +1380,7 @@ async function saveWidgetEventOnce(prepared) {
 }
 
 function saveWidgetEvent(event) {
+  if (event && event.kind === "task") return saveWidgetTask(event);
   const prepared = self.QuickCalSchedule.prepareForSave(event);
   if (!prepared) {
     return Promise.resolve({
@@ -1411,7 +1445,7 @@ async function patchWidgetEvent(stored, prepared) {
   return publicSavedEvent(saved);
 }
 
-function updateWidgetEvent(event) {
+function updateWidgetEvent(event, expectedId) {
   const prepared = self.QuickCalSchedule.prepareForSave(event);
   if (!prepared) {
     return Promise.resolve({
@@ -1427,6 +1461,11 @@ function updateWidgetEvent(event) {
         error: "Connect Google Calendar before changing this event.",
       };
     }
+    // The shown event must be the one QuickCal remembers, or the change would
+    // land on a different event.
+    if (expectedId && stored.id !== expectedId) {
+      return { ok: false, error: "QuickCalAI could not find that event to change. Open it in Google Calendar instead." };
+    }
     const key = "update:" + stored.id;
     const current = widgetSaves.get(key);
     if (current) return current;
@@ -1436,6 +1475,191 @@ function updateWidgetEvent(event) {
     widgetSaves.set(key, promise);
     return promise;
   });
+}
+
+const TASK_RECEIPT_KEY = "quickcalTaskReceipt";
+const TASKS_LIST_URL = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks";
+const TASK_FIELDS = "id,title,notes,due,status,deleted,webViewLink,updated";
+const TASKS_SCOPE_MESSAGE = "Reconnect Google so QuickCalAI can create Google Tasks.";
+const TASKS_DISABLED_MESSAGE =
+  "Google Tasks is not enabled for QuickCalAI's Google Cloud project. Enable the Google Tasks API, then try again.";
+
+function taskInsertUrl() {
+  return TASKS_LIST_URL + "?fields=" + encodeURIComponent(TASK_FIELDS);
+}
+
+function taskReadUrl(id) {
+  return TASKS_LIST_URL + "/" + encodeURIComponent(id) + "?fields=" + encodeURIComponent(TASK_FIELDS);
+}
+
+function taskRecoveryUrl(updatedMin) {
+  return TASKS_LIST_URL +
+    "?showCompleted=true&showHidden=true&maxResults=100&updatedMin=" + encodeURIComponent(updatedMin) +
+    "&fields=" + encodeURIComponent("items(" + TASK_FIELDS + ")");
+}
+
+function tasksLink(value) {
+  return self.QuickCalPreview.tasksLink(value) || "https://tasks.google.com/";
+}
+
+// Google Tasks stores only the date part of `due`, so a stated due time goes
+// into the notes where the user can still see it.
+function prepareTask(event) {
+  if (!event || event.kind !== "task" || event.needsClarification) return null;
+  const title = typeof event.title === "string" ? event.title.trim() : "";
+  if (!title || title.length > 200) return null;
+  const date = event.date == null ? null : event.date;
+  if (date !== null && !self.QuickCalSchedule.resolveLocal(date, "00:00", "UTC").ok) return null;
+  const dueTime = event.startTime == null ? null : event.startTime;
+  if (dueTime !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(dueTime)) return null;
+  const description = typeof event.description === "string" ? event.description.trim().slice(0, 1000) : "";
+  const dueText = self.QuickCalPreview.taskDueTime(dueTime);
+  const notes = [description, dueText ? dueText + "." : "", WIDGET_DESCRIPTION].filter(Boolean).join("\n\n");
+  return {
+    fingerprint: JSON.stringify({ kind: "task", title: title, date: date, dueTime: dueTime, notes: notes }),
+    title: title,
+    notes: notes,
+    due: date ? date + "T00:00:00.000Z" : null,
+    date: date,
+    dueTime: dueTime,
+    description: description,
+    timeZone: typeof event.timeZone === "string" ? event.timeZone : "UTC",
+  };
+}
+
+function publicSavedTask(prepared, body) {
+  return {
+    ok: true,
+    kind: "task",
+    id: body.id,
+    summary: prepared.title,
+    title: prepared.title,
+    description: prepared.description || null,
+    date: prepared.date,
+    endDate: prepared.date,
+    startTime: prepared.dueTime,
+    endTime: null,
+    dateText: prepared.date ? self.QuickCalSchedule.formatCompactDate(prepared.date) : "No due date",
+    timeText: self.QuickCalPreview.taskDueTime(prepared.dueTime),
+    timeZone: prepared.timeZone,
+    htmlLink: tasksLink(body.webViewLink),
+    location: null,
+    recurrence: null,
+    reminders: { useDefault: false, overrides: [] },
+    remindersText: "",
+    recurrenceText: "",
+    seriesEndText: "",
+  };
+}
+
+function confirmedTask(prepared, body) {
+  if (!body || typeof body.id !== "string" || !body.id || body.deleted === true) return false;
+  if (body.title !== prepared.title || (body.notes || "") !== prepared.notes) return false;
+  const due = typeof body.due === "string" ? body.due.slice(0, 10) : null;
+  return due === prepared.date;
+}
+
+function tasksFailure(result, fallback) {
+  const callFailure = callFailed(result);
+  if (callFailure) {
+    return { ok: false, state: "disconnected", error: "Connect Google before saving this task." };
+  }
+  if (result.network) {
+    return { ok: false, error: "QuickCalAI could not reach Google Tasks. Check your connection and try again." };
+  }
+  const detail = result.body && result.body.error ? result.body.error : {};
+  const reasons = (Array.isArray(detail.errors) ? detail.errors : []).map((item) => item && item.reason).join(" ");
+  const message = [typeof detail.message === "string" ? detail.message : "", reasons, detail.status || ""].join(" ");
+  if (/accessNotConfigured|SERVICE_DISABLED|has not been used|is disabled/i.test(message)) {
+    return { ok: false, error: TASKS_DISABLED_MESSAGE };
+  }
+  if (result.status === 403) {
+    return { ok: false, state: "needsTasksScope", error: TASKS_SCOPE_MESSAGE };
+  }
+  return { ok: false, error: fallback + " (" + (result.status || "unknown") + ")." };
+}
+
+async function loadTaskReceipt() {
+  const stored = await chrome.storage.local.get(TASK_RECEIPT_KEY);
+  const receipt = stored[TASK_RECEIPT_KEY];
+  if (!receipt || typeof receipt !== "object" || typeof receipt.fingerprint !== "string") return null;
+  if (receipt.phase !== "pending" && receipt.phase !== "created") return null;
+  return receipt;
+}
+
+async function saveTaskReceipt(receipt) {
+  await chrome.storage.local.set({ [TASK_RECEIPT_KEY]: receipt });
+}
+
+// Google Tasks has no client-chosen ids, so an uncertain insert is resolved by
+// looking for the exact task written since the attempt began.
+async function recoverTask(prepared, startedAt) {
+  const listed = await calendarCall(taskRecoveryUrl(startedAt), { method: "GET" });
+  if (!listed.ok || !listed.body || !Array.isArray(listed.body.items)) return null;
+  return listed.body.items.find((item) => confirmedTask(prepared, item)) || null;
+}
+
+async function saveWidgetTaskOnce(prepared) {
+  const denied = missingCalendarGrant(await refreshStatus(), "Connect Google before saving this task.");
+  if (denied) return denied;
+
+  const receipt = await loadTaskReceipt();
+  if (receipt && receipt.fingerprint === prepared.fingerprint) {
+    if (receipt.phase === "created" && receipt.id) {
+      const existing = await calendarCall(taskReadUrl(receipt.id), { method: "GET" });
+      if (existing.ok && confirmedTask(prepared, existing.body)) return publicSavedTask(prepared, existing.body);
+      if (!existing.ok && !existing.notFound && existing.status !== 410) {
+        return tasksFailure(existing, "Google Tasks could not be checked");
+      }
+    } else if (receipt.phase === "pending" && receipt.startedAt) {
+      const found = await recoverTask(prepared, receipt.startedAt);
+      if (found) {
+        await saveTaskReceipt({ fingerprint: prepared.fingerprint, phase: "created", id: found.id }).catch(() => {});
+        return publicSavedTask(prepared, found);
+      }
+    }
+  }
+
+  const startedAt = new Date(Date.now() - 60000).toISOString();
+  try {
+    await saveTaskReceipt({ fingerprint: prepared.fingerprint, phase: "pending", startedAt: startedAt });
+  } catch (error) {
+    return { ok: false, error: "QuickCalAI could not save this task request." };
+  }
+  const body = { title: prepared.title, notes: prepared.notes };
+  if (prepared.due) body.due = prepared.due;
+  const created = await calendarCall(taskInsertUrl(), { method: "POST", body: JSON.stringify(body) });
+  if (created.ok && confirmedTask(prepared, created.body)) {
+    await saveTaskReceipt({ fingerprint: prepared.fingerprint, phase: "created", id: created.body.id }).catch(() => {});
+    return publicSavedTask(prepared, created.body);
+  }
+  if (created.ok) return { ok: false, error: "Google Tasks did not confirm the saved task." };
+  const uncertain = created.network || (created.status && created.status >= 500);
+  if (!uncertain) return tasksFailure(created, "Google Tasks could not save this task");
+  const found = await recoverTask(prepared, startedAt);
+  if (found) {
+    await saveTaskReceipt({ fingerprint: prepared.fingerprint, phase: "created", id: found.id }).catch(() => {});
+    return publicSavedTask(prepared, found);
+  }
+  return {
+    ok: false,
+    error: "QuickCalAI could not confirm whether this task was saved. Check Google Tasks, then try again.",
+  };
+}
+
+function saveWidgetTask(event) {
+  const prepared = prepareTask(event);
+  if (!prepared) {
+    return Promise.resolve({ ok: false, error: "This task needs a title before it can be saved." });
+  }
+  const key = "task:" + prepared.fingerprint;
+  const current = widgetSaves.get(key);
+  if (current) return current;
+  const promise = saveWidgetTaskOnce(prepared).finally(() => {
+    widgetSaves.delete(key);
+  });
+  widgetSaves.set(key, promise);
+  return promise;
 }
 
 async function activeWidgetEvent() {
@@ -1486,7 +1710,9 @@ async function checkHealth() {
         Array.isArray(body.capabilities) &&
         body.capabilities.includes("event-notifications") &&
         body.capabilities.includes("calendar-operations") &&
-        body.capabilities.includes("availability-search")
+        body.capabilities.includes("availability-search") &&
+        body.capabilities.includes("tasks") &&
+        body.capabilities.includes("document-analysis")
       );
       if (body && body.ok === true && !compatible) {
         const release = typeof body.quickcalRelease === "string" ? " (running " + body.quickcalRelease + ")" : "";
@@ -1845,6 +2071,7 @@ function reply(result) {
     googleConnected: !!(result && result.googleConnected === true),
     quickcalReady: !!(result && result.quickcalReady === true),
     needsReconnect: !!(result && result.needsReconnect === true),
+    needsTasksScope: !!(result && result.needsTasksScope === true),
   };
   if (result && result.testEvent && typeof result.testEvent === "object") {
     safe.testEvent = publicTestEvent(result.testEvent);
@@ -2379,7 +2606,7 @@ async function evaluateScheduleConflicts(saved) {
     }
     events.items.forEach((item) => {
       if (!api.isBusyCandidate(item)) return;
-      if (api.isSavedEvent(item, saved, calendar.id)) {
+      if (api.isSavedEvent(item, saved, calendar.id, calendar.primary)) {
         const interval = api.intervalFromGoogleTimes(item.start, item.end);
         if (interval && (calendar.id === savedCalendar || calendar.primary)) {
           ourIntervals.push(interval);
@@ -2448,16 +2675,38 @@ async function evaluateScheduleConflicts(saved) {
   });
 }
 
+// An overlap warning is shown for a few seconds, then removed from the shared
+// session so it cannot linger into later requests.
+const CONFLICT_NOTICE_MS = 5000;
+const expiredConflictChecks = new Set();
+
+function expireConflictNotice(incognito, checkId) {
+  expiredConflictChecks.add(checkId);
+  if (expiredConflictChecks.size > 50) expiredConflictChecks.delete(expiredConflictChecks.values().next().value);
+  return mutateWidgetSession(incognito, (latest) => {
+    const current = latest.conflictNotice;
+    if (!current || current.checkId !== checkId) return latest;
+    return Object.assign({}, latest, {
+      conflictNotice: null,
+      statusText: latest.statusText === current.statusText ? "" : latest.statusText,
+      revision: latest.revision + 1,
+    });
+  });
+}
+
 async function applyConflictNotice(incognito, checkId, saved, notice) {
   const api = self.QuickCalConflicts;
   if (!api || !notice) return null;
+  if (expiredConflictChecks.has(checkId)) return null;
   notice.checkId = checkId;
   notice.savedEventId = saved && saved.id ? saved.id : notice.savedEventId || "";
-  return mutateWidgetSession(incognito, (latest) => {
+  let applied = false;
+  const session = await mutateWidgetSession(incognito, (latest) => {
     if (!api.noticeStillCurrent(latest, notice)) return latest;
     if (latest.conflictNotice && latest.conflictNotice.checkId && latest.conflictNotice.checkId !== checkId) {
       return latest;
     }
+    applied = true;
     const statusText = notice.status === "clear" && !notice.horizonText ? "" : notice.statusText;
     return Object.assign({}, latest, {
       conflictNotice: notice,
@@ -2466,6 +2715,12 @@ async function applyConflictNotice(incognito, checkId, saved, notice) {
       revision: latest.revision + 1,
     });
   });
+  if (applied && notice.status === "conflicts" && typeof setTimeout === "function") {
+    setTimeout(() => {
+      expireConflictNotice(incognito, checkId).catch(() => {});
+    }, CONFLICT_NOTICE_MS);
+  }
+  return session;
 }
 
 function availabilitySearchId() {
@@ -2891,7 +3146,7 @@ async function saveAvailabilitySlot(incognito, operation, query, zone, slot, for
   const finished = await mutateWidgetSession(incognito, (after) => {
     if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
     if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
-      const checking = self.QuickCalConflicts
+      const checking = self.QuickCalConflicts && saveResult.kind !== "task"
         ? self.QuickCalConflicts.checkingNotice("pending", saveResult)
         : null;
       const saved = self.QuickCalSession.finishOperation(after, operation, {
@@ -3509,7 +3764,7 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
       draftEvent: editing ? null : result.event,
       draftText: text,
       lookup: null,
-      statusText: editing ? "Updating event\u2026" : "Creating event\u2026",
+      statusText: editing ? "Updating event\u2026" : result.event.kind === "task" ? "Creating task\u2026" : "Creating event\u2026",
       statusError: false,
     });
   });
@@ -3520,7 +3775,7 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
   const finished = await mutateWidgetSession(incognito, (after) => {
     if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
     if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
-      const checking = self.QuickCalConflicts
+      const checking = self.QuickCalConflicts && saveResult.kind !== "task"
         ? self.QuickCalConflicts.checkingNotice("pending", saveResult)
         : null;
       const saved = self.QuickCalSession.finishOperation(after, operation, {
@@ -3548,10 +3803,566 @@ async function runWidgetSubmit(incognito, text, timeZone, operation, editing, cl
     });
     return kept.accepted ? kept.state : after;
   });
-  if (saveResult && saveResult.ok === true && saveResult.htmlLink) {
+  if (saveResult && saveResult.ok === true && saveResult.htmlLink && saveResult.kind !== "task") {
     return scheduleConflictCheck(incognito, saveResult);
   }
   return finished;
+}
+
+// ---------------------------------------------------------------------------
+// Document review. A document is read into text once; the text stays in
+// chrome.storage.session (cleared when the browser closes) and never in the
+// shared panel state. Nothing is written to Google until the user approves
+// individual items and asks to create them.
+
+const DOC_TEXT_PREFIX = "quickcalDocText:";
+const DOC_TEXT_TTL_MS = 2 * 60 * 60 * 1000;
+const DOC_BUSY = ["reading", "analyzing", "creating"];
+const DOC_EXTRACT_TIMEOUT_MS = 45000;
+const DOC_ANALYZE_TIMEOUT_MS = 130000;
+const docJobs = new Map();
+
+function blankDoc() {
+  return {
+    id: "d" + self.QuickCalDocuments.randomId(12),
+    open: true,
+    phase: "empty",
+    file: null,
+    instructions: "",
+    history: [],
+    seq: 0,
+    message: "",
+    messageError: false,
+    warning: "",
+    items: [],
+    timeZone: "",
+    analyzedAt: "",
+  };
+}
+
+async function saveDocText(id, text) {
+  const store = sessionStore();
+  if (!store) throw new Error("No session storage.");
+  await store.set({ [DOC_TEXT_PREFIX + id]: { text: text, expiresAt: Date.now() + DOC_TEXT_TTL_MS } });
+}
+
+async function loadDocText(id) {
+  const store = sessionStore();
+  if (!store || !id) return "";
+  const key = DOC_TEXT_PREFIX + id;
+  const stored = await store.get(key);
+  const entry = stored ? stored[key] : null;
+  if (!entry || typeof entry.text !== "string") return "";
+  if (!(entry.expiresAt > Date.now())) {
+    await store.remove(key).catch(() => {});
+    return "";
+  }
+  return entry.text;
+}
+
+function dropDocText(id) {
+  const store = sessionStore();
+  if (!store || !id) return Promise.resolve();
+  return Promise.resolve(store.remove(DOC_TEXT_PREFIX + id)).catch(() => {});
+}
+
+// Long document requests outlast the service worker's idle timer, so a cheap
+// extension call keeps it alive until the response arrives.
+function keepWorkerAlive() {
+  const timer = setInterval(() => {
+    if (chrome.runtime && typeof chrome.runtime.getPlatformInfo === "function") {
+      Promise.resolve(chrome.runtime.getPlatformInfo()).catch(() => {});
+    }
+  }, 20000);
+  return () => clearInterval(timer);
+}
+
+async function hostedToken() {
+  if (await isSuppressed()) return { ok: false, state: "disconnected", error: "Connect Google Calendar before using QuickCalAI." };
+  let token = "";
+  try {
+    token = await requestToken(false);
+  } catch (error) {
+    token = "";
+  }
+  if (!token) return { ok: false, state: "disconnected", error: "Connect Google Calendar before using QuickCalAI." };
+  return { ok: true, token: token };
+}
+
+async function hostedDocumentCall(url, options, timeoutMs) {
+  const auth = await hostedToken();
+  if (!auth.ok) return auth;
+  const release = keepWorkerAlive();
+  let response;
+  let raw = "";
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      credentials: "omit",
+      headers: Object.assign({ Authorization: "Bearer " + auth.token }, options.headers),
+      body: options.body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    raw = await response.text();
+  } catch (error) {
+    const name = error && error.name;
+    return {
+      ok: false,
+      error: name === "TimeoutError" || name === "AbortError"
+        ? "QuickCalAI took too long with this document. Try a shorter section or a narrower request."
+        : "QuickCalAI could not reach QuickCal. Try again.",
+    };
+  } finally {
+    release();
+  }
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    payload = null;
+  }
+  if (response.status === 401) return { ok: false, state: "disconnected", error: "Connect Google Calendar before using QuickCalAI." };
+  if (!response.ok || !payload || payload.ok !== true) {
+    const message = payload && typeof payload.error === "string" ? payload.error.slice(0, 300) : "";
+    return { ok: false, error: message || "QuickCalAI could not read this document. Try again." };
+  }
+  if (payload.quickcalApiVersion !== self.QuickCalLocalParse.API_VERSION) {
+    return { ok: false, error: "QuickCalAI's hosted parser is out of date. Deploy the current backend, then reload the extension." };
+  }
+  return { ok: true, payload: payload };
+}
+
+function docStatus(doc, patch) {
+  return Object.assign({}, doc, { message: "", messageError: false }, patch);
+}
+
+// Applies `change(doc, state)` to the shared session's document. Returning
+// null leaves the session untouched. `statePatch` updates other session
+// fields in the same write.
+function mutateDoc(incognito, change, statePatch) {
+  return mutateWidgetSession(incognito, (state) => {
+    const next = change(state.doc || null, state);
+    if (next === null || next === undefined) return state;
+    return Object.assign({}, state, statePatch || {}, { doc: next, revision: state.revision + 1 });
+  });
+}
+
+// A step whose service worker stopped part way is reported, not left spinning.
+function settleInterrupted(doc) {
+  if (!doc || DOC_BUSY.indexOf(doc.phase) === -1 || docJobs.has(doc.id)) return doc;
+  const phase = doc.items.length ? "review" : doc.file && doc.phase !== "reading" ? "ready" : doc.file ? "unreadable" : "empty";
+  return docStatus(doc, { phase: phase, message: "That step was interrupted. Try again.", messageError: true });
+}
+
+function sameDoc(doc, message) {
+  return !!(doc && message && message.docId === doc.id);
+}
+
+function decodeUpload(data, size) {
+  if (typeof data !== "string" || data.length > Math.ceil(self.QuickCalDocuments.MAX_FILE_BYTES / 3) * 4 + 4) return null;
+  let binary;
+  try {
+    binary = atob(data);
+  } catch (error) {
+    return null;
+  }
+  if (binary.length !== size) return null;
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function looksLike(kind, bytes) {
+  const head = String.fromCharCode.apply(null, Array.from(bytes.subarray(0, Math.min(1024, bytes.length))));
+  if (kind === "pdf") return head.indexOf("%PDF-") !== -1;
+  if (kind === "docx") return bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+  return bytes.subarray(0, 4096).indexOf(0) === -1 || (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+}
+
+async function attachDocument(incognito, message) {
+  const api = self.QuickCalDocuments;
+  const name = typeof message.name === "string" ? message.name.trim() : "";
+  const checked = api.checkFile({ name: name, size: message.size });
+  const bytes = checked.ok ? decodeUpload(message.data, message.size) : null;
+  let problem = checked.ok ? "" : checked.error;
+  if (!problem && !bytes) problem = "QuickCalAI could not read this file. Try choosing it again.";
+  if (!problem && !looksLike(checked.kind, bytes)) {
+    problem = "This file's contents do not match its ." + checked.kind + " name.";
+  }
+  let previousId = "";
+  let doc = null;
+  const state = await mutateDoc(incognito, (current, session) => {
+    if (message.sessionId && message.sessionId !== session.sessionId) return null;
+    if (current && docJobs.has(current.id)) return null;
+    previousId = current ? current.id : "";
+    doc = Object.assign(blankDoc(), {
+      phase: problem ? "unreadable" : "reading",
+      file: { name: name.slice(0, 255) || "Document", size: message.size, kind: checked.kind || "", pages: null, characters: null },
+      seq: 1,
+      message: problem || "Reading " + (name || "the document") + "\u2026",
+      messageError: !!problem,
+    });
+    return doc;
+  });
+  if (!doc) return { ok: false, ignored: true, session: state };
+  if (previousId) dropDocText(previousId);
+  if (problem) return { ok: false, session: state };
+
+  const job = (async () => {
+    const result = await hostedDocumentCall(self.QuickCalLocalParse.EXTRACT_URL, {
+      headers: { "Content-Type": checked.mime },
+      body: bytes,
+    }, DOC_EXTRACT_TIMEOUT_MS);
+    let stored = false;
+    if (result.ok && typeof result.payload.text === "string" && result.payload.text.trim()) {
+      try {
+        await saveDocText(doc.id, result.payload.text);
+        stored = true;
+      } catch (error) {
+        stored = false;
+      }
+    }
+    return mutateDoc(incognito, (current) => {
+      if (!current || current.id !== doc.id || current.seq !== doc.seq) return null;
+      if (!stored) {
+        return docStatus(current, {
+          phase: "unreadable",
+          message: result.ok ? "QuickCalAI could not keep this document's text. Try again." : result.error,
+          messageError: true,
+          needsConnect: result.state === "disconnected",
+        });
+      }
+      return docStatus(current, {
+        phase: "ready",
+        file: Object.assign({}, current.file, {
+          pages: Number.isInteger(result.payload.pages) ? result.payload.pages : null,
+          characters: result.payload.text.length,
+        }),
+      });
+    });
+  })();
+  docJobs.set(doc.id, job);
+  try {
+    return { ok: true, session: await job };
+  } finally {
+    docJobs.delete(doc.id);
+  }
+}
+
+async function analyzeDocument(incognito, message) {
+  const api = self.QuickCalDocuments;
+  const instructions = typeof message.instructions === "string" ? message.instructions.trim().slice(0, 2000) : "";
+  const timeZone = typeof message.timeZone === "string" && message.timeZone ? message.timeZone : "UTC";
+  let job = null;
+  const state = await mutateDoc(incognito, (current) => {
+    const doc = settleInterrupted(current);
+    if (!sameDoc(doc, message) || docJobs.has(doc.id)) return null;
+    if (doc.phase !== "ready" && doc.phase !== "review") return null;
+    job = { id: doc.id, seq: doc.seq + 1, history: doc.instructions ? doc.history.concat([doc.instructions]).slice(-4) : doc.history };
+    return docStatus(doc, {
+      phase: "analyzing",
+      seq: job.seq,
+      pending: instructions,
+      message: "Finding " + (instructions ? "matching items" : "dates and deadlines") + " in " + doc.file.name + "\u2026",
+    });
+  }, { input: "" });
+  if (!job) return { ok: false, ignored: true, session: state };
+  const run = (async () => {
+    const text = await loadDocText(job.id);
+    const result = text
+      ? await hostedDocumentCall(self.QuickCalLocalParse.ANALYZE_URL, {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: text,
+          instructions: instructions,
+          history: job.history,
+          timeZone: timeZone,
+          fileName: state.doc.file.name,
+        }),
+      }, DOC_ANALYZE_TIMEOUT_MS)
+      : { ok: false, error: "QuickCalAI no longer has this document's text. Remove the file and upload it again." };
+    return mutateDoc(incognito, (current) => {
+      // Only the newest request may change the list.
+      if (!current || current.id !== job.id || current.seq !== job.seq) return null;
+      const back = current.items.length ? "review" : "ready";
+      if (!result.ok) {
+        return docStatus(current, { phase: back, pending: "", message: result.error, messageError: true, needsConnect: result.state === "disconnected" });
+      }
+      const proposals = api.sanitizeItems(result.payload.items);
+      const items = api.mergeDecisions(current.items, proposals);
+      const warning = typeof result.payload.warning === "string" ? result.payload.warning.slice(0, 400) : "";
+      return docStatus(current, {
+        phase: "review",
+        pending: "",
+        instructions: instructions,
+        history: job.history,
+        items: items,
+        warning: warning,
+        timeZone: timeZone,
+        analyzedAt: current.analyzedAt || new Date().toISOString(),
+        message: proposals.length ? "" : warning || "No matching items were found in this document.",
+      });
+    });
+  })();
+  docJobs.set(job.id, run);
+  try {
+    return { ok: true, session: await run };
+  } finally {
+    docJobs.delete(job.id);
+  }
+}
+
+function changeDocItem(incognito, message, update) {
+  let error = "";
+  return mutateDoc(incognito, (current) => {
+    const doc = settleInterrupted(current);
+    if (!sameDoc(doc, message) || doc.phase === "creating" || doc.phase === "analyzing") return null;
+    const index = doc.items.findIndex((item) => item.id === message.itemId);
+    if (index === -1) return null;
+    const changed = update(doc.items[index]);
+    if (!changed.ok) {
+      error = changed.error;
+      return docStatus(doc, { message: changed.error, messageError: true });
+    }
+    const items = doc.items.slice();
+    items[index] = changed.item;
+    return docStatus(doc, { items: items });
+  }).then((session) => ({ ok: !error, error: error || undefined, session: session }));
+}
+
+async function insertDocumentEvent(item, fileName, timeZone) {
+  const body = self.QuickCalDocuments.eventBody(item, fileName, timeZone, self.QuickCalSchedule);
+  if (!body) return { ok: false, error: "This event needs a date and a start time." };
+  const readUrl = CALENDAR_EVENTS_URL + "/" + encodeURIComponent(body.id) + "?fields=id,status,htmlLink";
+  const confirmed = (found) => {
+    if (!found || found.id !== body.id || found.status === "cancelled") return null;
+    return { ok: true, kind: "event", id: found.id, link: safeCalendarLink(found.htmlLink) };
+  };
+  const existing = await calendarCall(readUrl, { method: "GET" });
+  if (existing.ok) {
+    return confirmed(existing.body) || { ok: false, error: "This event was deleted in Google Calendar." };
+  }
+  const created = await calendarCall(CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=id,status,htmlLink", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (created.ok && confirmed(created.body)) return confirmed(created.body);
+  const failure = callFailed(created);
+  if (failure) return { ok: false, state: "disconnected", error: "Connect Google Calendar, then retry." };
+  if (created.status === 403) return { ok: false, error: "Google Calendar did not allow QuickCalAI to create this event." };
+  if (created.status === 400) return { ok: false, error: "Google Calendar rejected this event's details." };
+  // The id is fixed, so checking again can only find this item's own event.
+  const check = await calendarCall(readUrl, { method: "GET" });
+  if (check.ok && confirmed(check.body)) return confirmed(check.body);
+  return { ok: false, error: "QuickCalAI could not confirm this event. Retrying will not create a duplicate." };
+}
+
+async function findDocumentTask(item, since) {
+  const listed = await calendarCall(taskRecoveryUrl(since), { method: "GET" });
+  if (!listed.ok || !listed.body || !Array.isArray(listed.body.items)) return null;
+  const marker = "(ref " + item.ref + ")";
+  return listed.body.items.find((task) => task && !task.deleted && typeof task.notes === "string" && task.notes.indexOf(marker) !== -1) || null;
+}
+
+async function insertDocumentTask(item, fileName, since) {
+  const body = self.QuickCalDocuments.taskBody(item, fileName, self.QuickCalPreview.taskDueTime(item.startTime));
+  if (!body) return { ok: false, error: "This task needs a title." };
+  const saved = (task) => ({ ok: true, kind: "task", id: task.id, link: tasksLink(task.webViewLink) });
+  if (item.result) {
+    const earlier = await findDocumentTask(item, since);
+    if (earlier) return saved(earlier);
+  }
+  const created = await calendarCall(taskInsertUrl(), { method: "POST", body: JSON.stringify(body) });
+  if (created.ok && created.body && created.body.id) return saved(created.body);
+  if (created.network || (created.status && created.status >= 500)) {
+    const found = await findDocumentTask(item, since);
+    if (found) return saved(found);
+    return { ok: false, error: "QuickCalAI could not confirm this task. Retrying checks Google Tasks first." };
+  }
+  const failure = tasksFailure(created, "Google Tasks could not save this task");
+  return { ok: false, state: failure.state, error: failure.error };
+}
+
+function createdSummary(items) {
+  const done = items.filter((item) => item.result && item.result.ok);
+  const failed = items.filter((item) => item.decision === "approved" && item.result && !item.result.ok);
+  const events = done.filter((item) => item.kind === "event").length;
+  const tasks = done.length - events;
+  const parts = [];
+  if (events) parts.push(events + " event" + (events === 1 ? "" : "s"));
+  if (tasks) parts.push(tasks + " task" + (tasks === 1 ? "" : "s"));
+  const created = parts.length ? "Created " + parts.join(" and ") + "." : "";
+  if (!failed.length) return { message: created || "Nothing was created.", error: false };
+  return {
+    message: (created ? created + " " : "") + failed.length + " could not be created. Retry to try " + (failed.length === 1 ? "it" : "them") + " again.",
+    error: true,
+  };
+}
+
+async function createDocumentItems(incognito, message) {
+  const api = self.QuickCalDocuments;
+  let job = null;
+  const state = await mutateDoc(incognito, (current) => {
+    const doc = settleInterrupted(current);
+    if (!sameDoc(doc, message) || docJobs.has(doc.id) || doc.phase !== "review") return null;
+    const ready = api.waiting(doc.items).filter((item) => !api.itemProblem(item));
+    if (!ready.length) return docStatus(doc, { message: "Approve at least one item first.", messageError: true });
+    const tally = api.counts(doc.items);
+    job = { id: doc.id, seq: doc.seq + 1, itemIds: ready.map((item) => item.id) };
+    return docStatus(doc, {
+      phase: "creating",
+      seq: job.seq,
+      message: "Creating " + [tally.events ? tally.events + " event" + (tally.events === 1 ? "" : "s") : "", tally.tasks ? tally.tasks + " task" + (tally.tasks === 1 ? "" : "s") : ""].filter(Boolean).join(" and ") + "\u2026",
+    });
+  });
+  if (!job) return { ok: false, ignored: true, session: state };
+  const run = (async () => {
+    const doc = state.doc;
+    const timeZone = doc.timeZone || (typeof message.timeZone === "string" && message.timeZone) || "UTC";
+    const since = new Date(Date.parse(doc.analyzedAt || new Date().toISOString()) - 10 * 60000).toISOString();
+    const denied = missingCalendarGrant(await refreshStatus(), "Connect Google Calendar, then retry.");
+    for (const itemId of job.itemIds) {
+      const latest = await readWidgetSession(incognito);
+      const item = latest.doc && latest.doc.id === job.id ? latest.doc.items.find((entry) => entry.id === itemId) : null;
+      if (!item || item.decision !== "approved" || (item.result && item.result.ok)) continue;
+      let result;
+      try {
+        result = denied
+          ? { ok: false, error: denied.error }
+          : item.kind === "event"
+            ? await insertDocumentEvent(item, doc.file.name, timeZone)
+            : await insertDocumentTask(item, doc.file.name, since);
+      } catch (error) {
+        result = { ok: false, error: "QuickCalAI could not create this item." };
+      }
+      await mutateDoc(incognito, (current) => {
+        if (!current || current.id !== job.id) return null;
+        return Object.assign({}, current, {
+          items: current.items.map((entry) => (entry.id === itemId ? Object.assign({}, entry, { result: result }) : entry)),
+        });
+      });
+    }
+    return mutateDoc(incognito, (current) => {
+      if (!current || current.id !== job.id || current.seq !== job.seq) return null;
+      const summary = createdSummary(current.items);
+      return docStatus(current, { phase: "review", message: summary.message, messageError: summary.error });
+    });
+  })();
+  docJobs.set(job.id, run);
+  try {
+    return { ok: true, session: await run };
+  } finally {
+    docJobs.delete(job.id);
+  }
+}
+
+function handleDocumentMessage(message, incognito) {
+  const action = message.action;
+  if (action === "doc-open") {
+    return mutateWidgetSession(incognito, (state) => {
+      if (message.sessionId && message.sessionId !== state.sessionId) return state;
+      if (!state.visible || state.operation) return state;
+      // The document panel replaces any open event card; it never merges with it.
+      const base = state.mode === "input" ? state : self.QuickCalSession.openReset(state);
+      const doc = base.doc ? settleInterrupted(Object.assign({}, base.doc, { open: true })) : blankDoc();
+      return Object.assign({}, base, { doc: doc, revision: base.revision + 1 });
+    }).then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "doc-close") {
+    return mutateDoc(incognito, (current) => (current ? Object.assign({}, current, { open: false }) : null))
+      .then((session) => ({ ok: true, session: session }));
+  }
+  if (action === "doc-remove") {
+    let removed = "";
+    return mutateDoc(incognito, (current) => {
+      if (!sameDoc(current, message) || docJobs.has(current.id)) return null;
+      removed = current.id;
+      return blankDoc();
+    }).then((session) => {
+      if (removed) dropDocText(removed);
+      return { ok: true, session: session };
+    });
+  }
+  if (action === "doc-attach") return attachDocument(incognito, message);
+  if (action === "doc-analyze") return analyzeDocument(incognito, message);
+  if (action === "doc-decide") {
+    return changeDocItem(incognito, message, (item) => self.QuickCalDocuments.decide(item, message.decision));
+  }
+  if (action === "doc-edit") {
+    return changeDocItem(incognito, message, (item) => self.QuickCalDocuments.applyEdit(item, message.patch));
+  }
+  if (action === "doc-create") return createDocumentItems(incognito, message);
+  return Promise.resolve({ ok: false });
+}
+
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Changes only the start and end of the saved event shown in the panel. It
+// patches that event by id and never creates another one.
+function retimeSavedEvent(incognito, message) {
+  const startTime = typeof message.startTime === "string" && CLOCK_TIME.test(message.startTime) ? message.startTime : "";
+  const endTime = typeof message.endTime === "string" && CLOCK_TIME.test(message.endTime) ? message.endTime : "";
+  const eventId = typeof message.eventId === "string" ? message.eventId : "";
+  if (!startTime || !endTime || !eventId) {
+    return Promise.resolve({ ok: false, error: "Choose a valid time." });
+  }
+  let operation = null;
+  let record = null;
+  return mutateWidgetSession(incognito, (state) => {
+    if (message.sessionId && message.sessionId !== state.sessionId) return state;
+    const saved = state.savedRecord;
+    if (state.mode !== "saved" || !saved || saved.kind === "task" || saved.id !== eventId) return state;
+    const begun = self.QuickCalSession.beginOperation(
+      state,
+      "retime",
+      message.operationId || "retime-" + String(state.revision + 1),
+      state.sessionId
+    );
+    if (!begun.accepted) return state;
+    operation = begun.state.operation;
+    record = saved;
+    return Object.assign({}, begun.state, { statusText: "Updating event\u2026", statusError: false });
+  }).then(async (state) => {
+    if (!operation || !state.operation || state.operation.id !== operation.id) {
+      return { ok: false, ignored: true, session: state };
+    }
+    const event = Object.assign(savedPayload(record), {
+      startTime: startTime,
+      endTime: endTime,
+      durationDefaulted: false,
+      needsClarification: false,
+      clarificationQuestions: [],
+    });
+    let result;
+    try {
+      result = await updateWidgetEvent(event, record.id);
+    } catch (error) {
+      result = { ok: false, error: "QuickCalAI could not update this event." };
+    }
+    const updated = !!(result && result.ok === true && result.htmlLink);
+    const session = await mutateWidgetSession(incognito, (after) => {
+      if (!self.QuickCalSession.operationCurrent(after, operation)) return after;
+      const checking = updated && self.QuickCalConflicts ? self.QuickCalConflicts.checkingNotice("pending", result) : null;
+      const finished = self.QuickCalSession.finishOperation(after, operation, updated
+        ? {
+          mode: "saved",
+          savedRecord: result,
+          statusText: checking ? checking.statusText : "",
+          statusError: false,
+          conflictNotice: checking,
+        }
+        : {
+          statusText: result && result.error ? result.error : "QuickCalAI could not update this event.",
+          statusError: true,
+        });
+      return finished.accepted ? finished.state : after;
+    });
+    if (updated) {
+      const checked = await scheduleConflictCheck(incognito, result);
+      return { ok: true, session: checked || session };
+    }
+    return { ok: false, error: result && result.error, session: session };
+  });
 }
 
 function handleWidgetMessage(message, sender) {
@@ -3577,8 +4388,16 @@ function handleWidgetMessage(message, sender) {
     if (snap.phase !== "idle" && !!snap.incognito === !!incognito) {
       cancelVoice(snap.sessionId, tabId, incognito).catch(() => {});
     }
-    return mutateWidgetSession(incognito, (state) => self.QuickCalSession.dismiss(state)).then((state) => ({ ok: true, session: state }));
+    let closedDoc = "";
+    return mutateWidgetSession(incognito, (state) => {
+      closedDoc = state.doc ? state.doc.id : "";
+      return self.QuickCalSession.dismiss(state);
+    }).then((state) => {
+      if (closedDoc) dropDocText(closedDoc);
+      return { ok: true, session: state };
+    });
   }
+  if (typeof action === "string" && action.indexOf("doc-") === 0) return handleDocumentMessage(message, incognito);
   if (action === "reset") {
     return mutateWidgetSession(incognito, (state) => self.QuickCalSession.openReset(state)).then((state) => ({ ok: true, session: state }));
   }
@@ -3653,6 +4472,7 @@ function handleWidgetMessage(message, sender) {
       return runConfirmedLookup(incognito, operation, lookup).then((session) => ({ ok: true, session: session }));
     });
   }
+  if (action === "retime") return retimeSavedEvent(incognito, message);
   if (action === "submit") {
     const text = typeof message.text === "string" ? message.text.trim() : "";
     if (!text) return Promise.resolve({ ok: false, error: "Text is required." });
@@ -3660,6 +4480,9 @@ function handleWidgetMessage(message, sender) {
     let context = null;
     return mutateWidgetSession(incognito, (state) => {
       let current = state;
+      // While the document panel is open, typed text is a filter for the
+      // document, never an ordinary event request.
+      if (current.doc && current.doc.open) return state;
       if (message.fresh) current = self.QuickCalSession.openReset(current);
       if (message.sessionId && !message.fresh && message.sessionId !== current.sessionId) return state;
       const begun = self.QuickCalSession.beginOperation(
@@ -3671,7 +4494,7 @@ function handleWidgetMessage(message, sender) {
       if (!begun.accepted) return state;
       operation = begun.state.operation;
       context = {
-        editing: current.mode === "saved" && !!current.savedRecord,
+        editing: current.mode === "saved" && !!current.savedRecord && current.savedRecord.kind !== "task",
         clarification: current.mode === "clarifying" ? current.clarification : null,
         savedRecord: current.savedRecord,
         originalText: current.mode === "clarifying" && current.clarification ? current.clarification.originalText : text,
@@ -3826,7 +4649,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     if (message.action === "update") {
-      updateWidgetEvent(message.event)
+      updateWidgetEvent(message.event, typeof message.expectedId === "string" ? message.expectedId : "")
         .then((result) => sendResponse(result))
         .catch(() => sendResponse({ ok: false, error: "QuickCalAI could not update this event." }));
       return true;

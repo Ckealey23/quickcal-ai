@@ -150,13 +150,16 @@
     return !!intervalFromGoogleTimes(item.start, item.end);
   }
 
-  function isSavedEvent(item, saved, calendarId) {
+  // Google lists the primary calendar under its real id (the account email),
+  // never "primary", so the caller says whether the listed calendar is primary.
+  function isSavedEvent(item, saved, calendarId, calendarIsPrimary) {
     if (!item || !saved) return false;
     const savedCalendar = saved.calendarId || "primary";
     const sameCalendar =
       !calendarId ||
       calendarId === savedCalendar ||
-      (savedCalendar === "primary" && (calendarId === "primary" || calendarId === saved.calendarEmail));
+      (savedCalendar === "primary" &&
+        (calendarIsPrimary === true || calendarId === "primary" || calendarId === saved.calendarEmail));
     if (saved.id && item.id === saved.id && sameCalendar) return true;
     if (saved.id && item.recurringEventId === saved.id) return true;
     if (saved.recurringEventId && item.id === saved.recurringEventId) return true;

@@ -96,9 +96,9 @@ function loadBackground(hooks) {
             return {
               ok: true,
               apiKeyConfigured: true,
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 5,
               quickcalRelease: "test-revision",
-              capabilities: ["event-notifications", "calendar-operations", "availability-search"],
+              capabilities: ["event-notifications", "calendar-operations", "availability-search", "tasks", "document-analysis"],
             };
           },
         };
@@ -114,7 +114,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return {
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 5,
               quickcalRelease: "test-revision",
               title: "Coffee with Alex",
               date: "2026-10-20",
@@ -210,6 +210,7 @@ describe("customer manifest", () => {
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events.readonly",
       "https://www.googleapis.com/auth/calendar.events.freebusy",
+      "https://www.googleapis.com/auth/tasks",
       "https://www.googleapis.com/auth/userinfo.email",
     ]);
     assert.equal(manifest.host_permissions.includes("https://quickcal-ai.onrender.com/*"), true);

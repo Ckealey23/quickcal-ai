@@ -138,7 +138,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return interpreted || {
-              quickcalApiVersion: 4,
+              quickcalApiVersion: 5,
               intent: "clarify",
               timeZone: zone,
               needsClarification: true,
@@ -288,7 +288,7 @@ function operationFields(fields) {
 
 function interpreted(intent, fields) {
   return {
-    quickcalApiVersion: 4,
+    quickcalApiVersion: 5,
     quickcalRelease: "test",
     intent: intent,
     timeZone: zone,
@@ -653,7 +653,7 @@ describe("calendar lookup through the service worker", () => {
     hooks.interpret = (request) => {
       if (request.text === "make it 7 PM") {
         return {
-          quickcalApiVersion: 4,
+          quickcalApiVersion: 5,
           intent: "edit",
           title: "Meeting with Steve",
           date: today,

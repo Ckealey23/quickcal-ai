@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { createGoogleVerifier } from "./auth.js";
 import { applyEnvFile, envFilePath, startupConfig } from "./config.js";
+import { createDocumentAnalyzer, extractDocument } from "./documents.js";
 import { startServer } from "./http.js";
 import { createParser } from "./parse.js";
 import { createRateLimiter } from "./rate-limit.js";
@@ -27,6 +28,11 @@ export async function main() {
     model: speech.model,
     configError: model.error || speech.error,
   });
+  const analyzeDocument = createDocumentAnalyzer({
+    apiKey: model.apiKey,
+    model: model.model,
+    configError: model.error,
+  });
   const authenticate = auth.requireAuth
     ? createGoogleVerifier({
         clientId: auth.clientId,
@@ -43,6 +49,8 @@ export async function main() {
       port: listen.port,
       parseEvent,
       transcribeAudio,
+      extractText: extractDocument,
+      analyzeDocument,
       apiKeyConfigured: Boolean(model.apiKey),
       requireAuth: auth.requireAuth,
       authenticate,

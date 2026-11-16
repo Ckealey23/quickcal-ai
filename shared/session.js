@@ -29,6 +29,7 @@
       operation: null,
       voice: null,
       lookup: null,
+      doc: null,
     };
   }
 
@@ -50,8 +51,10 @@
     };
   }
 
+  // Closing the panel ends any document review. Starting a new event does not.
   function dismiss(state) {
     return Object.assign({}, state, cleared(state), {
+      doc: null,
       visible: false,
       sessionId: state.sessionId + "." + String(state.revision + 1),
       revision: state.revision + 1,

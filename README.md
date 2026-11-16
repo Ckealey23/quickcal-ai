@@ -176,7 +176,7 @@ Set these environment variables in Render. Mark the key and the allowlist as sec
 | `GOOGLE_CLIENT_ID` | the `oauth2.client_id` already in `manifest.json` |
 | `ALLOWED_EMAILS` | `reference.customer@example.com,second.customer@example.com` |
 
-Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Parsing and transcription share that per-account limit. Do not put the OpenAI key, the allowlist, or any shared password in the extension. Audio is kept only in memory for the request. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
+Optional: `QUICKCAL_RATE_LIMIT_MAX` (default `30`) and `QUICKCAL_RATE_LIMIT_WINDOW_MS` (default `900000`, 15 minutes). Parsing, transcription, document reading, and document analysis share that per-account limit. Do not put the OpenAI key, the allowlist, or any shared password in the extension. Audio is kept only in memory for the request. Do not add a `backend/.env` file on Render. The disk is ephemeral, and the server does not use a database. Calendar events and the extension’s retry ids stay in Google Calendar and `chrome.storage.local`.
 
 ### Google configuration for the hosted parser
 
@@ -188,11 +188,14 @@ On the OAuth consent screen, keep these scopes and add the conflict-check scopes
 - `https://www.googleapis.com/auth/calendar.calendarlist.readonly` — discover calendars available to the account
 - `https://www.googleapis.com/auth/calendar.events.readonly` — read event details on accessible calendars for conflict notices
 - `https://www.googleapis.com/auth/calendar.events.freebusy` — read busy/free blocks when event details are not available
+- `https://www.googleapis.com/auth/tasks` — create Google Tasks for to-do requests and approved document items
 - `https://www.googleapis.com/auth/userinfo.email` — verify the connected Google account for the hosted parser
+
+In the same Google Cloud project, open **APIs & Services → Library** and enable the **Google Tasks API**. The Calendar API is already enabled. Without the Tasks API, task requests fail with a message that says to enable it; calendar events keep working. Google Tasks has no narrower write scope than `tasks`, and QuickCalAI only creates tasks in the default list.
 
 Do not add `https://www.googleapis.com/auth/calendar` or a broader write scope. If the consent screen is in Testing, add each reference customer as a test user. That lets them receive a token. `ALLOWED_EMAILS` is a separate server-side list and is what decides who can call the paid parser.
 
-After these scopes are added to the Chrome OAuth client and consent screen, each tester must choose **Reconnect Google Calendar** once so the token includes them. Existing drafts and the shared conversation stay in place.
+After these scopes are added to the Chrome OAuth client and consent screen, each tester must choose **Reconnect Google Calendar** once so the token includes them. Existing drafts and the shared conversation stay in place. The options page detects a token without Tasks access and offers **Reconnect** for that case too. Depending on Chrome, an existing connection may instead show **Connect Google Calendar** after the extension updates; connecting again grants every scope at once.
 
 The token Google returns must be for this extension’s client ID and must include a verified email. The server rejects tokens issued to another client, unverified emails, and emails that are not on `ALLOWED_EMAILS`. It does not accept an email, extension origin, or shared secret sent by the client.
 
@@ -202,7 +205,25 @@ Post-save conflict checking runs in the service worker after Google confirms a c
 
 The extension calls `https://quickcal-ai.onrender.com/parse-event`. The service worker attaches the Google access token as `Authorization: Bearer`. The widget never receives that token. `GET /health` checks that Render is awake and does not call the model. `GET /access` checks that this Google account is approved. It uses the same token check as `/parse-event` and does not call the model. `POST /transcribe` accepts one microphone recording, checks the same Google account, applies the same per-user limit, and calls the transcription model. Deploy the backend that provides `/transcribe` before testing voice in Chrome. Until that deploy, voice capture can succeed and transcription will fail.
 
+`POST /extract-document` accepts one PDF, DOCX, or TXT file of up to 2 MB as raw bytes, checks the same Google account and per-user limit, and returns the file's text. It reads the file in a worker thread with a memory cap and a 20-second limit, keeps it only in memory, and never writes it to disk. Scanned PDFs without selectable text are refused with a message; there is no OCR. `POST /analyze-document` takes that text (up to 150,000 characters), the user's request, and up to four earlier requests, and returns proposed events and tasks. It never creates anything. Because analysis can take longer than the 30 seconds Chrome waits for response headers, the route sends its 200 status early and then the JSON result; errors after that point are reported inside the JSON. Neither route logs document contents. API version 5 adds these routes and the `tasks` and `document-analysis` capabilities, so deploy the backend before reloading the extension.
+
 Reference customers do not need a local server, `backend/.env`, or Node.js. After reloading the extension, each person connects Google Calendar again so the token includes the email scope.
+
+## Google Tasks
+
+A to-do request such as `Remind me to submit my report tomorrow`, `Add buy groceries to my tasks`, or `I need to finish chapter 7 by Wednesday` creates a Google Task in the default task list instead of a calendar event. It is saved immediately, like an event, and the card says **Task successfully created** with **View in Google Tasks**. A task keeps its due date when one is given and has no due date otherwise. Google Tasks stores only the date part of a due time, so a stated time such as `by 5 PM` is written into the task notes and shown on the card. QuickCalAI never invents a due date or time, does not create repeating tasks (it asks instead), and does not edit a task after it is created.
+
+## Changing a saved event's time
+
+After an event is created, its time on the success card is a button. Clicking it opens a small menu with **Start** and **End** lists in 5-minute steps, scrolled to the current times. Arrow keys move through the list, Left and Right switch lists, Enter picks, and Escape closes the menu without closing QuickCalAI. Picking a time patches that same Calendar event by id; it does not create another event. Moving the start keeps the event's length. A saved time that is not on the 5-minute grid stays listed as it is and is never rounded. Tasks have no time menu.
+
+## Documents
+
+The paperclip at the left of the bar opens a panel below the bar (or above it when the bar is near the bottom of the screen; the bar itself never moves). Drop a PDF, DOCX, or TXT file of up to 2 MB on it, or choose **Browse Files**. While the panel is open, the main input describes what to find, for example `Only find midterms and final exams` or `Create tasks for assignments rather than calendar events`. Press Enter to analyze, or choose **Analyze Document** to find all relevant dates. A later request such as `Actually, only show midterms` refines the list without another upload and keeps any decisions for items that are still listed.
+
+Each proposed item shows its date and time, details, the quote and page it came from, and notes about anything missing, assumed, or conflicting. Nothing is approved automatically. Choose **Approve**, **Skip**, or **Edit** for each item; an event without a time cannot be approved until it gets a time or is marked all day. **Create N Approved Events** creates only approved items. Each event uses an id fixed when it was proposed, so retrying after a failure never makes a duplicate, and created items are not created again. Collapsing the panel keeps the review; closing QuickCalAI discards it and the stored document text.
+
+This approval step applies only to documents. Ordinary typed or spoken requests are still created immediately.
 
 ## Event preview and save
 

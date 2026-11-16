@@ -19,6 +19,7 @@
     "http://*/*",
     "https://*/*",
     "https://www.googleapis.com/calendar/*",
+    "https://tasks.googleapis.com/*",
     "https://oauth2.googleapis.com/*",
     "https://quickcal-ai.onrender.com/*"
   ],
@@ -32,6 +33,8 @@
         "shared/selection.js",
         "shared/layout.js",
         "shared/lookup.js",
+        "shared/time-options.js",
+        "shared/documents.js",
         "content/widget.js"
       ],
       "run_at": "document_idle"
@@ -44,6 +47,7 @@
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events.readonly",
       "https://www.googleapis.com/auth/calendar.events.freebusy",
+      "https://www.googleapis.com/auth/tasks",
       "https://www.googleapis.com/auth/userinfo.email"
     ]
   },

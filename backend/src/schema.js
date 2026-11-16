@@ -2,6 +2,8 @@ export const EVENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
+    kind: { type: "string", enum: ["event", "task"] },
+    description: { type: ["string", "null"] },
     title: { type: ["string", "null"] },
     date: { type: ["string", "null"] },
     startTime: { type: ["string", "null"] },
@@ -94,6 +96,8 @@ export const EVENT_SCHEMA = {
     },
   },
   required: [
+    "kind",
+    "description",
     "title",
     "date",
     "startTime",

@@ -5,9 +5,11 @@
   const PARSE_URL = BACKEND_ORIGIN + "/parse-event";
   const HEALTH_URL = BACKEND_ORIGIN + "/health";
   const ACCESS_URL = BACKEND_ORIGIN + "/access";
+  const EXTRACT_URL = BACKEND_ORIGIN + "/extract-document";
+  const ANALYZE_URL = BACKEND_ORIGIN + "/analyze-document";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
-  const API_VERSION = 4;
+  const API_VERSION = 5;
 
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;
@@ -358,6 +360,7 @@
       return sanitizeOperation(body);
     }
     if (body.intent !== "create" && body.intent !== "edit") return null;
+    if (body.kind === "task") return sanitizeTask(body);
     const title = optionalText(body.title);
     const date = optionalDate(body.date);
     const startTime = optionalTime(body.startTime);
@@ -415,6 +418,55 @@
       clarificationQuestions: questions,
       durationDefaulted: body.durationDefaulted === true,
       intent: body.intent,
+    };
+  }
+
+  function cleanQuestions(value) {
+    if (!Array.isArray(value)) return null;
+    const questions = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (typeof value[index] !== "string") return null;
+      const trimmed = value[index].trim();
+      if (trimmed && questions.indexOf(trimmed) === -1) questions.push(trimmed);
+    }
+    return questions;
+  }
+
+  // A Google Task carries a title, an optional due date, and an optional due
+  // time the user stated. It never has an end time, a location, or a series.
+  function sanitizeTask(body) {
+    if (body.intent !== "create") return null;
+    const title = optionalText(body.title);
+    const date = optionalDate(body.date);
+    const dueTime = optionalTime(body.startTime);
+    const description = body.description == null ? null : optionalText(body.description);
+    if (title === undefined || date === undefined || dueTime === undefined || description === undefined) return null;
+    if (title && title.length > 200) return null;
+    if (description && description.length > 1000) return null;
+    if (body.endTime != null || body.recurrence != null) return null;
+    if (typeof body.timeZone !== "string" || !body.timeZone.trim()) return null;
+    if (typeof body.needsClarification !== "boolean") return null;
+    const questions = cleanQuestions(body.clarificationQuestions);
+    if (!questions) return null;
+    return {
+      kind: "task",
+      title: title,
+      description: description,
+      date: date,
+      startTime: dueTime,
+      endTime: null,
+      endDate: date,
+      timeZone: body.timeZone.trim(),
+      location: null,
+      recurrence: null,
+      reminders: { useDefault: false, overrides: [] },
+      remindersText: "",
+      recurrenceText: "",
+      seriesEndText: "",
+      needsClarification: body.needsClarification,
+      clarificationQuestions: questions,
+      durationDefaulted: false,
+      intent: "create",
     };
   }
 
@@ -501,6 +553,8 @@
     PARSE_URL: PARSE_URL,
     HEALTH_URL: HEALTH_URL,
     ACCESS_URL: ACCESS_URL,
+    EXTRACT_URL: EXTRACT_URL,
+    ANALYZE_URL: ANALYZE_URL,
     API_VERSION: API_VERSION,
     MAX_TEXT_LENGTH: MAX_TEXT_LENGTH,
     validateParseRequest: validateParseRequest,
