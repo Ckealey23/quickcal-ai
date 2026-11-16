@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { describeModelFailure, createParser } from "../src/parse.js";
+import { describeModelFailure, createParser, instructionsFor } from "../src/parse.js";
+import { referenceClock, nextWeekdayDate } from "../src/clock.js";
 import { prepareForSave } from "../src/schedule.js";
 
 const zone = "America/Los_Angeles";
@@ -74,6 +75,65 @@ describe("model request", () => {
     assert.equal(answered.title, "CPR training");
     assert.ok(prepareForSave(answered));
   });
+  it("tells the model how to resolve availability weekdays without clarifying find vs free time", () => {
+    const clock = referenceClock(new Date("2026-11-16T18:00:00.000Z"), zone);
+    const text = instructionsFor(clock, null, null, null);
+    assert.match(text, /Local date: 2026-11-16/);
+    assert.match(text, /Time zone: America\/Los_Angeles/);
+    assert.match(text, /find 30 min Wednesday evening/);
+    assert.match(text, /Do not ask whether a request is a free-time search or an existing-event search/);
+    assert.match(text, /A bare weekday such as Wednesday is a resolvable relative date/);
+    assert.match(text, /missing title must not trigger clarification for availability/i);
+    assert.match(text, /find my meeting with Steve on Wednesday/);
+    assert.equal(nextWeekdayDate(clock, "Wednesday"), "2026-11-18");
+  });
+
+  it("accepts a structured availability parse for 30 minutes Wednesday evening without a title", async () => {
+    const wednesday = "2026-11-18";
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify({
+        title: null,
+        date: null,
+        startTime: null,
+        endTime: null,
+        timeZone: zone,
+        location: null,
+        recurrence: null,
+        notificationAction: "preserve",
+        notificationOverrides: [],
+        needsClarification: false,
+        clarificationQuestions: [],
+        intent: "availability",
+        operation: Object.assign(blankOperation(), {
+          searchDate: wednesday,
+          durationMinutes: 30,
+          preference: "evening",
+          readOnly: true,
+        }),
+      }),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-11-16T18:00:00.000Z"),
+    });
+    const event = await parseEvent({
+      text: "find 30 min wednesday evening",
+      timeZone: zone,
+    });
+    assert.equal(event.intent, "availability");
+    assert.equal(event.needsClarification, false);
+    assert.equal(event.title, null);
+    assert.equal(event.operation.searchDate, wednesday);
+    assert.equal(event.operation.durationMinutes, 30);
+    assert.equal(event.operation.preference, "evening");
+    assert.equal(event.operation.readOnly, true);
+    assert.match(client.calls[0].body.instructions, /Local date: 2026-11-16/);
+  });
+
   it("makes one strict Responses call and does not retry", async () => {
     const client = fakeClient({
       status: "completed",

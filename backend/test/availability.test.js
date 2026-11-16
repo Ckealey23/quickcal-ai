@@ -4,6 +4,7 @@ import { createContext, runInContext } from "node:vm";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { validateExtraction } from "../src/validate.js";
+import { nextWeekdayDate, referenceClock } from "../src/clock.js";
 
 const root = path.resolve(import.meta.dirname, "../..");
 const zone = "America/Los_Angeles";
@@ -87,6 +88,83 @@ describe("availability search math", () => {
     assert.equal(result.preferenceLabel, "evening");
     assert.equal(result.slots[0].startTime, "17:00");
     assert.equal(result.slots[0].endTime, "17:30");
+    assert.match(api.summarizeDefaults(result), /evening 17:00/);
+  });
+
+  it("keeps today when the named window still has future slots and rolls forward after it ends", () => {
+    const api = loadAvailability();
+    const wednesday = "2026-11-18";
+    assert.equal(nextWeekdayDate(referenceClock(new Date("2026-11-18T20:00:00.000Z"), zone), "Wednesday"), wednesday);
+    const before = api.searchRange({
+      searchDate: wednesday,
+      durationMinutes: 30,
+      preference: "evening",
+      timeZone: zone,
+      nowMs: ms(wednesday, "18:00"),
+      busyIntervals: [],
+    });
+    assert.equal(before.searchDate, wednesday);
+    assert.equal(before.slots[0].startTime, "18:00");
+    const after = api.searchRange({
+      searchDate: wednesday,
+      durationMinutes: 30,
+      preference: "evening",
+      timeZone: zone,
+      nowMs: ms(wednesday, "21:00"),
+      busyIntervals: [],
+    });
+    assert.equal(after.searchDate, "2026-11-25");
+    assert.equal(after.rolledFromPastWindow, true);
+    assert.equal(after.slots[0].startTime, "17:00");
+  });
+
+  it("resolves Friday afternoon and tomorrow defaults without inventing a title requirement", () => {
+    const api = loadAvailability();
+    const friday = "2026-11-20";
+    const afternoon = api.searchRange({
+      searchDate: friday,
+      durationMinutes: 60,
+      preference: "afternoon",
+      timeZone: zone,
+      nowMs: ms(friday, "08:00"),
+      busyIntervals: [],
+    });
+    assert.equal(afternoon.windowStart, "12:00");
+    assert.equal(afternoon.windowEnd, "17:00");
+    assert.match(api.summarizeDefaults(afternoon), /afternoon/);
+    const tomorrow = api.searchRange({
+      searchDate: "2026-11-17",
+      durationMinutes: 60,
+      timeZone: zone,
+      nowMs: ms("2026-11-16", "10:00"),
+      busyIntervals: [],
+    });
+    assert.equal(tomorrow.durationMinutes, 60);
+    assert.equal(tomorrow.windowStart, "09:00");
+    assert.equal(tomorrow.slots[0].startTime, "09:00");
+    const untitled = validateExtraction({
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: "preserve",
+      notificationOverrides: [],
+      needsClarification: false,
+      clarificationQuestions: [],
+      intent: "availability",
+      operation: blankOperation({
+        searchDate: friday,
+        durationMinutes: 30,
+        preference: "evening",
+        readOnly: true,
+      }),
+    }, zone);
+    assert.equal(untitled.ok, true);
+    assert.equal(untitled.event.needsClarification, false);
+    assert.equal(untitled.event.title, null);
   });
 
   it("merges overlapping busy intervals and keeps adjacent events free", () => {

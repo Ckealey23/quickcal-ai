@@ -198,10 +198,44 @@
     return selected.slice(0, max);
   }
 
+  function windowFullyPast(date, windowStart, windowEnd, timeZone, nowMs, durationMinutes) {
+    const bounds = dayBounds(date, windowStart, windowEnd, timeZone);
+    if (!bounds) return true;
+    const duration = clampDuration(durationMinutes) * 60000;
+    const latestStart = bounds.endMs - duration;
+    return latestStart <= nowMs;
+  }
+
+  function advancePastNamedWindow(options) {
+    const preference = normalizePreference(options && options.preference);
+    if (!preference || preference === "later") return options && options.searchDate;
+    if (!options || !options.searchDate) return options && options.searchDate;
+    if (options.searchEndDate && options.searchEndDate !== options.searchDate) {
+      return options.searchDate;
+    }
+    const window = resolveWindow(options);
+    if (!window.ok) return options.searchDate;
+    const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+    if (!windowFullyPast(options.searchDate, window.start, window.end, options.timeZone, nowMs, options.durationMinutes)) {
+      return options.searchDate;
+    }
+    return addDays(options.searchDate, 7);
+  }
+
   function searchRange(options) {
-    const startDate = options && options.searchDate;
+    let startDate = options && options.searchDate;
     if (!startDate) return { ok: false, missing: "searchDate", error: "What day should I check?" };
-    const endDate = options.searchEndDate || startDate;
+    const window = resolveWindow(options || {});
+    if (!window.ok) return window;
+    const rolled = advancePastNamedWindow(Object.assign({}, options, {
+      windowStart: window.start,
+      windowEnd: window.end,
+      preference: window.preference,
+    }));
+    if (rolled && rolled !== startDate) startDate = rolled;
+    const endDate = options.searchEndDate && options.searchEndDate !== options.searchDate
+      ? options.searchEndDate
+      : startDate;
     let cursor = startDate;
     const days = [];
     for (let step = 0; step < MAX_SEARCH_DAYS; step += 1) {
@@ -218,8 +252,6 @@
         };
       }
     }
-    const window = resolveWindow(options || {});
-    if (!window.ok) return window;
     const duration = clampDuration(options.durationMinutes);
     const all = [];
     days.forEach((date) => {
@@ -242,16 +274,22 @@
       preferenceLabel: window.preferenceLabel,
       searchDate: startDate,
       searchEndDate: endDate,
+      rolledFromPastWindow: rolled !== (options && options.searchDate),
       slots: selected,
       totalFound: after.length,
     };
   }
 
   function summarizeDefaults(result) {
+    const api = scheduleApi();
     const parts = [];
+    if (result.searchDate && api) parts.push(api.formatCompactDate(result.searchDate));
     parts.push(result.durationMinutes === 60 ? "1-hour default" : result.durationMinutes + "-minute meetings");
-    parts.push(result.windowStart + "\u2013" + result.windowEnd + " local");
-    if (result.preferenceLabel) parts.push(result.preferenceLabel);
+    if (result.preferenceLabel) {
+      parts.push(result.preferenceLabel + " " + result.windowStart + "\u2013" + result.windowEnd);
+    } else {
+      parts.push(result.windowStart + "\u2013" + result.windowEnd + " local");
+    }
     return parts.join("; ");
   }
 
@@ -287,5 +325,8 @@
     slotRefs: slotRefs,
     addDays: addDays,
     normalizePreference: normalizePreference,
+    advancePastNamedWindow: advancePastNamedWindow,
+    windowFullyPast: windowFullyPast,
+    PREFERENCE_WINDOWS: PREFERENCE_WINDOWS,
   };
 })(typeof globalThis !== "undefined" ? globalThis : self);

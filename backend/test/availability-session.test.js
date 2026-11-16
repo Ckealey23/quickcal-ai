@@ -43,7 +43,7 @@ function availabilityBody(fields, title, readOnly) {
     quickcalApiVersion: 4,
     quickcalRelease: "test",
     intent: "availability",
-    title: title == null ? "Meeting with Steve" : title,
+    title: title === undefined ? "Meeting with Steve" : title,
     date: null,
     startTime: null,
     endTime: null,
@@ -305,7 +305,8 @@ describe("availability session flow", () => {
     assert.equal(hooks.posts || 0, 0);
     assert.equal(result.session.lookup.action, "availability");
     assert.equal(result.session.lookup.query.readOnly, true);
-    assert.match(result.session.lookup.prompt, /free/i);
+    assert.match(result.session.lookup.prompt, /Open times/i);
+    assert.equal(hooks.posts || 0, 0);
   });
 
   it("includes secondary-calendar busy times and labels incomplete coverage", async () => {
@@ -420,6 +421,101 @@ describe("availability session flow", () => {
     const cleared = await send(background.listener, { type: "quickcal-widget", action: "snapshot" }, 4);
     assert.equal(cleared.session.lookup, null);
     assert.equal(hooks.posts || 0, 0);
+  });
+
+  it("asks for a title only after an untitled availability slot is selected", async () => {
+    const hooks = {
+      calls: [],
+      conflictItems: [],
+      parseBody(request) {
+        if (/standup/i.test(request.text || "")) {
+          return availabilityBody({
+            selection: [],
+            searchDate: "2026-11-17",
+            target: null,
+            readOnly: false,
+          }, "Standup", false);
+        }
+        if (request.operation && /first|1|c1/i.test(request.text || "")) {
+          return availabilityBody({ selection: ["c1"], searchDate: "2026-11-17", target: null, readOnly: true }, null, true);
+        }
+        return availabilityBody({ searchDate: "2026-11-17", target: null, readOnly: true }, null, true);
+      },
+    };
+    const background = loadBackground(hooks);
+    await send(background.listener, { type: "quickcal-widget", action: "show" });
+    const sessionId = background.sessionStore.quickcalWidgetSession.sessionId;
+    const listed = await send(background.listener, {
+      type: "quickcal-widget",
+      action: "submit",
+      text: "any time Friday afternoon?",
+      timeZone: zone,
+      operationId: "avail-title-a",
+      sessionId: sessionId,
+    });
+    assert.equal(hooks.posts || 0, 0);
+    assert.equal(listed.session.lookup.action, "availability");
+    assert.equal(listed.session.lookup.query.readOnly, true);
+    assert.equal(listed.session.lookup.query.title, "");
+
+    const picked = await send(background.listener, {
+      type: "quickcal-widget",
+      action: "submit",
+      text: "The first one.",
+      timeZone: zone,
+      operationId: "avail-title-b",
+      sessionId: sessionId,
+    });
+    assert.equal(hooks.posts || 0, 0);
+    assert.equal(picked.session.lookup.awaiting, "title");
+    assert.match(picked.session.lookup.prompt, /call this event/i);
+
+    const named = await send(background.listener, {
+      type: "quickcal-widget",
+      action: "submit",
+      text: "Standup",
+      timeZone: zone,
+      operationId: "avail-title-c",
+      sessionId: sessionId,
+    });
+    assert.equal(hooks.posts, 1);
+    assert.equal(named.session.mode, "saved");
+    assert.equal(hooks.created[0].summary, "Standup");
+  });
+
+  it("searches evening openings from a stubbed availability parse without clarifying", async () => {
+    const hooks = {
+      calls: [],
+      conflictItems: [
+        eventItem("busy", "Dinner", "2026-11-18T17:00:00-08:00", "2026-11-18T18:00:00-08:00"),
+      ],
+      parseBody: availabilityBody({
+        searchDate: "2026-11-18",
+        durationMinutes: 30,
+        preference: "evening",
+        target: null,
+        readOnly: true,
+      }, null, true),
+    };
+    hooks.parseBody.title = null;
+    const background = loadBackground(hooks);
+    await send(background.listener, { type: "quickcal-widget", action: "show" });
+    const result = await send(background.listener, {
+      type: "quickcal-widget",
+      action: "submit",
+      text: "find 30 min wednesday evening",
+      timeZone: zone,
+      operationId: "avail-evening",
+      sessionId: background.sessionStore.quickcalWidgetSession.sessionId,
+    });
+    assert.equal(hooks.posts || 0, 0);
+    assert.equal(result.session.mode, "choosing");
+    assert.equal(result.session.lookup.action, "availability");
+    assert.equal(result.session.lookup.query.durationMinutes, 30);
+    assert.equal(result.session.lookup.query.preference, "evening");
+    assert.equal(result.session.lookup.candidates[0].startTime, "18:00");
+    assert.match(result.session.lookup.prompt, /evening 17:00/);
+    assert.doesNotMatch(result.session.lookup.prompt || "", /free-time search|existing event/i);
   });
 
   it("refines to Wednesday and a shorter duration without creating early", async () => {

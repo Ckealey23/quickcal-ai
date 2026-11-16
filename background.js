@@ -2616,7 +2616,7 @@ function presentAvailability(query, zone, search, extra) {
   } else if (title) {
     promptParts.push("Open times for " + title + " (" + defaults + "). Reply with a number to schedule.");
   } else {
-    promptParts.push("You're free at these times (" + defaults + ").");
+    promptParts.push("Open times (" + defaults + ").");
     if (!query.readOnly) promptParts.push("Reply with a number to schedule, or name the event.");
   }
   if (partial) {
@@ -2690,6 +2690,20 @@ async function runAvailabilitySearch(incognito, operation, query, zone, event) {
       (event && event.clarificationQuestions && event.clarificationQuestions[0]) || "What day should I check?",
       { awaiting: "searchDate", searchId: searchId }
     )));
+  }
+
+  nextQuery.date = api.advancePastNamedWindow({
+    searchDate: nextQuery.date,
+    searchEndDate: nextQuery.searchEndDate || nextQuery.date,
+    durationMinutes: nextQuery.durationMinutes,
+    windowStart: nextQuery.windowStart || undefined,
+    windowEnd: nextQuery.windowEnd || undefined,
+    preference: nextQuery.preference || undefined,
+    timeZone: zone,
+    nowMs: Date.now(),
+  }) || nextQuery.date;
+  if (!nextQuery.searchEndDate || nextQuery.searchEndDate < nextQuery.date) {
+    nextQuery.searchEndDate = nextQuery.date;
   }
 
   const window = availabilityWindowBounds(nextQuery, zone);

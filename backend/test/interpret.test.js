@@ -38,6 +38,58 @@ function loadLookup() {
 }
 
 describe("calendar interpretation", () => {
+  it("keeps find-my-meeting as find and free-time phrases as availability without a title", () => {
+    const findExisting = validateExtraction({
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: "preserve",
+      notificationOverrides: [],
+      needsClarification: false,
+      clarificationQuestions: [],
+      intent: "find",
+      operation: blankOperation({
+        target: "Steve",
+        searchDate: "2026-11-18",
+      }),
+    }, zone);
+    assert.equal(findExisting.ok, true);
+    assert.equal(findExisting.event.intent, "find");
+    assert.equal(findExisting.event.operation.target, "Steve");
+    assert.equal(findExisting.event.operation.searchDate, "2026-11-18");
+
+    const freeTime = validateExtraction({
+      title: null,
+      date: null,
+      startTime: null,
+      endTime: null,
+      timeZone: zone,
+      location: null,
+      recurrence: null,
+      notificationAction: "preserve",
+      notificationOverrides: [],
+      needsClarification: false,
+      clarificationQuestions: [],
+      intent: "availability",
+      operation: blankOperation({
+        searchDate: "2026-11-18",
+        durationMinutes: 30,
+        preference: "evening",
+        readOnly: true,
+      }),
+    }, zone);
+    assert.equal(freeTime.ok, true);
+    assert.equal(freeTime.event.intent, "availability");
+    assert.equal(freeTime.event.needsClarification, false);
+    assert.equal(freeTime.event.title, null);
+    assert.equal(freeTime.event.operation.durationMinutes, 30);
+    assert.equal(freeTime.event.operation.preference, "evening");
+  });
+
   it("validates separate search and destination fields and rejects an invented ref", () => {
     const move = validateExtraction({
       title: null,
