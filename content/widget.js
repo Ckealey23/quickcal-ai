@@ -62,6 +62,25 @@
   host.id = HOST_ID;
   const shadow = host.attachShadow({ mode: "open" });
 
+  // Use our bundled font under a private name, independent of a site's webfonts.
+  const fontReady = (async () => {
+    try {
+      const existingFont = Array.from(document.fonts).find((font) => font.family === "QuickCalAIInter");
+      if (existingFont) return await existingFont.load();
+      // Fetch through the content script and use font bytes directly. This avoids
+      // making the page load a font URL under its own font-src policy.
+      const response = await fetch(chrome.runtime.getURL("assets/fonts/InterVariable.woff2"));
+      if (!response.ok) throw new Error("Font resource unavailable");
+      const font = new FontFace("QuickCalAIInter", await response.arrayBuffer(),
+        { style: "normal", weight: "100 900", display: "swap" });
+      document.fonts.add(font);
+      return await font.load();
+    } catch (error) {
+      console.info("QuickCalAI: bundled font unavailable; using the widget fallback.");
+      return null;
+    }
+  })();
+
   const shell = document.createElement("div");
   shell.className = "shell";
 
@@ -245,6 +264,57 @@
   schedule.append(dateDetail.wrap, divider, timeDetail.wrap);
   summary.append(eventTitle, schedule);
 
+  const people = document.createElement("div");
+  people.className = "people";
+  people.hidden = true;
+  const addPeople = document.createElement("button");
+  addPeople.type = "button";
+  addPeople.className = "add-people";
+  addPeople.setAttribute("aria-expanded", "false");
+  const personIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  personIcon.setAttribute("viewBox", "0 0 24 24");
+  personIcon.setAttribute("width", "12");
+  personIcon.setAttribute("height", "12");
+  personIcon.setAttribute("aria-hidden", "true");
+  const personPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  personPath.setAttribute("d", "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M20 8v6m-3-3h6M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z");
+  personPath.setAttribute("fill", "none");
+  personPath.setAttribute("stroke", "currentColor");
+  personPath.setAttribute("stroke-width", "2.5");
+  personPath.setAttribute("stroke-linecap", "round");
+  personIcon.appendChild(personPath);
+  const personChip = document.createElement("span");
+  personChip.className = "chip";
+  personChip.appendChild(personIcon);
+  addPeople.append(personChip, document.createTextNode("Add People"));
+  const inviteForm = document.createElement("form");
+  inviteForm.id = "quickcal-invite-form";
+  inviteForm.className = "invite-form";
+  inviteForm.hidden = true;
+  addPeople.setAttribute("aria-controls", inviteForm.id);
+  const guestEmail = document.createElement("input");
+  guestEmail.type = "email";
+  guestEmail.className = "guest-email";
+  guestEmail.placeholder = "name@gmail.com";
+  guestEmail.setAttribute("aria-label", "Guest email address");
+  guestEmail.required = true;
+  guestEmail.maxLength = 254;
+  guestEmail.autocomplete = "email";
+  const sendInvite = document.createElement("button");
+  sendInvite.type = "submit";
+  sendInvite.className = "send-invite";
+  sendInvite.textContent = "Send";
+  inviteForm.append(guestEmail, sendInvite);
+  const inviteStatus = document.createElement("p");
+  inviteStatus.className = "invite-status";
+  inviteStatus.hidden = true;
+  inviteStatus.setAttribute("role", "status");
+  const inviteScope = document.createElement("p");
+  inviteScope.className = "invite-scope";
+  inviteScope.textContent = "Guests will be invited to the entire series.";
+  inviteScope.hidden = true;
+  people.append(addPeople, inviteScope, inviteForm, inviteStatus);
+
   const zoneLine = document.createElement("p");
   zoneLine.className = "meta";
   const recurrenceLine = document.createElement("p");
@@ -336,7 +406,7 @@
   batchList.setAttribute("role", "list");
 
   actions.append(retryButton, connectButton, viewLink, newButton, deleteButton, addSelectedButton, cancelButton);
-  body.append(creatingLine, successRow, summary, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, batchList, saveError, rule, actions);
+  body.append(creatingLine, successRow, summary, people, zoneLine, recurrenceLine, seriesLine, locationLine, remindersLine, noteLine, questionList, batchList, saveError, rule, actions);
   bar.append(input, listening, dismissButton, micButton, orbit);
   card.append(bar, body);
   card.setAttribute("aria-labelledby", "quickcal-event-title");
@@ -403,6 +473,30 @@
   let draftEvent = null;
   let draftText = "";
   let savedRecord = null;
+  let inviteEventId = "";
+  let inviteSending = false;
+  let inviteGeneration = 0;
+
+  function resetInvitations() {
+    inviteGeneration += 1;
+    inviteSending = false;
+    inviteEventId = "";
+    people.hidden = true;
+    inviteForm.hidden = true;
+    addPeople.setAttribute("aria-expanded", "false");
+    guestEmail.value = "";
+    guestEmail.disabled = false;
+    sendInvite.disabled = false;
+    sendInvite.textContent = "Send";
+    inviteStatus.hidden = true;
+    inviteStatus.textContent = "";
+  }
+
+  function showInviteStatus(message, error) {
+    inviteStatus.textContent = message;
+    inviteStatus.className = "invite-status" + (error ? " error" : "");
+    inviteStatus.hidden = !message;
+  }
   let clarification = null;
   const startupApi = globalThis.QuickCalStartup;
   const session = startupApi.createSession();
@@ -497,6 +591,7 @@
   }
 
   function showInputMode() {
+    resetInvitations();
     mode = "input";
     activeLookup = null;
     activeBatch = null;
@@ -715,6 +810,7 @@
   }
 
   function showCard(event) {
+    resetInvitations();
     const view = previewApi.previewModel(event);
     card.classList.add("expanded");
     body.hidden = false;
@@ -784,6 +880,7 @@
   }
 
   function showLookup(lookup) {
+    resetInvitations();
     activeLookup = lookup;
     mode = lookup.kind === "confirm" ? "confirming" : "choosing";
     deleteArmed = mode === "confirming" && !enterDown;
@@ -898,6 +995,10 @@
     clarification = null;
     card.classList.remove("clarifying");
     savedRecord = result;
+    if (inviteEventId !== (result.id || "")) resetInvitations();
+    inviteEventId = result.id || "";
+    people.hidden = !inviteEventId;
+    inviteScope.hidden = !(result.recurrence || result.recurrenceText);
     draftEvent = null;
     card.classList.add("expanded");
     body.hidden = false;
@@ -956,11 +1057,13 @@
   }
 
   function render() {
+    people.hidden = mode !== "saved" || !savedRecord || !inviteEventId;
     paintHost(host, styled && open, mode !== "input");
     if (allowFocus && styled && open && (mode === "input" || mode === "clarifying") && !pending && !saving && voicePhase === "idle") focusInput();
   }
 
   function resetConversation() {
+    resetInvitations();
     requestGeneration += 1;
     saveGeneration += 1;
     pending = false;
@@ -1073,6 +1176,8 @@
     const link = result && safeCalendarLink(result.htmlLink);
     if (result && result.ok === true && link) {
       showSaved({
+        id: result.id || "",
+        calendarId: result.calendarId || "primary",
         summary: result.summary,
         dateText: result.dateText,
         timeText: result.timeText,
@@ -1129,6 +1234,8 @@
     const link = result && safeCalendarLink(result.htmlLink);
     if (result && result.ok === true && link) {
       showSaved({
+        id: result.id || "",
+        calendarId: result.calendarId || "primary",
         summary: result.summary,
         dateText: result.dateText,
         timeText: result.timeText,
@@ -2111,6 +2218,7 @@
   }
 
   function destroy() {
+    resetInvitations();
     if (!alive) return;
     alive = false;
     requestGeneration += 1;
@@ -2131,6 +2239,53 @@
     }
   }
 
+  addPeople.addEventListener("click", () => {
+    inviteForm.hidden = !inviteForm.hidden;
+    addPeople.setAttribute("aria-expanded", String(!inviteForm.hidden));
+    allowFocus = false;
+    if (!inviteForm.hidden) guestEmail.focus();
+  });
+  inviteForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (inviteSending || !savedRecord || !inviteEventId || mode !== "saved") return;
+    guestEmail.value = guestEmail.value.trim();
+    if (!guestEmail.reportValidity()) return;
+    const email = guestEmail.value.toLowerCase();
+    const eventId = inviteEventId;
+    const generation = ++inviteGeneration;
+    inviteSending = true;
+    guestEmail.disabled = true;
+    sendInvite.disabled = true;
+    sendInvite.textContent = "Sending…";
+    showInviteStatus("", false);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: "quickcal-calendar", action: "invite", eventId,
+        calendarId: savedRecord.calendarId || "primary", email,
+      });
+      if (!alive || generation !== inviteGeneration || inviteEventId !== eventId) return;
+      if (result && result.ok) {
+        showInviteStatus(result.alreadyInvited ? email + " is already on the guest list." : "Invitation sent to " + email + ".", false);
+        guestEmail.value = "";
+      } else {
+        showInviteStatus(result && result.error || "The invitation was not confirmed. Check the event and try again.", true);
+      }
+    } catch (error) {
+      if (alive && generation === inviteGeneration) showInviteStatus("The invitation was not confirmed. Check the event before trying again.", true);
+    } finally {
+      if (generation === inviteGeneration) {
+        inviteSending = false;
+        guestEmail.disabled = false;
+        sendInvite.disabled = false;
+        sendInvite.textContent = "Send";
+      }
+    }
+  });
+  // Enter submits only this form, never a calendar edit or another event.
+  inviteForm.addEventListener("keydown", (event) => event.stopPropagation());
+  inviteForm.addEventListener("keyup", (event) => event.stopPropagation());
+
   dismissButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -2145,6 +2300,7 @@
     event.preventDefault();
     event.stopPropagation();
     discardClarification();
+    input.focus({ preventScroll: true });
   });
   addSelectedButton.addEventListener("click", (event) => {
     event.preventDefault();
@@ -2416,7 +2572,9 @@
     });
   }
 
-  stylesheet.addEventListener("load", () => {
+  stylesheet.addEventListener("load", async () => {
+    await fontReady;
+    if (!alive) return;
     styled = true;
     render();
     if (shared) {
