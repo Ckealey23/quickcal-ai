@@ -195,11 +195,17 @@ export function instructionsFor(clock, currentEvent, clarification, operation) {
     "For preserve, remove, and default, return an empty notificationOverrides array. Prevent duplicate method-and-minute pairs.",
     "Event notifications are settings on this calendar event; they are not Google Tasks and they do not guarantee delivery independently of Google Calendar and device settings.",
     "If the request only changes a notification and there is no current event, leave event fields null, set needsClarification true, and ask: Which event do you mean?",
-    "date is YYYY-MM-DD or null. startTime and endTime are 24-hour HH:mm or null.",
+    "date is YYYY-MM-DD or null. endDate is the inclusive last day for a multi-day create, otherwise null. startTime and endTime are 24-hour HH:mm or null.",
+    "allDay is true when the create has a resolved date and no usable start time, or when the text is clearly a whole-day or multi-day event such as a trip, holiday, or conference spanning days.",
     "timeZone is " + clock.timeZone + " unless the text names a different time zone. If it does, return that zone's IANA name.",
     "Do not invent an end time, a duration, a location, or a date that the text does not support.",
-    "If the date or start time cannot be determined, leave that field null, set needsClarification to true, and include one question.",
-    "If neither an end time nor a duration is stated, leave endTime null. Do not ask for an end time or a duration only because it is missing.",
+    "If the date cannot be determined for a create, leave date null, set needsClarification true, and ask one short date question.",
+    "For create, a resolved date with no start time, duration, or part-of-day preference becomes an all-day event: set allDay true, leave startTime and endTime null, and do not ask for a start time.",
+    "A bare day number such as the 18th uses the local current month and year unless other wording supplies a different month or year. next month resolves relative to the local current month, including December-to-January year rollover.",
+    "A continuous multi-day create without times, such as a trip or conference spanning days, sets date to the first inclusive day, endDate to the last inclusive day, and allDay true. Do not ask for a start time, month, or year that the local clock and wording already resolve.",
+    "Validate calendar dates. Impossible dates such as November 31 stay null with needsClarification true. Do not silently roll an invalid day into the next month.",
+    "If the text states a duration or a part-of-day preference such as morning, afternoon, or evening but no usable start clock time, leave startTime null, set allDay false, set needsClarification true, and ask for the start time or follow availability when the user is searching for an opening. Do not make that request all-day.",
+    "If neither an end time nor a duration is stated for a timed create, leave endTime null. Do not ask for an end time or a duration only because it is missing.",
     "If the text states a duration, leave endTime null unless the resulting end time is explicit.",
     "A missing location stays null and is not a reason to ask.",
     "Weekly recurrence is supported. Set recurrence.frequency to weekly and recurrence.weekdays to one or more of MO, TU, WE, TH, FR, SA, SU.",
@@ -208,15 +214,15 @@ export function instructionsFor(clock, currentEvent, clarification, operation) {
     "Leave recurrence.until and recurrence.count null when the series has no end. Do not ask for an end date only because it is missing.",
     "If the user gives a series end date, set recurrence.until to that YYYY-MM-DD and leave count null. If the user gives a number of occurrences, set count and leave until null. Do not set both.",
     "If there is no recurrence, set recurrence to null.",
-    "Finite daily date ranges and weekday patterns within a month or explicit range are supported. tmr means tomorrow. A date range with a daily time window means one timed occurrence per day, inclusive. Explicit continuous or overnight wording must not be split into daily events.",
+    "Finite daily date ranges and weekday patterns within a month or explicit range are supported when a shared daily time window is present. tmr means tomorrow. A date range with a daily time window means one timed occurrence per day, inclusive. Explicit continuous trip or overnight wording must not be split into daily timed events; use one all-day span instead.",
     "For a specified month without a year, use the local current year, including earlier dates in that month. An explicit year is exact. Understand m/w/f, Mon/Wed/Fri and full weekday names. Exclusions remove only matching dates; a nonmatching exclusion needs no question.",
-    "For a finite date pattern, return recurrence null: the server resolves the exact dates. Extract the title and shared time window. A missing time stays null; never invent a time or all-day event. Ask only: What time should I schedule these events for? when dates are known but time is missing.",
+    "For a finite daily timed pattern, return recurrence null: the server resolves the exact dates. Extract the title and shared time window. When dates are known but the shared daily time is missing, ask only: What time should I schedule these events for?",
     "Unbounded daily, monthly, yearly, or every-other-week patterns still require clarification. Do not turn them into one-time events.",
     "If the text has multiple distinct events, set needsClarification to true and ask the user to select one event. Do not create any of them.",
     "One activity on multiple resolved dates is supported and is not multiple distinct activities. If different dates need different time windows, ask how the times map to dates; never apply one of those windows silently to every date.",
-    "If the text describes an all-day event or an overnight event, set needsClarification to true and ask a question. Do not drop that information and do not turn it into one ordinary same-day timed event.",
-    "Ask only for information required to determine the schedule. Coffee with someone and no date or time still needs a date and a start time.",
+    "Ask only for information required to determine the schedule. Coffee with someone and no date still needs a date. Coffee with someone tomorrow and no time is an all-day create.",
     "Ask about a date or time only when it cannot reasonably be resolved from the request and the local clock above. Bare weekdays, today, tomorrow, morning, afternoon, and evening are resolvable for availability.",
+    "For move, destinationDate without destinationTime keeps the original local start time and duration. Do not ask for a destination time only because the new date has no clock time.",
   ];
   if (operation) {
     lines.push(
@@ -233,17 +239,21 @@ export function instructionsFor(clock, currentEvent, clarification, operation) {
   if (clarification) {
     const draft = clarification.draft || {};
     lines.push(
-      "The user is answering a follow-up about an unsaved event. This is not a change to an event already saved on the calendar.",
+      "The user is answering a follow-up about an unsaved create. Keep intent create. This is not a find, move, delete, or edit of an event already saved on the calendar.",
       "Original request: " + clarification.originalText,
       "Known title: " + (draft.title || "none"),
       "Known date: " + (draft.date || "none"),
+      "Known endDate: " + (draft.endDate || "none"),
       "Known startTime: " + (draft.startTime || "none"),
       "Known endTime: " + (draft.endTime || "none"),
+      "Known allDay: " + (draft.allDay ? "true" : "false"),
       "Known location: " + (draft.location || "none"),
       "Known notifications: " + reminderSettingsText(draft.reminders),
       "The user text is only the answer. Leave a field null when the answer does not change it.",
       "Do not drop a known field, and do not ask again for a detail that is already known.",
-      "Ask only for a missing date or start time. Do not ask for an end time only because it is missing."
+      "A date, endDate, title, or time answer completes this pending create. Do not switch to find, move, delete, or availability unless the user clearly abandons the draft and names a different calendar action.",
+      "If the pending create already has a date and no start time, keep allDay true unless the answer supplies a start time or timed preference.",
+      "Ask only for a genuinely missing date. Do not ask for a start time only because the create is date-only."
     );
     return lines.join("\n");
   }
@@ -357,6 +367,25 @@ function readModelEvent(response, timeZone, sourceText, currentEvent, clarificat
   delete event.description;
   const bounded = !currentEvent && resolveBoundedDates(clarification ? clarification.originalText : sourceText, referenceClock(now, zone));
   if (event.intent === "clarify" && bounded && !event.operation.target && (event.title || clarification?.draft.title)) event.intent = "create";
+  const clock = referenceClock(now, zone);
+  // Clarification answers continue the unsaved create draft. Do not route them
+  // into find/move/delete unless the user clearly starts a different action.
+  if (clarification) {
+    const op = event.operation || {};
+    const switching =
+      (event.intent === "move" ||
+        event.intent === "delete" ||
+        event.intent === "find" ||
+        event.intent === "availability") &&
+      !!op.target &&
+      !event.date &&
+      !event.endDate &&
+      !event.startTime &&
+      event.allDay !== true &&
+      !(event.title && clarification.draft && clarification.draft.title && event.title !== clarification.draft.title);
+    if (switching) return event;
+    return withIntent(applyClarification(event, clarification.draft, sourceText, clarification.originalText, clock), "create");
+  }
   if (
     event.intent === "move" ||
     event.intent === "delete" ||
@@ -373,10 +402,6 @@ function readModelEvent(response, timeZone, sourceText, currentEvent, clarificat
       clarificationQuestions: ["Which event do you mean?"],
     });
   }
-  const clock = referenceClock(now, zone);
-  if (clarification) {
-    return withIntent(applyClarification(event, clarification.draft, sourceText, clarification.originalText, clock), "create");
-  }
   if (currentEvent) return withIntent(applyEdit(event, currentEvent, sourceText, clock), "edit");
   return withIntent(applySchedule(event, sourceText, clock), "create");
 }
@@ -388,7 +413,8 @@ function batchInstructions(clock) {
     "Return kind batch. Use refs e1, e2, e3 in order. Return at most 10 events.",
     "If the passage clearly contains more than 10 events, set tooMany true, events to [], and explain that the user should highlight a smaller passage. Do not silently truncate.",
     "If no calendar events are present, return an empty events array and a short message.",
-    "Do not invent missing dates or start times. Leave those fields null and set needsClarification true with one short question for that draft.",
+    "Do not invent missing dates. Leave an unresolved date null and set needsClarification true with one short question for that draft.",
+    "A draft with a resolved date and no start time is all-day: set allDay true, leave startTime and endTime null, and set endDate for multi-day spans. Do not ask for a start time only because it is missing.",
     "When a start time is clear but no duration or end time is given, leave endTime null so the server can default one hour. Do not ask for a duration only because it is missing.",
     "Preserve shared context such as a date heading that applies to several events under it.",
     "One recurring series is one event. Alternative proposed times such as Tuesday or Wednesday at 3 PM are not two meetings; ask which option if needed on that draft.",

@@ -170,8 +170,10 @@
     return {
       title: event.title || null,
       date: event.date || null,
+      endDate: event.endDate || null,
       startTime: event.startTime || null,
       endTime: event.endTime || null,
+      allDay: event.allDay === true,
       timeZone: event.timeZone,
       location: event.location || null,
       recurrence: event.recurrence || null,

@@ -56,20 +56,25 @@
     if (event.kind === "task") return taskModel(event, questions);
     const endDate = event.endDate || event.date;
     const recurring = !!event.recurrence;
+    const allDay = event.allDay === true || (!event.startTime && !event.endTime && !!event.date && event.needsClarification !== true);
     const saveable =
       event.needsClarification !== true &&
       !!event.title &&
       !!event.date &&
-      !!event.startTime &&
-      !!event.endTime &&
+      (allDay || (!!event.startTime && !!event.endTime)) &&
       questions.length === 0;
     return {
       title: event.title || "",
       date: event.date && schedule ? (recurring ? schedule.formatCompactDate(event.date) : schedule.formatDateSpan(event.date, endDate)) : event.date ? formatFullDate(event.date) : "",
-      time: schedule ? schedule.formatTimeRange(event.startTime, event.endTime) : formatTimeRange(event.startTime, event.endTime),
+      time: allDay
+        ? "All day"
+        : schedule
+          ? schedule.formatTimeRange(event.startTime, event.endTime)
+          : formatTimeRange(event.startTime, event.endTime),
       timeZone: event.timeZone || "",
       location: event.location || "",
       durationDefaulted: event.durationDefaulted === true,
+      allDay: allDay,
       recurrenceText: recurring ? event.recurrenceText || (schedule ? schedule.recurrenceScheduleText(event.recurrence) : "") : "",
       seriesEndText: recurring ? event.seriesEndText || (schedule ? schedule.seriesEndText(event.recurrence) : "") : "",
       remindersText: event.remindersText || (schedule && schedule.reminderSettingsText

@@ -78,9 +78,10 @@
       const title = text(entry.title, 200);
       if (!kind || !title) return;
       const date = realDate(entry.date) ? entry.date : null;
-      const allDay = kind === "event" && entry.allDay === true;
+      const startClock = TIME.test(entry.startTime || "") ? entry.startTime : null;
+      const allDay = kind === "event" && (entry.allDay === true || (!!date && !startClock));
       const endDate = kind === "event" && date && realDate(entry.endDate) && entry.endDate > date ? entry.endDate : null;
-      const startTime = !allDay && TIME.test(entry.startTime || "") ? entry.startTime : null;
+      const startTime = !allDay ? startClock : null;
       let endTime = kind === "event" && !allDay && startTime && TIME.test(entry.endTime || "") ? entry.endTime : null;
       if (endTime && !endDate && endTime <= startTime) endTime = null;
       const issues = (Array.isArray(entry.issues) ? entry.issues : [])
@@ -198,6 +199,8 @@
       if (patch[field] !== null && !TIME.test(patch[field])) return { ok: false, error: "Choose a valid time." };
       next[field] = patch[field];
     }
+    // Adding a clock time converts an all-day proposal into a timed event.
+    if (Object.hasOwn(patch, "startTime") && next.startTime) next.allDay = false;
     if (next.kind === "task") {
       next.allDay = false;
       next.endTime = null;

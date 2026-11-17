@@ -20,7 +20,7 @@ import {
 } from "./documents.js";
 
 const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
-export const QUICKCAL_API_VERSION = 5;
+export const QUICKCAL_API_VERSION = 6;
 export const QUICKCAL_CAPABILITIES = [
   "event-notifications",
   "calendar-operations",

@@ -1703,8 +1703,10 @@
     return {
       title: event.title || null,
       date: event.date || null,
+      endDate: event.endDate || null,
       startTime: event.startTime || null,
       endTime: event.endTime || null,
+      allDay: event.allDay === true,
       timeZone: event.timeZone,
       location: event.location || null,
       recurrence: event.recurrence || null,
@@ -1725,9 +1727,11 @@
     });
     const special = questions.filter((question) => !isScheduleQuestion(question));
     if (special.length) return { question: special[0], placeholder: "Your answer" };
-    if (!event.date && !event.startTime) return { question: "What date and time?", placeholder: "Tuesday at 8 PM" };
+    if (!event.date && !event.startTime && !event.allDay) {
+      return { question: "What date and time?", placeholder: "Tuesday at 8 PM" };
+    }
     if (!event.date) return { question: "What date?", placeholder: "Tuesday" };
-    if (!event.startTime) return { question: "What time?", placeholder: "8 PM" };
+    if (!event.allDay && !event.startTime) return { question: "What time?", placeholder: "8 PM" };
     return { question: questions[0] || "What should be clarified?", placeholder: "Your answer" };
   }
 

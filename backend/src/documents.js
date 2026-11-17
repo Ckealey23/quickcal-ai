@@ -150,7 +150,7 @@ export function documentInstructions(clock) {
     "Set kind to event for something attended at a time or on a day: exams, classes, meetings, presentations, appointments, trips, conference sessions. Set kind to task for work to finish by a deadline: assignments, readings, submissions, applications. When the user asks for tasks or events explicitly, such as create tasks for assignments, follow that.",
     "Never invent a date, a year, a time, or a duration. Copy what the document states and resolve it from the document's own context, such as a term, a schedule header, or a year at the top. If a weekday or date cannot be tied to a calendar date, leave date null and add an issue.",
     "date and endDate are YYYY-MM-DD. endDate is the last day of a multi-day item, otherwise null. startTime and endTime are 24-hour HH:mm, or null when the document does not state them. For a task, startTime is a stated due time only, and endTime and endDate are null.",
-    "allDay is true only when the document says the event lasts all day or is clearly a whole-day or multi-day event such as a holiday or a trip. A missing time is not all day: leave the times null, allDay false, and add the issue Time not stated in the document.",
+    "allDay is true when the document gives a date for an event without a start time, or when the document says the event lasts all day or is clearly a whole-day or multi-day event such as a holiday, trip, or conference. Leave startTime and endTime null for all-day items. Do not invent a clock time.",
     "If the year is not written for an item, use the year the document implies and add an issue that says which year was assumed. If two parts of the document give different dates or times for the same item, keep the item once, use null for the conflicting field, and describe the conflict in issues.",
     "Return one item per real activity. When the same activity appears more than once, such as in a schedule table and in a course overview, return it once and merge the details.",
     "title is a short name taken from the document, such as Midterm Exam 1. Do not rename an item in a way that changes its meaning. description holds a short useful detail from the document, such as a room or what to bring, otherwise null. category is a one or two word label such as Exam, Assignment, Reading, Meeting, or null.",
@@ -268,6 +268,7 @@ export function validateProposals(raw, text) {
     if (startTime === undefined) startTime = null;
     if (endTime === undefined) endTime = null;
     let allDay = entry.allDay === true && kind === "event";
+    if (kind === "event" && date && !startTime) allDay = true;
     if (allDay) {
       startTime = null;
       endTime = null;
@@ -275,13 +276,13 @@ export function validateProposals(raw, text) {
     if (kind === "task") {
       endTime = null;
       endDate = null;
+      allDay = false;
     }
     if (startTime && endTime && !endDate && endTime <= startTime) {
       endTime = null;
       addIssue(issues, "The end time in the document is not after the start time.");
     }
     if (!date) addIssue(issues, kind === "task" ? "No due date in the document." : "Date not stated in the document.");
-    if (kind === "event" && date && !allDay && !startTime) addIssue(issues, "Time not stated in the document.");
     if (date && !statesYear(text, date.slice(0, 4))) {
       addIssue(issues, "The document doesn't state the year. QuickCalAI assumed " + date.slice(0, 4) + ".");
     }

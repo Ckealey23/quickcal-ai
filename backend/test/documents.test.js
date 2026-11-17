@@ -105,7 +105,8 @@ describe("proposal validation", () => {
     assert.equal(result.items.length, 4);
     const [offsite, report, workshop, party] = result.items;
     assert.equal(offsite.startTime, null);
-    assert.ok(offsite.issues.includes("Time not stated in the document."));
+    assert.equal(offsite.allDay, true);
+    assert.equal(offsite.issues.includes("Time not stated in the document."), false);
     assert.ok(offsite.issues.includes("The document doesn't state the year. QuickCalAI assumed 2027."));
     assert.equal(report.endTime, null, "a task has no end time");
     assert.equal(report.endDate, null);
@@ -232,7 +233,7 @@ describe("document routes", { concurrency: false }, () => {
     const body = await ok.json();
     assert.equal(body.text, "Midterm: Oct 12, 2026");
     assert.equal(body.pages, 1);
-    assert.equal(body.quickcalApiVersion, 5);
+    assert.equal(body.quickcalApiVersion, 6);
 
     const image = await fetch(base + "/extract-document", { method: "POST", headers: Object.assign({ "Content-Type": "image/png" }, auth), body: Buffer.from("x") });
     assert.equal(image.status, 415);
@@ -289,7 +290,7 @@ describe("document routes", { concurrency: false }, () => {
 
   it("advertises document analysis and tasks", async () => {
     const health = await (await fetch(base + "/health")).json();
-    assert.equal(health.quickcalApiVersion, 5);
+    assert.equal(health.quickcalApiVersion, 6);
     assert.ok(health.capabilities.includes("tasks"));
     assert.ok(health.capabilities.includes("document-analysis"));
   });

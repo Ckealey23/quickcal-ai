@@ -940,6 +940,16 @@ function eventInsertUrl() {
 }
 
 function insertBody(record) {
+  if (record.allDay) {
+    return JSON.stringify({
+      id: record.id,
+      summary: record.summary,
+      description: record.description,
+      start: { date: record.date },
+      end: { date: record.exclusiveEndDate || self.QuickCalSchedule.exclusiveEndDate(record.endDate || record.date) },
+      reminders: { useDefault: false },
+    });
+  }
   return JSON.stringify({
     id: record.id,
     summary: record.summary,
@@ -1245,6 +1255,8 @@ function scheduleFields(source) {
     endDate: source.endDate,
     startTime: source.startTime,
     endTime: source.endTime,
+    allDay: source.allDay === true,
+    exclusiveEndDate: source.exclusiveEndDate || "",
     recurrence: source.recurrence || null,
     recurrenceRule: source.recurrenceRule || "",
     recurrenceText: source.recurrenceText || "",
@@ -1277,6 +1289,7 @@ function publicSavedEvent(record) {
     endDate: record.endDate,
     startTime: record.startTime,
     endTime: record.endTime,
+    allDay: record.allDay === true,
     startDateTime: record.startDateTime || "",
     endDateTime: record.endDateTime || "",
     location: record.location || null,
@@ -1295,10 +1308,17 @@ function widgetInsertBody(record) {
     id: record.id,
     summary: record.summary,
     description: record.description,
-    start: { dateTime: record.startDateTime, timeZone: record.timeZone },
-    end: { dateTime: record.endDateTime, timeZone: record.timeZone },
     reminders: record.reminders || { useDefault: false, overrides: [] },
   };
+  if (record.allDay) {
+    body.start = { date: record.date };
+    body.end = {
+      date: record.exclusiveEndDate || self.QuickCalSchedule.exclusiveEndDate(record.endDate || record.date),
+    };
+  } else {
+    body.start = { dateTime: record.startDateTime, timeZone: record.timeZone };
+    body.end = { dateTime: record.endDateTime, timeZone: record.timeZone };
+  }
   if (record.location) body.location = record.location;
   if (record.recurrenceRule) body.recurrence = [record.recurrenceRule];
   return JSON.stringify(body);
@@ -1546,7 +1566,7 @@ function saveWidgetEvent(event, options) {
   if (!prepared) {
     return Promise.resolve({
       ok: false,
-      error: "This event needs a title, date, and start and end time before it can be saved.",
+      error: "This event needs a title and date before it can be saved.",
     });
   }
   const preferredId = options && typeof options.eventId === "string" && self.QuickCalTestEvent.isValidEventId(options.eventId)
@@ -3877,24 +3897,39 @@ async function applyMove(candidate, query, timeZone, scope) {
   }
   const plan = self.QuickCalLookup.planMove(candidate, query, timeZone);
   if (plan.ask || plan.unsupported) return plan;
+  const patchBody = plan.allDay
+    ? { start: { date: plan.date }, end: { date: plan.exclusiveEndDate } }
+    : {
+        start: { dateTime: plan.startDateTime, timeZone: timeZone },
+        end: { dateTime: plan.endDateTime, timeZone: timeZone },
+      };
   const patched = await calendarCall(lookupItemUrl(target, "PATCH"), {
     method: "PATCH",
-    body: JSON.stringify({
-      start: { dateTime: plan.startDateTime, timeZone: timeZone },
-      end: { dateTime: plan.endDateTime, timeZone: timeZone },
-    }),
+    body: JSON.stringify(patchBody),
   });
   if (patched.network) {
     const again = await readLookupItem(target);
     if (again.ok && again.body) {
       const seen = self.QuickCalLookup.candidateFrom(again.body, timeZone);
-      if (seen.startTime === plan.startTime && seen.date === plan.date) return { ok: true, candidate: candidate, plan: plan, body: again.body };
+      if (plan.allDay) {
+        if (seen.allDay && seen.date === plan.date && seen.endDate === plan.endDate) {
+          return { ok: true, candidate: candidate, plan: plan, body: again.body };
+        }
+      } else if (seen.startTime === plan.startTime && seen.date === plan.date) {
+        return { ok: true, candidate: candidate, plan: plan, body: again.body };
+      }
     }
     return { network: true, candidate: candidate };
   }
   if (!patched.ok || !patched.body) return { failed: true, candidate: candidate };
   const saved = self.QuickCalLookup.candidateFrom(patched.body, timeZone);
-  if (saved.startTime !== plan.startTime) return { failed: true, candidate: candidate };
+  if (plan.allDay) {
+    if (!saved.allDay || saved.date !== plan.date || saved.endDate !== plan.endDate) {
+      return { failed: true, candidate: candidate };
+    }
+  } else if (saved.startTime !== plan.startTime || saved.date !== plan.date) {
+    return { failed: true, candidate: candidate };
+  }
   return { ok: true, candidate: candidate, plan: plan, body: patched.body };
 }
 

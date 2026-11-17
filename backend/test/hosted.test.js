@@ -162,7 +162,7 @@ function loadBackground(hooks) {
             return {
               ok: true,
               apiKeyConfigured: true,
-              quickcalApiVersion: 5,
+              quickcalApiVersion: 6,
               quickcalRelease: "test-revision",
               capabilities: ["event-notifications", "calendar-operations", "availability-search", "multi-event-batch", "tasks", "document-analysis"],
             };
@@ -180,7 +180,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return {
-              quickcalApiVersion: 5,
+              quickcalApiVersion: 6,
               quickcalRelease: "test-revision",
               title: "Coffee with Alex",
               date: "2026-10-20",

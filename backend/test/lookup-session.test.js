@@ -138,7 +138,7 @@ function loadBackground(hooks) {
           status: 200,
           async json() {
             return interpreted || {
-              quickcalApiVersion: 5,
+              quickcalApiVersion: 6,
               intent: "clarify",
               timeZone: zone,
               needsClarification: true,
@@ -288,7 +288,7 @@ function operationFields(fields) {
 
 function interpreted(intent, fields) {
   return {
-    quickcalApiVersion: 5,
+    quickcalApiVersion: 6,
     quickcalRelease: "test",
     intent: intent,
     timeZone: zone,
@@ -653,7 +653,7 @@ describe("calendar lookup through the service worker", () => {
     hooks.interpret = (request) => {
       if (request.text === "make it 7 PM") {
         return {
-          quickcalApiVersion: 5,
+          quickcalApiVersion: 6,
           intent: "edit",
           title: "Meeting with Steve",
           date: today,
@@ -732,5 +732,38 @@ describe("calendar lookup through the service worker", () => {
     assert.equal(hooks.deletes.length, 1);
     assert.equal(hooks.deletes[0], "dentist");
     assert.match(removed.session.statusText, /Deleted Dentist/);
+  });
+
+  it("moves work to tomorrow while preserving the original local time", async () => {
+    const work = eventItem(
+      "work1",
+      "Work beginning",
+      localInstant(today, "09:00"),
+      localInstant(today, "10:30")
+    );
+    const tomorrow = addLocalDays(today, 1);
+    const hooks = { calls: [], patches: [], deletes: [], posts: [], items: [work] };
+    hooks.interpret = () =>
+      interpreted("move", {
+        target: "Work",
+        searchDate: today,
+        destinationDate: tomorrow,
+        destinationTime: null,
+      });
+    const background = loadBackground(hooks);
+    await send(background.listener, { type: "quickcal-widget", action: "show" });
+    const moved = await send(background.listener, {
+      type: "quickcal-widget",
+      action: "submit",
+      text: "Move work beginning from today to tomorrow",
+      timeZone: zone,
+      operationId: "date-only-move",
+      sessionId: background.sessionStore.quickcalWidgetSession.sessionId,
+    });
+    assert.equal(hooks.patches.length, 1);
+    assert.equal(hooks.patches[0].id, "work1");
+    assert.equal(hooks.patches[0].body.start.dateTime, localInstant(tomorrow, "09:00"));
+    assert.equal(hooks.patches[0].body.end.dateTime, localInstant(tomorrow, "10:30"));
+    assert.equal(moved.session.statusError, false);
   });
 });

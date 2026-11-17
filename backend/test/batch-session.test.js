@@ -47,7 +47,7 @@ function threeComplete() {
       batchEvent("e2", { title: "Team lunch", startTime: "12:00", endTime: "13:00", location: "Cafe" }),
       batchEvent("e3", { title: "Demo", startTime: "15:00", endTime: "16:00" }),
     ],
-    quickcalApiVersion: 5,
+    quickcalApiVersion: 6,
     quickcalRelease: "test",
   };
 }
@@ -261,7 +261,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
           batchEvent("e1", { title: "Standup", date: "2026-11-19", startTime: "09:00", endTime: "09:30" }),
           batchEvent("e2", { title: "Planning", date: "2026-11-19", startTime: "10:00", endTime: "11:00" }),
         ],
-        quickcalApiVersion: 5,
+        quickcalApiVersion: 6,
         quickcalRelease: "test",
       },
     };
@@ -300,7 +300,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
             clarificationQuestions: ["What time does this event start?"],
           }),
         ],
-        quickcalApiVersion: 5,
+        quickcalApiVersion: 6,
         quickcalRelease: "test",
       },
     };
@@ -340,7 +340,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
               endTime: "15:30",
               durationDefaulted: false,
             }),
-            quickcalApiVersion: 5,
+            quickcalApiVersion: 6,
             quickcalRelease: "test",
           };
         }
@@ -359,7 +359,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
             }),
             batchEvent("e3", { title: "Demo", startTime: "16:00", endTime: "17:00" }),
           ],
-          quickcalApiVersion: 5,
+          quickcalApiVersion: 6,
           quickcalRelease: "test",
         };
       },
@@ -433,7 +433,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
             recurrenceText: "Every Wednesday",
           }),
         ],
-        quickcalApiVersion: 5,
+        quickcalApiVersion: 6,
         quickcalRelease: "test",
       },
     };
@@ -465,7 +465,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
             tooMany: false,
             message: "QuickCalAI did not find any calendar events in that selection.",
             events: [],
-            quickcalApiVersion: 5,
+            quickcalApiVersion: 6,
             quickcalRelease: "test",
           };
         }
@@ -474,7 +474,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
           tooMany: true,
           message: "Highlight a smaller passage.",
           events: [],
-          quickcalApiVersion: 5,
+          quickcalApiVersion: 6,
           quickcalRelease: "test",
         };
       },
@@ -618,7 +618,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
       tooMany: false,
       message: null,
       events: [batchEvent("e1", { title: "Solo", startTime: "11:00", endTime: "12:00" })],
-      quickcalApiVersion: 5,
+      quickcalApiVersion: 6,
       quickcalRelease: "test",
     } };
     // Single complete event auto-creates; use two events for batch save path.
@@ -630,7 +630,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
         batchEvent("e1", { title: "Alpha", startTime: "11:00", endTime: "12:00" }),
         batchEvent("e2", { title: "Beta", startTime: "13:00", endTime: "14:00" }),
       ],
-      quickcalApiVersion: 5,
+      quickcalApiVersion: 6,
       quickcalRelease: "test",
     };
     const background = loadBackground(hooks);
@@ -697,7 +697,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
           batchEvent("e1", { title: "Alpha", startTime: "10:00", endTime: "11:00" }),
           batchEvent("e2", { title: "Beta", startTime: "10:30", endTime: "11:30" }),
         ],
-        quickcalApiVersion: 5,
+        quickcalApiVersion: 6,
         quickcalRelease: "test",
       },
       conflictItems: [],
@@ -759,7 +759,7 @@ describe("multi-event batch session (stubbed model/Calendar)", () => {
         tooMany: false,
         message: null,
         events: [batchEvent("e1", { title: "Coffee", startTime: "10:00", endTime: "11:00" })],
-        quickcalApiVersion: 5,
+        quickcalApiVersion: 6,
         quickcalRelease: "test",
       },
     };

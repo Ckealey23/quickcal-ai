@@ -40,7 +40,7 @@ function eventItem(id, summary, start, end, extra) {
 
 function availabilityBody(fields, title, readOnly) {
   return {
-    quickcalApiVersion: 5,
+    quickcalApiVersion: 6,
     quickcalRelease: "test",
     intent: "availability",
     title: title === undefined ? "Meeting with Steve" : title,

@@ -18,10 +18,13 @@
 
   function missingSummary(event) {
     const missing = [];
+    const allDay = !!(event && (event.allDay === true || (!event.startTime && !event.endTime && event.date)));
     if (!event || !event.title) missing.push("title");
     if (!event || !event.date) missing.push("date");
-    if (!event || !event.startTime) missing.push("start time");
-    if (!event || !event.endTime) missing.push("end time");
+    if (!allDay) {
+      if (!event || !event.startTime) missing.push("start time");
+      if (!event || !event.endTime) missing.push("end time");
+    }
     if (event && event.needsClarification && Array.isArray(event.clarificationQuestions) && event.clarificationQuestions.length) {
       return event.clarificationQuestions[0];
     }
@@ -53,13 +56,15 @@
       reminders = reminderResult.reminders;
     }
     const endDate = date ? (raw.endDate == null ? date : raw.endDate) : null;
+    const allDay = raw.allDay === true || (!!date && !startTime);
     const event = {
       ref: ref,
       title: title,
       date: date,
       endDate: endDate,
-      startTime: startTime,
-      endTime: endTime,
+      startTime: allDay ? null : startTime,
+      endTime: allDay ? null : endTime,
+      allDay: allDay,
       timeZone: typeof raw.timeZone === "string" && raw.timeZone.trim() ? raw.timeZone.trim() : timeZone,
       location: location,
       recurrence: recurrence,
@@ -71,7 +76,7 @@
       clarificationQuestions: Array.isArray(raw.clarificationQuestions)
         ? raw.clarificationQuestions.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
         : [],
-      durationDefaulted: raw.durationDefaulted === true,
+      durationDefaulted: allDay ? false : raw.durationDefaulted === true,
       intent: "create",
     };
     if (recurrence && schedule.recurrenceScheduleText && !event.recurrenceText) {

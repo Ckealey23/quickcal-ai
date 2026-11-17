@@ -47,6 +47,12 @@
     return y + "-" + m + "-" + d;
   }
 
+  function daysBetween(start, end) {
+    const from = Date.UTC(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 1, Number(start.slice(8, 10)));
+    const to = Date.UTC(Number(end.slice(0, 4)), Number(end.slice(5, 7)) - 1, Number(end.slice(8, 10)));
+    return Math.round((to - from) / 86400000);
+  }
+
   function zonedParts(epoch, timeZone) {
     const parts = {};
     new Intl.DateTimeFormat("en-US", {
@@ -217,22 +223,45 @@
     const startRaw = item.start && (item.start.dateTime || item.start.date) || "";
     const endRaw = item.end && (item.end.dateTime || item.end.date) || "";
     const allDay = !!(item.start && item.start.date && !item.start.dateTime);
-    const startParts = allDay ? { date: item.start.date, time: "" } : zonedParts(Date.parse(startRaw), timeZone);
-    const endParts = allDay ? { date: item.end.date, time: "" } : zonedParts(Date.parse(endRaw), timeZone);
     const api = scheduleApi();
+    if (allDay) {
+      const exclusiveEnd = item.end && item.end.date ? item.end.date : addDays(item.start.date, 1);
+      const inclusiveEnd = addDays(exclusiveEnd, -1);
+      return {
+        id: item.id,
+        recurringEventId: item.recurringEventId || "",
+        summary: item.summary || "Untitled event",
+        htmlLink: typeof item.htmlLink === "string" ? item.htmlLink : "",
+        status: item.status || "confirmed",
+        allDay: true,
+        date: item.start.date,
+        endDate: inclusiveEnd < item.start.date ? item.start.date : inclusiveEnd,
+        exclusiveEndDate: exclusiveEnd,
+        startTime: "",
+        endTime: "",
+        dateText: api.formatDateSpan
+          ? api.formatDateSpan(item.start.date, inclusiveEnd < item.start.date ? item.start.date : inclusiveEnd)
+          : api.formatCompactDate(item.start.date),
+        timeText: "All day",
+        fingerprint: [item.id, item.summary || "", startRaw, endRaw, item.status || "confirmed"].join("|"),
+      };
+    }
+    const startParts = zonedParts(Date.parse(startRaw), timeZone);
+    const endParts = zonedParts(Date.parse(endRaw), timeZone);
     return {
       id: item.id,
       recurringEventId: item.recurringEventId || "",
       summary: item.summary || "Untitled event",
       htmlLink: typeof item.htmlLink === "string" ? item.htmlLink : "",
       status: item.status || "confirmed",
-      allDay: allDay,
+      allDay: false,
       date: startParts.date,
       endDate: endParts.date,
+      exclusiveEndDate: "",
       startTime: startParts.time,
       endTime: endParts.time,
       dateText: api.formatCompactDate(startParts.date),
-      timeText: allDay ? "All day" : api.formatTimeRange(startParts.time, endParts.time),
+      timeText: api.formatTimeRange(startParts.time, endParts.time),
       fingerprint: [item.id, item.summary || "", startRaw, endRaw, item.status || "confirmed"].join("|"),
     };
   }
@@ -272,18 +301,45 @@
   }
 
   function planMove(candidate, query, timeZone) {
-    if (candidate.allDay) {
-      return { unsupported: "Moving an all-day event is not supported yet. No events were changed." };
-    }
-    if (query.ambiguousTime) return { ask: "Which time should it move to?" };
-    if (!query.newStartTime) return { ask: "What time should it move to?" };
     const api = scheduleApi();
     const date = query.newDate || candidate.date;
+    if (candidate.allDay) {
+      if (query.ambiguousTime) return { ask: "Which time should it move to?" };
+      if (query.newStartTime || query.newEndTime) {
+        return { ask: "That event is all day. Should I keep it all day on the new date?" };
+      }
+      const exclusive = candidate.exclusiveEndDate || addDays(candidate.endDate || candidate.date, 1);
+      const span = Math.max(1, daysBetween(candidate.date, exclusive));
+      const exclusiveEnd = addDays(date, span);
+      const inclusiveEnd = addDays(exclusiveEnd, -1);
+      return {
+        id: candidate.id,
+        allDay: true,
+        date: date,
+        endDate: inclusiveEnd,
+        exclusiveEndDate: exclusiveEnd,
+        startTime: "",
+        endTime: "",
+        startDateTime: "",
+        endDateTime: "",
+      };
+    }
+    if (query.ambiguousTime) return { ask: "Which time should it move to?" };
+    // Date-only destination keeps the original local clock time and duration.
+    const startTime = query.newStartTime || candidate.startTime;
+    if (!startTime) return { ask: "What time should it move to?" };
     const start = api.resolveLocal(candidate.date, candidate.startTime, timeZone);
     const end = api.resolveLocal(candidate.endDate || candidate.date, candidate.endTime, timeZone);
-    const next = api.resolveLocal(date, query.newStartTime, timeZone);
-    if (!start.ok || !end.ok || !next.ok) {
+    const next = api.resolveLocal(date, startTime, timeZone);
+    if (!start.ok || !end.ok) {
       return { unsupported: "QuickCal cannot determine that time. No events were changed." };
+    }
+    if (!next.ok) {
+      return {
+        ask: next.reason === "ambiguous"
+          ? "That start time happens twice because of a daylight-saving change. Which time should this event use?"
+          : "That start time does not exist in this time zone. What time should this event use?",
+      };
     }
     let endEpoch = next.epoch + (end.epoch - start.epoch);
     if (query.newEndTime) {
@@ -295,10 +351,12 @@
     const endParts = zonedParts(endEpoch, timeZone);
     return {
       id: candidate.id,
+      allDay: false,
       date: date,
-      startTime: query.newStartTime,
+      startTime: startTime,
       endDate: endParts.date,
       endTime: endParts.time,
+      exclusiveEndDate: "",
       startDateTime: new Date(next.epoch).toISOString(),
       endDateTime: new Date(endEpoch).toISOString(),
     };

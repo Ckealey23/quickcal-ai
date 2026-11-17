@@ -219,8 +219,8 @@ describe("calendar values", () => {
     assert.equal(result.event.endTime, "13:00");
   });
 
-  it("asks for a missing date or time instead of filling one in", () => {
-    const result = validateExtraction(
+  it("asks for a missing date instead of inventing one, and treats date-only creates as all-day", () => {
+    const missingDate = validateExtraction(
       event({
         date: null,
         startTime: null,
@@ -230,15 +230,32 @@ describe("calendar values", () => {
       }),
       zone
     );
-    assert.equal(result.ok, true);
-    assert.equal(result.event.date, null);
-    assert.equal(result.event.startTime, null);
-    assert.equal(result.event.endTime, null);
-    assert.equal(result.event.needsClarification, true);
-    assert.deepEqual(result.event.clarificationQuestions, [
+    assert.equal(missingDate.ok, true);
+    assert.equal(missingDate.event.date, null);
+    assert.equal(missingDate.event.startTime, null);
+    assert.equal(missingDate.event.endTime, null);
+    assert.equal(missingDate.event.needsClarification, true);
+    assert.deepEqual(missingDate.event.clarificationQuestions, [
       "What date should this event use?",
-      "What time does this event start?",
     ]);
+
+    const dateOnly = validateExtraction(
+      event({
+        title: "Coffee with Alex",
+        date: "2026-11-17",
+        startTime: null,
+        endTime: null,
+        location: null,
+        needsClarification: false,
+        clarificationQuestions: [],
+      }),
+      zone
+    );
+    assert.equal(dateOnly.ok, true);
+    assert.equal(dateOnly.event.allDay, true);
+    assert.equal(dateOnly.event.startTime, null);
+    assert.equal(dateOnly.event.needsClarification, false);
+    assert.deepEqual(dateOnly.event.clarificationQuestions, []);
   });
 
   it("does not ask for a missing end time or a weekly date", () => {

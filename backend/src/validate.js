@@ -8,8 +8,10 @@ const EVENT_FIELDS = [
   "description",
   "title",
   "date",
+  "endDate",
   "startTime",
   "endTime",
+  "allDay",
   "timeZone",
   "location",
   "recurrence",
@@ -398,7 +400,14 @@ export function validateExtraction(raw, requestedTimeZone) {
   const failure = { ok: false, error: "The model returned an event that failed validation." };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure;
   const keys = Object.keys(raw);
-  const optionalFields = ["kind", "description", "notificationAction", "notificationOverrides"];
+  const optionalFields = [
+    "kind",
+    "description",
+    "endDate",
+    "allDay",
+    "notificationAction",
+    "notificationOverrides",
+  ];
   const requiredFields = EVENT_FIELDS.filter((field) => !optionalFields.includes(field));
   if (requiredFields.some((field) => !Object.hasOwn(raw, field))) return failure;
   if (keys.some((key) => !EVENT_FIELDS.includes(key))) return failure;
@@ -409,13 +418,14 @@ export function validateExtraction(raw, requestedTimeZone) {
   if (!description.ok) return failure;
   const title = optionalText(raw.title, 200);
   const date = optionalDate(raw.date);
+  const endDate = optionalDate(Object.hasOwn(raw, "endDate") ? raw.endDate : null);
   const startTime = optionalTime(raw.startTime);
   const endTime = optionalTime(raw.endTime);
   const location = optionalText(raw.location, 200);
   const recurrence = normalizeRecurrence(raw.recurrence);
   const notification = normalizeReminderChange(raw.notificationAction, raw.notificationOverrides);
   const operation = normalizeModelOperation(raw.operation);
-  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok || !operation.ok) {
+  if (!title.ok || !date.ok || !endDate.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok || !operation.ok) {
     return failure;
   }
   if (!INTENTS.includes(raw.intent)) return failure;
@@ -423,6 +433,7 @@ export function validateExtraction(raw, requestedTimeZone) {
   if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
   if (typeof raw.timeZone !== "string" || !isValidTimeZone(raw.timeZone)) return failure;
   if (typeof raw.needsClarification !== "boolean") return failure;
+  if (typeof raw.allDay !== "boolean" && raw.allDay != null) return failure;
   if (!Array.isArray(raw.clarificationQuestions) || raw.clarificationQuestions.length > 8) {
     return failure;
   }
@@ -441,15 +452,34 @@ export function validateExtraction(raw, requestedTimeZone) {
   }
 
   let needsClarification = raw.needsClarification;
+  let allDay = raw.allDay === true;
+  let inclusiveEnd = endDate.value;
+  if (inclusiveEnd && date.value && inclusiveEnd < date.value) {
+    needsClarification = true;
+    inclusiveEnd = null;
+    addQuestion(questions, "What start and end dates should this event use?");
+  }
+  if (inclusiveEnd && date.value && inclusiveEnd === date.value) inclusiveEnd = null;
   const weekly = recurrence.recurrence && (recurrence.recurrence.frequency === "dates"
     ? recurrence.recurrence.dates.length > 0 : recurrence.recurrence.weekdays.length > 0);
   if (!calendarIntent && !date.value && !weekly) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");
   }
-  if (!calendarIntent && !startTime.value) {
+  // Date without a usable start time becomes an all-day create. Timed
+  // preferences/durations are handled later in applySchedule.
+  if (!calendarIntent && !startTime.value && date.value) {
+    allDay = true;
+  } else if (!calendarIntent && !startTime.value && weekly) {
+    // Weekly series still need a shared clock time.
     needsClarification = true;
     addQuestion(questions, "What time does this event start?");
+  }
+  if (allDay) {
+    // Drop start-time questions that conflict with the all-day default.
+    for (let index = questions.length - 1; index >= 0; index -= 1) {
+      if (/what time does this event start/i.test(questions[index])) questions.splice(index, 1);
+    }
   }
   if (raw.intent === "clarify") {
     needsClarification = true;
@@ -459,7 +489,7 @@ export function validateExtraction(raw, requestedTimeZone) {
     needsClarification = true;
     addQuestion(questions, "What day should I check?");
   }
-  if (startTime.value && endTime.value && endTime.value <= startTime.value) {
+  if (!allDay && startTime.value && endTime.value && endTime.value <= startTime.value) {
     needsClarification = true;
     addQuestion(
       questions,
@@ -475,8 +505,10 @@ export function validateExtraction(raw, requestedTimeZone) {
     event: {
       title: title.value,
       date: date.value,
-      startTime: startTime.value,
-      endTime: endTime.value,
+      endDate: inclusiveEnd,
+      startTime: allDay ? null : startTime.value,
+      endTime: allDay ? null : endTime.value,
+      allDay: allDay,
       timeZone: raw.timeZone,
       location: location.value,
       recurrence: recurrence.recurrence,
@@ -503,8 +535,10 @@ function validatedTask(raw, title, description, date, dueTime, recurrence, model
       description: description,
       title: title,
       date: date,
+      endDate: null,
       startTime: dueTime,
       endTime: null,
+      allDay: false,
       timeZone: raw.timeZone,
       location: null,
       recurrence: null,
@@ -524,17 +558,19 @@ export function validateBatchEvent(raw, requestedTimeZone, ref) {
   if (typeof raw.ref !== "string" || raw.ref !== ref) return failure;
   const title = optionalText(raw.title, 200);
   const date = optionalDate(raw.date);
+  const endDate = optionalDate(Object.hasOwn(raw, "endDate") ? raw.endDate : null);
   const startTime = optionalTime(raw.startTime);
   const endTime = optionalTime(raw.endTime);
   const location = optionalText(raw.location, 200);
   const recurrence = normalizeRecurrence(raw.recurrence);
   const notification = normalizeReminderChange(raw.notificationAction, raw.notificationOverrides);
-  if (!title.ok || !date.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok) {
+  if (!title.ok || !date.ok || !endDate.ok || !startTime.ok || !endTime.ok || !location.ok || !recurrence.ok || !notification.ok) {
     return failure;
   }
   if (typeof raw.timeZone !== "string" || !isValidTimeZone(raw.timeZone)) return failure;
   if (typeof requestedTimeZone !== "string" || !isValidTimeZone(requestedTimeZone)) return failure;
   if (typeof raw.needsClarification !== "boolean") return failure;
+  if (typeof raw.allDay !== "boolean" && raw.allDay != null) return failure;
   if (!Array.isArray(raw.clarificationQuestions) || raw.clarificationQuestions.length > 8) return failure;
   const questions = [];
   for (const question of raw.clarificationQuestions) {
@@ -545,15 +581,28 @@ export function validateBatchEvent(raw, requestedTimeZone, ref) {
     addQuestion(questions, trimmed);
   }
   let needsClarification = raw.needsClarification;
+  let allDay = raw.allDay === true;
+  let inclusiveEnd = endDate.value;
+  if (inclusiveEnd && date.value && inclusiveEnd < date.value) {
+    needsClarification = true;
+    inclusiveEnd = null;
+    addQuestion(questions, "What start and end dates should this event use?");
+  }
+  if (inclusiveEnd && date.value && inclusiveEnd === date.value) inclusiveEnd = null;
   if (!date.value) {
     needsClarification = true;
     addQuestion(questions, "What date should this event use?");
   }
-  if (!startTime.value) {
+  if (!startTime.value && date.value) {
+    allDay = true;
+    for (let index = questions.length - 1; index >= 0; index -= 1) {
+      if (/what time does this event start/i.test(questions[index])) questions.splice(index, 1);
+    }
+  } else if (!startTime.value) {
     needsClarification = true;
     addQuestion(questions, "What time does this event start?");
   }
-  if (startTime.value && endTime.value && endTime.value <= startTime.value) {
+  if (!allDay && startTime.value && endTime.value && endTime.value <= startTime.value) {
     needsClarification = true;
     addQuestion(questions, "The end time is not later than the start time on the same day. What times should this event use?");
   }
@@ -566,8 +615,10 @@ export function validateBatchEvent(raw, requestedTimeZone, ref) {
       ref: ref,
       title: title.value,
       date: date.value,
-      startTime: startTime.value,
-      endTime: endTime.value,
+      endDate: inclusiveEnd,
+      startTime: allDay ? null : startTime.value,
+      endTime: allDay ? null : endTime.value,
+      allDay: allDay,
       timeZone: raw.timeZone,
       location: location.value,
       recurrence: recurrence.recurrence,

@@ -8,19 +8,26 @@ const zone = "America/Los_Angeles";
 const secret = "sk-testsecretvalue123";
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-function modelEvent() {
+function modelEvent(overrides = {}) {
   return {
+    kind: "event",
+    description: null,
     title: "Coffee with Alex",
     date: "2026-10-17",
+    endDate: null,
     startTime: "10:00",
     endTime: "10:30",
+    allDay: false,
     timeZone: zone,
     location: null,
     recurrence: null,
+    notificationAction: "preserve",
+    notificationOverrides: [],
     needsClarification: false,
     clarificationQuestions: [],
     intent: "create",
     operation: blankOperation(),
+    ...overrides,
   };
 }
 
@@ -345,7 +352,7 @@ describe("weekly defaults", () => {
         },
       },
     });
-    assert.match(client.calls[0].body.instructions, /unsaved event/);
+    assert.match(client.calls[0].body.instructions, /unsaved create/);
     assert.match(client.calls[0].body.instructions, /Original request: Coffee with Alex/);
     assert.doesNotMatch(client.calls[0].body.instructions, /changing an existing event/);
     assert.match(client.calls[0].body.input, /Original request: Coffee with Alex/);
@@ -355,6 +362,88 @@ describe("weekly defaults", () => {
     assert.equal(event.startTime, "20:00");
     assert.equal(event.endTime, "21:00");
     assert.equal(event.durationDefaulted, true);
+    assert.equal(event.needsClarification, false);
+  });
+
+  it("keeps a clarification answer on the create path even if the model returns find", async () => {
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify(
+        modelEvent({
+          title: null,
+          date: "2026-11-18",
+          endDate: "2026-12-16",
+          startTime: null,
+          endTime: null,
+          allDay: true,
+          intent: "find",
+          operation: Object.assign(blankOperation(), {
+            target: "Bahamas",
+            searchDate: "2026-11-18",
+          }),
+        })
+      ),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-11-16T21:00:00.000Z"),
+    });
+    const event = await parseEvent({
+      text: "from the 18th to next month 16th",
+      timeZone: zone,
+      clarification: {
+        originalText: "Trip to Bahamas from the 18th to next month 16th",
+        draft: {
+          title: "Trip to Bahamas",
+          date: null,
+          endDate: null,
+          startTime: null,
+          endTime: null,
+          allDay: false,
+          timeZone: zone,
+          location: null,
+          recurrence: null,
+        },
+      },
+    });
+    assert.equal(event.intent, "create");
+    assert.equal(event.allDay, true);
+    assert.equal(event.date, "2026-11-18");
+    assert.equal(event.endDate, "2026-12-16");
+    assert.equal(event.needsClarification, false);
+  });
+
+  it("creates an all-day event when the model returns a date and no start time", async () => {
+    const client = fakeClient({
+      status: "completed",
+      output_text: JSON.stringify(
+        modelEvent({
+          title: "Coffee with Alex",
+          date: "2026-11-17",
+          startTime: null,
+          endTime: null,
+          allDay: true,
+        })
+      ),
+      output: [],
+    });
+    const parseEvent = createParser({
+      apiKey: "local-test-key",
+      model: "gpt-6-luna",
+      client,
+      now: () => new Date("2026-11-16T21:00:00.000Z"),
+    });
+    const event = await parseEvent({
+      text: "Coffee with Alex tomorrow",
+      timeZone: zone,
+    });
+    assert.equal(event.intent, "create");
+    assert.equal(event.allDay, true);
+    assert.equal(event.date, "2026-11-17");
+    assert.equal(event.startTime, null);
     assert.equal(event.needsClarification, false);
   });
 });

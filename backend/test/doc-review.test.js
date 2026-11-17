@@ -18,14 +18,14 @@ function world(options) {
   settings.route = async (url, init) => {
     if (url.endsWith("/extract-document")) {
       settings.extracts.push({ type: init.headers["Content-Type"], size: init.body.length });
-      return response(200, { ok: true, kind: "txt", text: SYLLABUS, pages: null, characters: SYLLABUS.length, quickcalApiVersion: 5 });
+      return response(200, { ok: true, kind: "txt", text: SYLLABUS, pages: null, characters: SYLLABUS.length, quickcalApiVersion: 6 });
     }
     if (url.endsWith("/analyze-document")) {
       const body = JSON.parse(init.body);
       settings.analyses.push(body);
       if (settings.holdAnalysis) await settings.holdAnalysis;
       const items = settings.nextItems ? settings.nextItems(body) : exams();
-      return response(200, { ok: true, items: items, warning: items.length ? null : "No presentations are listed.", quickcalApiVersion: 5 });
+      return response(200, { ok: true, items: items, warning: items.length ? null : "No presentations are listed.", quickcalApiVersion: 6 });
     }
     if (url.includes("/parse-event")) {
       settings.parses += 1;
@@ -196,25 +196,28 @@ describe("document approval and creation", () => {
     const flow = await reviewed(env);
     await flow.decide(flow.find("Midterm Exam 1"), "approved");
     await flow.decide(flow.find("Final Exam"), "skipped");
-    const blocked = await flow.decide(flow.find("Study group"), "approved");
-    assert.equal(blocked.ok, false);
-    assert.match(blocked.error, /start time or mark it all day/);
+    const study = flow.find("Study group");
+    assert.equal(study.allDay, true);
+    const approvedStudy = await flow.decide(study, "approved");
+    assert.equal(approvedStudy.ok, true);
 
     const created = await flow.create();
-    assert.equal(env.calendarPosts.length, 1);
-    const body = env.calendarPosts[0];
-    assert.equal(body.summary, "Midterm Exam 1");
-    assert.equal(body.start.dateTime, "2026-10-12T10:00:00-07:00");
-    assert.equal(body.end.dateTime, "2026-10-12T11:00:00-07:00");
-    assert.match(body.description, /From bio101-syllabus\.txt\./);
+    assert.equal(env.calendarPosts.length, 2);
+    const timed = env.calendarPosts.find((body) => body.summary === "Midterm Exam 1");
+    const allDay = env.calendarPosts.find((body) => body.summary === "Study group");
+    assert.equal(timed.start.dateTime, "2026-10-12T10:00:00-07:00");
+    assert.equal(timed.end.dateTime, "2026-10-12T11:00:00-07:00");
+    assert.match(timed.description, /From bio101-syllabus\.txt\./);
+    assert.equal(allDay.start.date, "2026-10-10");
+    assert.equal(allDay.end.date, "2026-10-11");
     const midterm = created.session.doc.items.find((item) => item.title === "Midterm Exam 1");
     assert.equal(midterm.result.ok, true);
-    assert.equal(body.id, midterm.eventId);
-    assert.equal(created.session.doc.message, "Created 1 event.");
+    assert.equal(timed.id, midterm.eventId);
+    assert.match(created.session.doc.message, /Created 2 event/);
 
     const again = await flow.create();
     assert.equal(again.session.doc.message, "Approve at least one item first.");
-    assert.equal(env.calendarPosts.length, 1, "no duplicate on a repeated click");
+    assert.equal(env.calendarPosts.length, 2, "no duplicate on a repeated click");
   });
 
   it("applies edits from review, including a 5-minute time and a switch to a task", async () => {

@@ -9,7 +9,7 @@
   const ANALYZE_URL = BACKEND_ORIGIN + "/analyze-document";
   const MAX_TEXT_LENGTH = 2000;
   const TIMEOUT_MS = 35000;
-  const API_VERSION = 5;
+  const API_VERSION = 6;
 
   function isValidTimeZone(timeZone) {
     if (typeof timeZone !== "string") return false;

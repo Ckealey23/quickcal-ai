@@ -672,7 +672,7 @@
     if (!event.location && /what is the location|where should this|where is this/.test(lower)) return true;
     if (/attendee|invitation|\binvite\b|\bguest\b/.test(lower)) return true;
     if (event.date && /what date should this event use|which date should/.test(lower)) return true;
-    if (event.startTime && /what time does this event start/.test(lower)) return true;
+    if ((event.startTime || event.allDay) && /what time does this event start/.test(lower)) return true;
     if (event.title && /what should this event be called|what is this event called/.test(lower)) return true;
     if (dropSeriesLimits && isSeriesLimitQuestion(text)) return true;
     return false;
@@ -680,12 +680,21 @@
 
   function finish(next, recurrence, options) {
     const dropSeriesLimits = !options || options.keepSeriesQuestions !== true;
+    if (next.allDay) {
+      next.startTime = null;
+      next.endTime = null;
+      next.durationDefaulted = false;
+      if (!next.endDate || next.endDate < next.date) next.endDate = next.date;
+    }
     attachSeries(next, recurrence);
     next.clarificationQuestions = dedupe(next.clarificationQuestions).filter((question) => {
       return !isUnnecessaryQuestion(question, next, dropSeriesLimits);
     });
+    const scheduleReady = next.allDay
+      ? !!next.date
+      : !!(next.date && next.startTime && next.endTime);
     next.needsClarification =
-      next.clarificationQuestions.length > 0 || !next.title || !next.date || !next.startTime || !next.endTime;
+      next.clarificationQuestions.length > 0 || !next.title || !scheduleReady;
     return next;
   }
 
@@ -749,12 +758,14 @@
       event.notificationAction,
       event.notificationOverrides
     );
+    const inclusiveEnd = event.endDate || event.date || null;
     return {
       title: event.title,
       date: event.date,
       startTime: event.startTime,
       endTime: event.endTime,
-      endDate: event.date,
+      endDate: inclusiveEnd,
+      allDay: event.allDay === true,
       timeZone: event.timeZone,
       location: event.location,
       reminders: reminders || startingReminders,
@@ -762,6 +773,25 @@
       clarificationQuestions: dedupe(event.clarificationQuestions),
       durationDefaulted: false,
     };
+  }
+
+  // Duration or part-of-day wording needs a clock start, not a silent all-day event.
+  function wantsClockTime(sourceText, event) {
+    if (event && event.allDay === true) return false;
+    if (event && event.startTime) return true;
+    const source = String(sourceText || "");
+    if (/\ball[- ]?day\b/i.test(source)) return false;
+    if (explicitDurationMinutes(source)) return true;
+    if (/\b(?:for|lasting)\s+\d+\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours)\b/i.test(source)) return true;
+    if (/\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(source)) return true;
+    if (/\b\d{1,2}:\d{2}\b/.test(source)) return true;
+    if (/\b(?:noon|midnight)\b/i.test(source)) return true;
+    if (/\b(?:morning|afternoon|evening|tonight)\b/i.test(source)) return true;
+    return false;
+  }
+
+  function exclusiveEndDate(inclusiveEnd) {
+    return addDays(inclusiveEnd, 1);
   }
 
   function ask(next, question, recurrence) {
@@ -788,9 +818,12 @@
       if (unresolved.length) return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), unresolved[0], { frequency: "dates", dates: dates });
       const duration = explicitDurationMinutes(sourceText);
       if (duration && duration.ambiguous) return ask(blankSchedule(event), "Which duration should these events use?", null);
-      const base = Object.assign({}, event, { date: dates[0], recurrence: null, clarificationQuestions: [] });
-      const results = dates.map((date) => applySchedule(Object.assign({}, base, { date: date }), duration ? "for " + duration.minutes + " minutes" : "", clock));
+      const base = Object.assign({}, event, { date: dates[0], endDate: dates[0], allDay: false, recurrence: null, clarificationQuestions: [] });
+      const results = dates.map((date) => applySchedule(Object.assign({}, base, { date: date, endDate: date }), duration ? "for " + duration.minutes + " minutes" : "", clock));
       const next = results.find((item) => item.needsClarification) || results[0];
+      if (results.some((item) => item.allDay)) {
+        return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), "What time should I schedule these events for?", { frequency: "dates", dates: dates });
+      }
       if (results.some((item) => item.endDate && item.endDate !== item.date)) {
         return ask(blankSchedule(Object.assign({}, event, { date: dates[0] })), "Should each event end on the following day?", { frequency: "dates", dates: dates });
       }
@@ -852,6 +885,7 @@
       } else {
         next.date = null;
       }
+      if (next.date) next.endDate = next.date;
     } else if (
       recurrence &&
       !next.date &&
@@ -862,6 +896,28 @@
       clock.localTime
     ) {
       next.date = nextWeeklyDate(clock.localDate, clock.localTime, recurrence.weekdays, next.startTime);
+      if (next.date) next.endDate = next.date;
+    }
+
+    if (next.endDate && next.date && next.endDate < next.date) {
+      if (next.allDay || (!next.startTime && !wantsClockTime(sourceText, event))) {
+        return ask(next, "What start and end dates should this event use?", recurrence);
+      }
+      // Timed creates often inherit a placeholder model date as endDate before
+      // the real start date is resolved; keep the timed event single-day.
+      next.endDate = next.date;
+    }
+
+    // Single or multi-day create with a date and no usable start time → all-day.
+    if (next.date && !next.startTime && (next.allDay || !wantsClockTime(sourceText, event))) {
+      next.allDay = true;
+      next.startTime = null;
+      next.endTime = null;
+      if (!next.endDate || next.endDate < next.date) next.endDate = next.date;
+      next.clarificationQuestions = (next.clarificationQuestions || []).filter(
+        (question) => !/what time does this event start|what time should i schedule/i.test(question)
+      );
+      return finish(next, recurrence, { keepSeriesQuestions: true });
     }
 
     if (!next.date || !next.startTime) {
@@ -873,6 +929,9 @@
       }
       return finish(next, recurrence, { keepSeriesQuestions: true });
     }
+
+    next.allDay = false;
+    if (!next.endDate || next.endDate < next.date) next.endDate = next.date;
 
     const datedProblem = seriesProblem(next.date, recurrence);
     if (datedProblem) return ask(next, datedProblem, recurrence);
@@ -927,9 +986,13 @@
     if (value.location != null && location == null) return { ok: false, error: "Clarification draft is not valid." };
     if (location && location.length > 200) return { ok: false, error: "Clarification draft is not valid." };
     const date = value.date == null ? null : value.date;
+    const endDate = value.endDate == null ? null : value.endDate;
     const startTime = value.startTime == null ? null : value.startTime;
     const endTime = value.endTime == null ? null : value.endTime;
+    const allDay = value.allDay === true;
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: "Clarification draft is not valid." };
+    if (endDate && !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return { ok: false, error: "Clarification draft is not valid." };
+    if (endDate && date && endDate < date) return { ok: false, error: "Clarification draft is not valid." };
     if (startTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) {
       return { ok: false, error: "Clarification draft is not valid." };
     }
@@ -947,8 +1010,10 @@
       event: {
         title: title,
         date: date,
-        startTime: startTime,
-        endTime: endTime,
+        endDate: endDate,
+        startTime: allDay ? null : startTime,
+        endTime: allDay ? null : endTime,
+        allDay: allDay,
         timeZone: timeZone,
         location: location,
         recurrence: series.recurrence,
@@ -961,6 +1026,7 @@
     const current = draft || {};
     const title = current.recurrence?.frequency === "dates" ? current.title : extracted.title || current.title || null;
     const date = extracted.date || current.date || null;
+    const endDate = extracted.endDate || current.endDate || null;
     const startTime = extracted.startTime || current.startTime || null;
     const location = extracted.location == null ? current.location || null : extracted.location;
     const recurrence = current.recurrence?.frequency === "dates" ? current.recurrence : extracted.recurrence || current.recurrence || null;
@@ -972,12 +1038,15 @@
     const answerSetsEnd = mentionsScheduleChange(answerText);
     const endTime = answerSetsEnd || current.recurrence?.frequency === "dates" ? extracted.endTime || current.endTime || null : current.endTime || null;
     const source = [originalText, answerText].filter(Boolean).join("\n");
+    const allDay = extracted.allDay === true || current.allDay === true || (!!date && !startTime && !wantsClockTime(source, extracted));
     return applySchedule(
       {
         title: title,
         date: date,
-        startTime: startTime,
-        endTime: endTime,
+        endDate: endDate,
+        startTime: allDay ? null : startTime,
+        endTime: allDay ? null : endTime,
+        allDay: allDay,
         timeZone: current.timeZone || extracted.timeZone,
         location: location,
         recurrence: recurrence,
@@ -1002,11 +1071,35 @@
     if (!title || title.length > 200) return { ok: false, error: "Current event is not valid." };
     if (value.location != null && location == null) return { ok: false, error: "Current event is not valid." };
     const endDate = value.endDate || value.date;
-    const start = resolveLocal(value.date, value.startTime, timeZone);
-    const end = resolveLocal(endDate, value.endTime, timeZone);
+    const allDay = value.allDay === true || (!value.startTime && !value.endTime && !!value.date);
     const series = normalizeRecurrence(value.recurrence === undefined ? null : value.recurrence);
     const reminders = normalizeReminderSettings(value.reminders);
-    if (value.timeZone !== timeZone || !start.ok || !end.ok || end.epoch <= start.epoch || !series.ok || !reminders.ok) {
+    if (value.timeZone !== timeZone || !series.ok || !reminders.ok) {
+      return { ok: false, error: "Current event is not valid." };
+    }
+    if (allDay) {
+      if (!isIsoDate(value.date) || !isIsoDate(endDate) || endDate < value.date) {
+        return { ok: false, error: "Current event is not valid." };
+      }
+      return {
+        ok: true,
+        event: {
+          title: title,
+          date: value.date,
+          endDate: endDate,
+          startTime: null,
+          endTime: null,
+          allDay: true,
+          timeZone: timeZone,
+          location: location || null,
+          recurrence: series.recurrence,
+          reminders: reminders.reminders,
+        },
+      };
+    }
+    const start = resolveLocal(value.date, value.startTime, timeZone);
+    const end = resolveLocal(endDate, value.endTime, timeZone);
+    if (!start.ok || !end.ok || end.epoch <= start.epoch) {
       return { ok: false, error: "Current event is not valid." };
     }
     return {
@@ -1017,6 +1110,7 @@
         endDate: endDate,
         startTime: value.startTime,
         endTime: value.endTime,
+        allDay: false,
         timeZone: timeZone,
         location: location || null,
         recurrence: series.recurrence,
@@ -1121,6 +1215,46 @@
       }, series);
     }
 
+    if (current.allDay) {
+      const endDate = extracted.endDate || current.endDate || date;
+      if (extracted.startTime) {
+        return applySchedule(
+          {
+            title: title,
+            date: date,
+            endDate: date,
+            startTime: extracted.startTime,
+            endTime: extracted.endTime,
+            allDay: false,
+            timeZone: current.timeZone,
+            location: location,
+            recurrence: series,
+            reminders: reminders,
+            notificationAction: "preserve",
+            notificationOverrides: [],
+            needsClarification: false,
+            clarificationQuestions: [],
+          },
+          sourceText,
+          clock
+        );
+      }
+      return attachSeries({
+        title: title,
+        date: date,
+        endDate: endDate < date ? date : endDate,
+        startTime: null,
+        endTime: null,
+        allDay: true,
+        timeZone: current.timeZone,
+        location: location,
+        reminders: reminders,
+        needsClarification: false,
+        clarificationQuestions: [],
+        durationDefaulted: false,
+      }, series);
+    }
+
     if (mentionsScheduleChange(sourceText)) {
       return applySchedule(
         {
@@ -1128,6 +1262,7 @@
           date: date,
           startTime: startTime,
           endTime: extracted.endTime,
+          allDay: false,
           timeZone: current.timeZone,
           location: location,
           recurrence: series,
@@ -1210,11 +1345,53 @@
     if (!series.ok || !reminders.ok) return null;
     const recurrence = series.recurrence;
     const endDate = event.endDate || event.date;
+    const allDay = event.allDay === true || (!event.startTime && !event.endTime && !!event.date);
+    if (!isIsoDate(event.date) || !isIsoDate(endDate) || endDate < event.date) return null;
+    if (recurrence && seriesProblem(event.date, recurrence)) return null;
+    const title = event.title.trim();
+    const location = event.location ? event.location.trim() : "";
+    if (allDay) {
+      if (recurrence && recurrence.frequency === "dates") return null;
+      const exclusive = exclusiveEndDate(endDate);
+      const recurrenceRule = recurrence ? buildRecurrenceRule(recurrence, event.timeZone, "00:00") : "";
+      if (recurrence && !recurrenceRule) return null;
+      return {
+        fingerprint: JSON.stringify({
+          title: title,
+          date: event.date,
+          endDate: endDate,
+          allDay: true,
+          timeZone: event.timeZone,
+          location: location,
+          recurrence: recurrence,
+          reminders: reminders.reminders,
+        }),
+        summary: title,
+        description: "Created by QuickCalAI.",
+        location: location,
+        allDay: true,
+        startDateTime: "",
+        endDateTime: "",
+        exclusiveEndDate: exclusive,
+        timeZone: event.timeZone,
+        date: event.date,
+        endDate: endDate,
+        startTime: null,
+        endTime: null,
+        dateText: recurrence ? formatCompactDate(event.date) : formatDateSpan(event.date, endDate),
+        timeText: "All day",
+        recurrence: recurrence,
+        recurrenceRule: recurrenceRule,
+        recurrenceText: recurrence ? recurrenceScheduleText(recurrence) : "",
+        seriesEndText: recurrence ? seriesEndText(recurrence) : "",
+        reminders: reminders.reminders,
+        remindersText: reminderSettingsText(reminders.reminders),
+      };
+    }
     const start = resolveLocal(event.date, event.startTime, event.timeZone);
     const end = resolveLocal(endDate, event.endTime, event.timeZone);
     if (!start.ok || !end.ok || end.epoch <= start.epoch) return null;
     if (event.durationDefaulted && end.epoch - start.epoch !== 60 * 60000) return null;
-    if (recurrence && seriesProblem(event.date, recurrence)) return null;
     if (recurrence && recurrence.frequency === "dates" && recurrence.dates.some((date) => {
       const first = resolveLocal(date, event.startTime, event.timeZone);
       const last = resolveLocal(date, event.endTime, event.timeZone);
@@ -1222,8 +1399,6 @@
     })) return null;
     const recurrenceRule = recurrence ? buildRecurrenceRule(recurrence, event.timeZone, event.startTime) : "";
     if (recurrence && !recurrenceRule) return null;
-    const title = event.title.trim();
-    const location = event.location ? event.location.trim() : "";
     return {
       fingerprint: JSON.stringify({
         title: title,
@@ -1231,6 +1406,7 @@
         endDate: endDate,
         startTime: event.startTime,
         endTime: event.endTime,
+        allDay: false,
         timeZone: event.timeZone,
         location: location,
         recurrence: recurrence,
@@ -1239,8 +1415,10 @@
       summary: title,
       description: "Created by QuickCalAI.",
       location: location,
+      allDay: false,
       startDateTime: rfc3339(start.epoch, event.timeZone),
       endDateTime: rfc3339(end.epoch, event.timeZone),
+      exclusiveEndDate: "",
       timeZone: event.timeZone,
       date: event.date,
       endDate: endDate,
@@ -1263,6 +1441,9 @@
     applySchedule: applySchedule,
     prepareForSave: prepareForSave,
     explicitDurationMinutes: explicitDurationMinutes,
+    wantsClockTime: wantsClockTime,
+    exclusiveEndDate: exclusiveEndDate,
+    addDays: addDays,
     formatTimeRange: formatTimeRange,
     formatDateSpan: formatDateSpan,
     formatCompactDate: formatCompactDate,
