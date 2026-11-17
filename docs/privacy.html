@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QuickCalAI Privacy Policy</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #142033;
+        --muted: #4b5a70;
+        --line: #d7deea;
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --accent: #1f4b99;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, #e8eef9 0, transparent 40%),
+          linear-gradient(180deg, #f8fafc 0%, var(--bg) 100%);
+        line-height: 1.55;
+      }
+      main {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 48px 20px 72px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 2rem;
+        letter-spacing: -0.03em;
+      }
+      .meta {
+        margin: 0 0 28px;
+        color: var(--muted);
+      }
+      section {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 22px;
+        margin: 0 0 14px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 1.12rem;
+      }
+      p { margin: 0 0 10px; }
+      p:last-child { margin-bottom: 0; }
+      ul { margin: 0; padding-left: 1.2rem; }
+      li { margin: 0 0 8px; }
+      a { color: var(--accent); }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.92em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>QuickCalAI Privacy Policy</h1>
+      <p class="meta">Last updated: November 16, 2026</p>
+
+      <section>
+        <h2>Overview</h2>
+        <p>
+          QuickCalAI is a Chrome extension that helps you create and manage Google Calendar
+          events and Google Tasks from text you type or speak, text you highlight, or documents
+          you upload. This policy describes what the extension and its hosted parser handle.
+          It does not claim that all processing stays on your device.
+        </p>
+      </section>
+
+      <section>
+        <h2>Google account and Calendar / Tasks data</h2>
+        <p>
+          When you choose Connect Google, Chrome’s identity API obtains an OAuth access token
+          for this extension. QuickCalAI uses that token to:
+        </p>
+        <ul>
+          <li>Create, update, move, and delete events on calendars you own.</li>
+          <li>Read calendar lists and event details needed for conflict notices and availability.</li>
+          <li>Read free/busy information when event details are not available.</li>
+          <li>Create tasks in your default Google Tasks list.</li>
+          <li>Read your Google account email so the hosted parser can verify the signed-in account.</li>
+        </ul>
+        <p>
+          Calendar and Tasks writes are sent from the extension to Google’s APIs
+          (<code>www.googleapis.com</code> and <code>tasks.googleapis.com</code>).
+          Event and task content you approve or submit can be stored in your Google account
+          under Google’s own policies.
+        </p>
+      </section>
+
+      <section>
+        <h2>Text, spoken requests, and documents sent to the hosted parser</h2>
+        <p>
+          Natural-language requests are sent to the hosted service at
+          <code>https://quickcal-ai.onrender.com</code> (Render). The service worker attaches
+          your Google access token as a Bearer token so the server can verify the account.
+          The floating widget does not receive that token.
+        </p>
+        <ul>
+          <li>
+            <strong>Typed, spoken (after transcription), highlighted, and follow-up text</strong>
+            may be sent to <code>/parse-event</code> so an OpenAI model can extract structured
+            event, task, move, delete, or availability fields.
+          </li>
+          <li>
+            <strong>Microphone audio</strong> for voice input is captured in an offscreen document,
+            kept in memory for the request, and posted to <code>/transcribe</code>. The hosted
+            service sends that audio to OpenAI’s transcription model and returns text. Audio is
+            not written to disk by the documented backend design.
+          </li>
+          <li>
+            <strong>Documents</strong> (PDF, DOCX, or TXT, up to 2&nbsp;MB) you choose to upload are
+            sent to <code>/extract-document</code> to read selectable text in memory. Extracted
+            text and your instructions may then be sent to <code>/analyze-document</code> for
+            OpenAI-based proposal of events or tasks. Nothing from a document is written to
+            Google until you approve items and ask to create them. Scanned PDFs without
+            selectable text are refused; there is no OCR.
+          </li>
+        </ul>
+        <p>
+          OpenAI API keys stay on the Render service environment. They are not packaged in the
+          extension. The hosted service is designed not to log document contents. It uses
+          in-memory per-account rate limits that reset when the service restarts; it does not
+          use a database for calendar data.
+        </p>
+      </section>
+
+      <section>
+        <h2>Data stored in Chrome</h2>
+        <p>
+          The extension stores operational state in Chrome storage, including connection and
+          onboarding flags, draft/retry identifiers for saves, shared conversation state across
+          tabs, and short-lived document-review text in <code>chrome.storage.session</code>
+          (cleared when the browser session ends). That storage stays in your browser profile
+          under Chrome’s controls.
+        </p>
+      </section>
+
+      <section>
+        <h2>What we do not sell</h2>
+        <p>
+          QuickCalAI is not designed to sell your personal information or to use your Calendar,
+          Tasks, document, or audio content for advertising.
+        </p>
+      </section>
+
+      <section>
+        <h2>Third parties</h2>
+        <ul>
+          <li><strong>Google</strong> — authentication, Calendar, and Tasks.</li>
+          <li><strong>Render</strong> — hosts the parser, transcription, and document routes.</li>
+          <li><strong>OpenAI</strong> — language and transcription models called by the hosted service.</li>
+        </ul>
+        <p>
+          Those providers process data under their own terms and privacy policies when requests
+          are sent to them.
+        </p>
+      </section>
+
+      <section>
+        <h2>Retention</h2>
+        <p>
+          QuickCalAI does not promise multi-year retention of parser request bodies. Render’s
+          disk is ephemeral and the documented backend keeps document and audio payloads in
+          memory for the request. Calendar events, tasks, and extension retry/draft records
+          remain in Google Calendar/Tasks and Chrome storage until you or those systems remove
+          them. Exact provider-side log retention is controlled by Google, Render, and OpenAI.
+        </p>
+      </section>
+
+      <section>
+        <h2>Your choices</h2>
+        <ul>
+          <li>Disconnect Google from the extension options page to stop API access with the current grant.</li>
+          <li>Remove or revoke the extension in Chrome to clear its local storage with the extension.</li>
+          <li>Manage or delete Calendar events and Tasks in Google’s products.</li>
+          <li>Avoid uploading documents or using the microphone if you do not want that content sent to the hosted parser.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Contact</h2>
+        <p>
+          For privacy or support questions about QuickCalAI, email
+          <a href="mailto:charleskealey360@gmail.com">charleskealey360@gmail.com</a>.
+          The project repository is
+          <a href="https://github.com/Ckealey23/quickcal-ai">github.com/Ckealey23/quickcal-ai</a>.
+        </p>
+      </section>
+
+      <p class="meta">
+        <a href="index.html">Back to QuickCalAI</a>
+      </p>
+    </main>
+  </body>
+</html>

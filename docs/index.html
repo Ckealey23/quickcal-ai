@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>QuickCalAI</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #142033;
+        --muted: #4b5a70;
+        --line: #d7deea;
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --accent: #1f4b99;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, #e8eef9 0, transparent 40%),
+          linear-gradient(180deg, #f8fafc 0%, var(--bg) 100%);
+        line-height: 1.55;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 48px 20px 72px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 2.1rem;
+        letter-spacing: -0.03em;
+      }
+      .lead {
+        margin: 0 0 28px;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+      section {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 22px 22px 18px;
+        margin: 0 0 16px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 1.15rem;
+      }
+      p, li { color: var(--ink); }
+      ul { margin: 0; padding-left: 1.2rem; }
+      li { margin: 0 0 8px; }
+      a { color: var(--accent); }
+      footer {
+        margin-top: 28px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>QuickCalAI</h1>
+      <p class="lead">
+        A Chrome extension that turns typed text, spoken requests, highlighted text, and
+        uploaded documents into Google Calendar events and Google Tasks.
+      </p>
+
+      <section>
+        <h2>What it does</h2>
+        <ul>
+          <li>Creates, updates, moves, and deletes events on calendars you own.</li>
+          <li>Creates tasks in your default Google Tasks list.</li>
+          <li>Checks other calendars for overlaps after a successful save.</li>
+          <li>Reads PDF, DOCX, or TXT files you choose and proposes dated items for your review before anything is created.</li>
+          <li>Optionally transcribes a short microphone recording so you can speak a request.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How it works</h2>
+        <p>
+          QuickCalAI runs in Chrome. Natural-language parsing, transcription, and document
+          analysis are handled by a hosted service at
+          <code>https://quickcal-ai.onrender.com</code>. That service uses OpenAI models.
+          Calendar and Tasks writes go directly from the extension to Google APIs after you
+          connect your Google account.
+        </p>
+      </section>
+
+      <section>
+        <h2>Privacy</h2>
+        <p>
+          See the
+          <a href="privacy.html">QuickCalAI Privacy Policy</a>
+          for what is sent to Google, Render, and OpenAI, and what stays in Chrome storage.
+        </p>
+      </section>
+
+      <footer>
+        QuickCalAI is a class project for IME 4403.
+        Support:
+        <a href="mailto:charleskealey360@gmail.com">charleskealey360@gmail.com</a>.
+        Source repository:
+        <a href="https://github.com/Ckealey23/quickcal-ai">github.com/Ckealey23/quickcal-ai</a>.
+      </footer>
+    </main>
+  </body>
+</html>

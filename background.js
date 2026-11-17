@@ -917,12 +917,15 @@ async function disconnectCalendar() {
   return disconnected();
 }
 
+const EVENT_CONFIRM_FIELDS = "id,summary,htmlLink,status,reminders,start,end";
+
 function eventPatchUrl(id) {
   return (
     CALENDAR_EVENTS_URL +
     "/" +
     encodeURIComponent(id) +
-    "?sendUpdates=none&fields=id,summary,htmlLink,status,reminders"
+    "?sendUpdates=none&fields=" +
+    EVENT_CONFIRM_FIELDS
   );
 }
 
@@ -931,12 +934,13 @@ function eventReadUrl(id) {
     CALENDAR_EVENTS_URL +
     "/" +
     encodeURIComponent(id) +
-    "?fields=id,summary,htmlLink,status,reminders"
+    "?fields=" +
+    EVENT_CONFIRM_FIELDS
   );
 }
 
 function eventInsertUrl() {
-  return CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=id,summary,htmlLink,status,reminders";
+  return CALENDAR_EVENTS_URL + "?sendUpdates=none&fields=" + EVENT_CONFIRM_FIELDS;
 }
 
 function insertBody(record) {
@@ -947,7 +951,7 @@ function insertBody(record) {
       description: record.description,
       start: { date: record.date },
       end: { date: record.exclusiveEndDate || self.QuickCalSchedule.exclusiveEndDate(record.endDate || record.date) },
-      reminders: { useDefault: false },
+      reminders: calendarRemindersBody({ useDefault: false, overrides: [] }),
     });
   }
   return JSON.stringify({
@@ -956,7 +960,7 @@ function insertBody(record) {
     description: record.description,
     start: { dateTime: record.startDateTime, timeZone: record.timeZone },
     end: { dateTime: record.endDateTime, timeZone: record.timeZone },
-    reminders: { useDefault: false },
+    reminders: calendarRemindersBody({ useDefault: false, overrides: [] }),
   });
 }
 
@@ -974,16 +978,70 @@ function safeCalendarLink(value) {
   }
 }
 
+function sameInstant(left, right) {
+  if (typeof left !== "string" || typeof right !== "string" || !left || !right) return false;
+  if (left === right) return true;
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  return Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs === rightMs;
+}
+
+// Confirms Google returned the schedule we wrote. All-day uses exclusive end.date;
+// timed events keep dateTime (+ timeZone) and must not be mistaken for all-day.
+function matchesSavedSchedule(record, body) {
+  if (!record || !body || !body.start || !body.end) return false;
+  if (record.allDay) {
+    if (body.start.dateTime || body.end.dateTime) return false;
+    if (typeof body.start.date !== "string" || typeof body.end.date !== "string") return false;
+    if (body.start.date !== record.date) return false;
+    const inclusiveEnd = record.endDate || record.date;
+    const exclusive =
+      record.exclusiveEndDate ||
+      (self.QuickCalSchedule && inclusiveEnd
+        ? self.QuickCalSchedule.exclusiveEndDate(inclusiveEnd)
+        : "");
+    return !!exclusive && body.end.date === exclusive;
+  }
+  if (body.start.date || body.end.date) return false;
+  if (!sameInstant(body.start.dateTime, record.startDateTime)) return false;
+  if (!sameInstant(body.end.dateTime, record.endDateTime)) return false;
+  return true;
+}
+
+// Calendar reminders for the wire. Overrides are only valid when useDefault is
+// false; an empty overrides list with useDefault true confuses Google's all-day
+// insert path.
+function calendarRemindersBody(reminders) {
+  const normalized = self.QuickCalSchedule.normalizeReminderSettings(
+    reminders == null ? { useDefault: false, overrides: [] } : reminders
+  );
+  if (!normalized.ok) return { useDefault: false, overrides: [] };
+  if (normalized.reminders.useDefault) return { useDefault: true };
+  return { useDefault: false, overrides: normalized.reminders.overrides };
+}
+
+// Google often materializes calendar defaults onto all-day events as
+// useDefault:false plus overrides, even when the insert requested useDefault:true.
+function remindersConfirmed(recordReminders, bodyReminders) {
+  if (!recordReminders) return true;
+  if (bodyReminders == null || typeof bodyReminders !== "object") return false;
+  if (self.QuickCalSchedule.sameReminderSettings(recordReminders, bodyReminders)) return true;
+  const wanted = self.QuickCalSchedule.normalizeReminderSettings(recordReminders);
+  const got = self.QuickCalSchedule.normalizeReminderSettings(bodyReminders);
+  if (!wanted.ok || !got.ok) return false;
+  if (wanted.reminders.useDefault && !got.reminders.useDefault) return true;
+  return false;
+}
+
 function confirmedRecord(record, body) {
   if (!body || body.id !== record.id || body.summary !== record.summary) return null;
   if (body.status === "cancelled") return null;
   const link = safeCalendarLink(body.htmlLink);
   if (!link) return null;
+  if (!matchesSavedSchedule(record, body)) return null;
   if (record.reminders) {
     if (!Object.hasOwn(body, "reminders")) return null;
-    if (!self.QuickCalSchedule.sameReminderSettings(record.reminders, body.reminders)) {
-      return null;
-    }
+    if (!remindersConfirmed(record.reminders, body.reminders)) return null;
   }
   return {
     id: record.id,
@@ -1290,6 +1348,7 @@ function publicSavedEvent(record) {
     startTime: record.startTime,
     endTime: record.endTime,
     allDay: record.allDay === true,
+    exclusiveEndDate: record.exclusiveEndDate || "",
     startDateTime: record.startDateTime || "",
     endDateTime: record.endDateTime || "",
     location: record.location || null,
@@ -1308,7 +1367,7 @@ function widgetInsertBody(record) {
     id: record.id,
     summary: record.summary,
     description: record.description,
-    reminders: record.reminders || { useDefault: false, overrides: [] },
+    reminders: calendarRemindersBody(record.reminders),
   };
   if (record.allDay) {
     body.start = { date: record.date };
@@ -1324,6 +1383,23 @@ function widgetInsertBody(record) {
   return JSON.stringify(body);
 }
 
+function draftHasValidSchedule(record) {
+  if (!record || typeof record !== "object") return false;
+  if (record.allDay === true) {
+    if (typeof record.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(record.date)) return false;
+    const endDate = record.endDate || record.date;
+    if (typeof endDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < record.date) {
+      return false;
+    }
+    const exclusive =
+      typeof record.exclusiveEndDate === "string" && record.exclusiveEndDate
+        ? record.exclusiveEndDate
+        : self.QuickCalSchedule.exclusiveEndDate(endDate);
+    return typeof exclusive === "string" && /^\d{4}-\d{2}-\d{2}$/.test(exclusive) && exclusive > record.date;
+  }
+  return isRfc3339(record.startDateTime) && isRfc3339(record.endDateTime);
+}
+
 async function loadDraftEvent() {
   const stored = await chrome.storage.local.get(DRAFT_EVENT_KEY);
   const record = stored[DRAFT_EVENT_KEY];
@@ -1332,7 +1408,7 @@ async function loadDraftEvent() {
   if (record.phase !== "pending" && record.phase !== "created") return null;
   if (typeof record.fingerprint !== "string" || !record.fingerprint) return null;
   if (record.description !== WIDGET_DESCRIPTION) return null;
-  if (!isRfc3339(record.startDateTime) || !isRfc3339(record.endDateTime)) return null;
+  if (!draftHasValidSchedule(record)) return null;
   if (typeof record.summary !== "string" || typeof record.dateText !== "string" || typeof record.timeText !== "string") {
     return null;
   }

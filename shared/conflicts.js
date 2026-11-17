@@ -49,6 +49,17 @@
 
   function intervalFromSaved(saved) {
     if (!saved || typeof saved !== "object") return null;
+    if (saved.allDay === true || (saved.date && !saved.startTime && !saved.startDateTime)) {
+      if (typeof saved.date !== "string" || !saved.date) return null;
+      const exclusive =
+        typeof saved.exclusiveEndDate === "string" && saved.exclusiveEndDate
+          ? saved.exclusiveEndDate
+          : addDays(saved.endDate || saved.date, 1);
+      const begin = Date.parse(saved.date + "T00:00:00Z");
+      const finish = Date.parse(exclusive + "T00:00:00Z");
+      if (!Number.isFinite(begin) || !Number.isFinite(finish) || finish <= begin) return null;
+      return { startMs: begin, endMs: finish, allDay: true };
+    }
     if (saved.startDateTime && saved.endDateTime) {
       const startMs = parseInstant(saved.startDateTime);
       const endMs = parseInstant(saved.endDateTime);

@@ -115,17 +115,21 @@ function loadBackground(hooks) {
         if (hooks.failPatch) {
           return { ok: false, status: 403, async json() { return {}; } };
         }
+        const patched = {
+          id: decodeURIComponent(new URL(url).pathname.split("/events/")[1]),
+          summary: body.summary,
+          htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
+          status: "confirmed",
+          reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
+          start: body.start,
+          end: body.end,
+        };
+        calendar.set(patched.id, Object.assign({}, calendar.get(patched.id) || {}, patched));
         return {
           ok: true,
           status: 200,
           async json() {
-            return {
-              id: body.id,
-              summary: body.summary,
-              htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
-              status: "confirmed",
-              reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
-            };
+            return patched;
           },
         };
       }
@@ -147,7 +151,15 @@ function loadBackground(hooks) {
             ok: true,
             status: 200,
             async json() {
-              return { id: body.id, summary: "Different", htmlLink: "https://calendar.google.com/calendar/event?eid=abc", status: "confirmed" };
+              return {
+                id: body.id,
+                summary: "Different",
+                htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
+                status: "confirmed",
+                start: body.start,
+                end: body.end,
+                reminders: body.reminders,
+              };
             },
           };
         }
@@ -157,6 +169,8 @@ function loadBackground(hooks) {
           htmlLink: "https://calendar.google.com/calendar/event?eid=abc",
           status: "confirmed",
           reminders: hooks.mismatchReminders ? { useDefault: false, overrides: [] } : body.reminders,
+          start: body.start,
+          end: body.end,
         };
         calendar.set(body.id, saved);
         return {
@@ -495,7 +509,7 @@ describe("widget calendar save", () => {
       sender(),
     );
     assert.equal(defaultResult.remindersText, "Calendar default notifications");
-    assert.deepEqual(plain(hooks.patchBodies[2].reminders), defaults.reminders);
+    assert.deepEqual(plain(hooks.patchBodies[2].reminders), { useDefault: true });
   });
 
   it("saves the live draft once and shows success only from Google's confirmation", async () => {
