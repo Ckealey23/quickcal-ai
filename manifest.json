@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "QuickCalAI",
-  "version": "0.1.0",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4bzDmZV/YlrlA87vjW24zmv0MqLfHi5Zlx+stW4o4L6Uu2Yk9li4lcscpym93cllZfw69/k5g7xt7TR1ntKUtHnAB6pusXhkqc9xE0iQ0TUn6KZDuQxBjs5ouRpuhK09ItYEOwP1w30cKZaEpW/cslgLh8X9dvnryI7FMDB7DH8vWlzGLrEQXcy+X5ihevbImCC+WMG7KFCX151d4J5HHtIweRogs5nRRk4HEn77sl3e4MblUPigReZVHtlee4eqJoh7BXfpaWdklOprNfUSQDcZmELzwYErABLiC+HhxCC8GpyYqvDN1GRg4JgC8ghk2I8N4T+/M6XTlNg8eqAfzQIDAQAB",
+  "version": "0.1.1",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArfO58BvfE360msK6ApMyEmXluVX1pAu8glCi9jGrvCg6BX1V3H42Dw83MwU9UIEC2F44pVx5kbsoNedTg+zWOX9H1fGrJe5DbzTKZr4OM2nH5SfAJJ+C01gsrMokdpRH/w7w5U4bAhhh6oEVPQVJSfdSTubaoLb2TlHb5XWQUZCb/h6Llg8p1MsosHOX5ENrUOl4iJuOPJFKRhpHS0ZK9U5gVy7Id4+N00kOdpRjkkvqkTUVCtjtgvH7hblkhOrMzVVz8uQmqn33TxMRHedWI4GHUNHnwYoBITWa1b5pScoOggR0VJ3/fDaatT6g/wP9rljsftlI1q69EAl3WEdQCQIDAQAB",
   "description": "Type a calendar event from any webpage.",
   "action": {
     "default_title": "Show or hide QuickCalAI"
@@ -43,7 +43,7 @@
     }
   ],
   "oauth2": {
-    "client_id": "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com",
+    "client_id": "942667174356-64l1251f653go66dchk0h6ulfnhreo82.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/calendar.events.owned",
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",

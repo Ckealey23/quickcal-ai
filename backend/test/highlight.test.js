@@ -19,9 +19,9 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
-          return "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/" + file;
+          return "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/" + file;
         },
         onMessage: { addListener() {} },
         onInstalled: { addListener() {} },

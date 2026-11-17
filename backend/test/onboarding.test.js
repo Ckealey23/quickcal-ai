@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const extensionOrigin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+const extensionOrigin = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
 const TOKEN = "ya29.hosted-extension-token";
 
 function storageGet(store, key) {
@@ -39,7 +39,7 @@ function ask(listener, message, sender) {
 
 function contentSender(tabId) {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: tabId || 4, incognito: false },
     url: "https://example.com/page",
   };
@@ -63,7 +63,7 @@ function loadBackground(hooks) {
         },
       },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
           return extensionOrigin + "/" + file;
         },
@@ -363,7 +363,7 @@ describe("widget onboarding flow", () => {
       loaded.listeners.message,
       { type: "quickcal-auth", action: "disconnect" },
       {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         url: extensionOrigin + "/options/options.html",
       }
     );
@@ -373,7 +373,7 @@ describe("widget onboarding flow", () => {
       loaded.listeners.message,
       { type: "quickcal-auth", action: "replay-tour" },
       {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         url: extensionOrigin + "/options/options.html",
       }
     );

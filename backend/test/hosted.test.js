@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const extensionOrigin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+const extensionOrigin = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
 const TOKEN = "ya29.hosted-extension-token";
 
 function loadStartup() {
@@ -50,7 +50,7 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
           return extensionOrigin + "/" + file;
         },
@@ -255,7 +255,7 @@ function loadBackground(hooks) {
 
 function contentSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: 7 },
     url: "https://example.com/page",
   };
@@ -263,7 +263,7 @@ function contentSender() {
 
 function optionsSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     url: extensionOrigin + "/options/options.html",
   };
 }
@@ -281,7 +281,7 @@ describe("customer manifest", () => {
     assert.equal(manifest.key.startsWith("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"), true);
     assert.equal(
       manifest.oauth2.client_id,
-      "942667174356-iqt4btv1vojdqr2lg97unc1jl22si0ht.apps.googleusercontent.com"
+      "942667174356-64l1251f653go66dchk0h6ulfnhreo82.apps.googleusercontent.com"
     );
     assert.deepEqual(manifest.oauth2.scopes, [
       "https://www.googleapis.com/auth/calendar.events.owned",

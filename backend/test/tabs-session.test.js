@@ -8,7 +8,7 @@ import { createContext, runInContext } from "node:vm";
 import { describe, it } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const extensionId = "mkihiedalmccmhoebiiikpdoafhdfglf";
+const extensionId = "epnmambadhgonpaplpfgajhdpbkaiikb";
 
 function loadBackground() {
   const sessionData = {};
@@ -370,11 +370,11 @@ describe("real Chrome tabs", () => {
       browser = connect("ws://127.0.0.1:" + debugPort + browserPath);
       await browser.ready;
       const loaded = await browser.send("Extensions.loadUnpacked", { path: root });
-      assert.equal(loaded.id, "mkihiedalmccmhoebiiikpdoafhdfglf");
+      assert.equal(loaded.id, "epnmambadhgonpaplpfgajhdpbkaiikb");
       async function attachWorker(previousUrl) {
         const worker = await waitFor(async () => {
           const list = await targets(debugPort);
-          return list.find((item) => item.type === "service_worker" && item.url === "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/background.js" && item.webSocketDebuggerUrl !== previousUrl) || null;
+          return list.find((item) => item.type === "service_worker" && item.url === "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/background.js" && item.webSocketDebuggerUrl !== previousUrl) || null;
         }, (item) => !!item, "extension service worker", previousUrl ? 15000 : 8000);
         const attached = connect(worker.webSocketDebuggerUrl);
         await attached.ready;

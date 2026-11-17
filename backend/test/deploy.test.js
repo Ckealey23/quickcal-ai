@@ -375,7 +375,7 @@ describe("production parse access", { concurrency: false }, () => {
     assert.equal(health.text.includes(SECRET), false);
 
     const missing = await post();
-    const origin = await post({ origin: "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf" });
+    const origin = await post({ origin: "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb" });
     const sharedSecret = await post({ "x-quickcal-key": "extension-shared-secret" });
     const wrongApp = await post({ authorization: "Bearer ya29.wrong-audience-token" });
     const unapproved = await post({ authorization: "Bearer ya29.unapproved-account" });
@@ -549,7 +549,7 @@ describe("fail closed without a verifier", () => {
       headers: {
         "content-type": "application/json",
         authorization: "Bearer " + APPROVED,
-        origin: "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf",
+        origin: "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb",
       },
       body: JSON.stringify({
         text: "Coffee with Alex tomorrow from 10 to 10:30 AM",

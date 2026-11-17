@@ -107,7 +107,7 @@ describe("local server", { concurrency: false }, () => {
   });
 
   it("allows only the QuickCalAI extension origin", async () => {
-    const origin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+    const origin = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
     const allowed = await request(base, "/health", { headers: { origin } });
     const other = await request(base, "/health", {
       headers: { origin: "https://example.com" },

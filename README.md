@@ -69,11 +69,11 @@ After `manifest.json` changes, reload the extension and confirm the ID:
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode**.
 3. If QuickCalAI is already listed, click its reload icon. If it is not loaded yet, click **Load unpacked** and select this folder.
-4. Read the ID on the QuickCalAI card. It should be `mkihiedalmccmhoebiiikpdoafhdfglf`.
+4. Read the ID on the QuickCalAI card. It should be `epnmambadhgonpaplpfgajhdpbkaiikb`.
 
 ## Google Calendar connection
 
-The manifest `oauth2.client_id` is the Chrome extension OAuth client for Google Calendar. In Google Cloud, that client must be the Chrome extension type and must allow extension ID `mkihiedalmccmhoebiiikpdoafhdfglf`. The project uses that client ID directly. Do not download, import, or commit a credentials JSON file or a client secret.
+The manifest `oauth2.client_id` is the Chrome extension OAuth client for Google Calendar. In Google Cloud, that client must be the Chrome extension type and must allow extension ID `epnmambadhgonpaplpfgajhdpbkaiikb`. The project uses that client ID directly. Do not download, import, or commit a credentials JSON file or a client secret.
 
 The toolbar icon shows or hides the floating widget. A new installation does **not** open the options tab. First-use onboarding runs inside the widget the first time QuickCal opens on a supported webpage. Google’s prompt starts only after **Connect Google** is clicked on the Connect step.
 
@@ -215,7 +215,7 @@ The token Google returns must be for this extension’s client ID and must inclu
 
 ### Chrome Web Store item ID
 
-The unpacked development ID `mkihiedalmccmhoebiiikpdoafhdfglf` comes from the public `key` in `manifest.json`. A Chrome Web Store upload can receive a different item ID. After upload, read the item ID from the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole). If it differs from the development ID, update the Google Cloud OAuth Chrome-extension client’s allowed extension ID and any backend/`GOOGLE_CLIENT_ID` coordination before enabling broad access. Do not assume the current manifest key guarantees the same ID after store upload.
+The public `key` in `manifest.json` derives extension ID `epnmambadhgonpaplpfgajhdpbkaiikb`, which matches the Chrome Web Store item. Keep that key in the development/test package so unpacked installs use the same ID. Store upload packages omit the `key` field; Chrome assigns the Store item ID from the published package. The Chrome-extension OAuth client and hosted `GOOGLE_CLIENT_ID` must allow this extension ID and match `oauth2.client_id` in the manifest.
 
 Post-save conflict checking runs in the service worker after Google confirms a create, edit, or move. It never blocks or undoes the save. Recurring series are checked for **90 days** from the saved start; the success card shows that bounded range and does not claim the whole series is clear.
 

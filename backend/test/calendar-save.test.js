@@ -18,9 +18,9 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
-          return "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/" + file;
+          return "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/" + file;
         },
         onMessage: {
           addListener(listener) {
@@ -221,7 +221,7 @@ function loadBackground(hooks) {
 
 function sender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: 4 },
     url: "https://example.com/events",
   };
@@ -641,8 +641,8 @@ describe("widget calendar save", () => {
     loaded.listener(
       { type: "quickcal-auth", action: "disconnect" },
       {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
-        url: "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/options/options.html",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
+        url: "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/options/options.html",
       },
       (result) => {
         disconnected = result;
@@ -661,8 +661,8 @@ describe("widget calendar save", () => {
 
 function optionsSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
-    url: "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/options/options.html",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
+    url: "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/options/options.html",
   };
 }
 

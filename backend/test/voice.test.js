@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const extensionOrigin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+const extensionOrigin = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
 const TOKEN = "ya29.voice-extension-token";
 const AUDIO = Buffer.from("simulated-audio-bytes").toString("base64");
 
@@ -21,7 +21,7 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
           return extensionOrigin + "/" + file;
         },
@@ -152,7 +152,7 @@ function loadBackground(hooks) {
 
 function contentSender(tabId) {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: tabId == null ? 7 : tabId },
     url: "https://example.com/page",
   };
@@ -160,14 +160,14 @@ function contentSender(tabId) {
 
 function offscreenSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     url: extensionOrigin + "/offscreen/offscreen.html",
   };
 }
 
 function permissionSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     url: extensionOrigin + "/mic/permission.html",
   };
 }

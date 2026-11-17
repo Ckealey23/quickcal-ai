@@ -19,7 +19,7 @@ import {
   validateAnalyzeRequest,
 } from "./documents.js";
 
-const EXTENSION_ORIGIN = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+const EXTENSION_ORIGIN = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
 export const QUICKCAL_API_VERSION = 6;
 export const QUICKCAL_CAPABILITIES = [
   "event-notifications",

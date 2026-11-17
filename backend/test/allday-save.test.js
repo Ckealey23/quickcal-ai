@@ -14,9 +14,9 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
-          return "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/" + file;
+          return "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/" + file;
         },
         onMessage: {
           addListener(listener) {
@@ -173,7 +173,7 @@ function loadBackground(hooks) {
 
 function sender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: 4 },
     url: "https://example.com/events",
   };

@@ -56,7 +56,7 @@ Intended GitHub Pages (after enabling Pages on `/docs`):
 1. **GitHub Pages not enabled by this step** — privacy/homepage URLs work only after Pages is turned on for `docs/` (and after those files are on the default branch).
 2. **No `icons` in `manifest.json`** — Store listing still needs uploaded images; consider adding packaged icons later if the dashboard requires them.
 3. **OAuth Testing vs Production** — sensitive Calendar/Tasks scopes; Store fee alone does not verify Google OAuth. Broad users may need consent-screen Production + verification.
-4. **Store item ID vs manifest `key`** — after upload, confirm the item ID still matches the Chrome-extension OAuth client’s allowed ID (`mkihiedalmccmhoebiiikpdoafhdfglf` today from the packaged key).
+4. **OAuth client / extension ID** — Store item and derived ID are `epnmambadhgonpaplpfgajhdpbkaiikb`; client ID is `942667174356-64l1251f653go66dchk0h6ulfnhreo82.apps.googleusercontent.com`. Confirm Render `GOOGLE_CLIENT_ID` matches when you next deploy (not changed here).
 5. **Access mode** — production parser may still be invite-only (`ALLOWED_EMAILS`). Public Store users need `QUICKCAL_ACCESS_MODE=public` (or equivalent) when you intend open access; that is a Render config change, not done here.
 6. **Remote backend availability** — free Render instances can cold-start; `/health` may be slow on first open.
 

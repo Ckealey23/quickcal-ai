@@ -3,7 +3,7 @@ import { createContext, runInContext } from "node:vm";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "../../..");
-export const EXTENSION_ID = "mkihiedalmccmhoebiiikpdoafhdfglf";
+export const EXTENSION_ID = "epnmambadhgonpaplpfgajhdpbkaiikb";
 
 export const plain = (value) => JSON.parse(JSON.stringify(value));
 

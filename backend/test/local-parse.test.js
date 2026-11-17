@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "../..");
-const extensionOrigin = "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf";
+const extensionOrigin = "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb";
 
 function loadBackground(fetchImpl) {
   const listeners = {};
@@ -13,7 +13,7 @@ function loadBackground(fetchImpl) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
         getURL(file) {
           return extensionOrigin + "/" + file;
         },
@@ -62,7 +62,7 @@ function loadBackground(fetchImpl) {
 
 function contentSender() {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: 7 },
     url: "https://example.com/page",
   };
@@ -249,8 +249,8 @@ describe("parser messages", () => {
     });
     const rejectedSenders = [
       [{ type: "quickcal-parse", text: "Lunch", timeZone: "UTC" }, { id: "other", tab: { id: 1 }, url: "https://example.com/" }],
-      [{ type: "quickcal-parse", text: "Lunch", timeZone: "UTC" }, { id: "mkihiedalmccmhoebiiikpdoafhdfglf", url: "https://example.com/" }],
-      [{ type: "quickcal-parse", text: "Lunch", timeZone: "UTC" }, { id: "mkihiedalmccmhoebiiikpdoafhdfglf", tab: { id: 1 }, url: extensionOrigin + "/options/options.html" }],
+      [{ type: "quickcal-parse", text: "Lunch", timeZone: "UTC" }, { id: "epnmambadhgonpaplpfgajhdpbkaiikb", url: "https://example.com/" }],
+      [{ type: "quickcal-parse", text: "Lunch", timeZone: "UTC" }, { id: "epnmambadhgonpaplpfgajhdpbkaiikb", tab: { id: 1 }, url: extensionOrigin + "/options/options.html" }],
       [{ type: "quickcal-auth", action: "connect" }, contentSender()],
     ];
     rejectedSenders.forEach(([message, sender]) => {

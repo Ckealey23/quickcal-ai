@@ -61,8 +61,8 @@ function loadBackground(hooks) {
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: {
-        id: "mkihiedalmccmhoebiiikpdoafhdfglf",
-        getURL(file) { return "chrome-extension://mkihiedalmccmhoebiiikpdoafhdfglf/" + file; },
+        id: "epnmambadhgonpaplpfgajhdpbkaiikb",
+        getURL(file) { return "chrome-extension://epnmambadhgonpaplpfgajhdpbkaiikb/" + file; },
         onMessage: { addListener(listener) { listeners.message = listener; } },
         onInstalled: { addListener() {} },
       },
@@ -179,7 +179,7 @@ function loadBackground(hooks) {
 
 function sender(tabId) {
   return {
-    id: "mkihiedalmccmhoebiiikpdoafhdfglf",
+    id: "epnmambadhgonpaplpfgajhdpbkaiikb",
     tab: { id: tabId || 9, incognito: false },
     url: "https://example.com/agenda",
   };
